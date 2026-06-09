@@ -19,8 +19,8 @@
     "@usecanary/logger": "workspace:*",
     "@usecanary/protocol": "workspace:*",
     "pino": "^9.5.0",
-    "playwright": "1.58.2",
-    "playwright-core": "1.58.2",
+    "playwright": "1.61.1",
+    "playwright-core": "1.61.1",
     "quickjs-emscripten": "^0.32.0",
     "zod": "3.25.76"
   },

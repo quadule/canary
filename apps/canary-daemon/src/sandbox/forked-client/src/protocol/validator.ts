@@ -1821,7 +1821,11 @@ scheme.FrameAddStyleTagResult = tObject({
   element: tChannel(["ElementHandle"]),
 });
 scheme.FrameAriaSnapshotParams = tObject({
-  selector: tString,
+  mode: tOptional(tEnum(["ai", "default"])),
+  track: tOptional(tString),
+  selector: tOptional(tString),
+  depth: tOptional(tInt),
+  boxes: tOptional(tBoolean),
   timeout: tFloat,
 });
 scheme.FrameAriaSnapshotResult = tObject({
@@ -2541,7 +2545,6 @@ scheme.RequestInitializer = tObject({
   headers: tArray(tType("NameValue")),
   isNavigationRequest: tBoolean,
   redirectedFrom: tOptional(tChannel(["Request"])),
-  hasResponse: tBoolean,
 });
 scheme.RequestResponseEvent = tOptional(tObject({}));
 scheme.RequestResponseParams = tOptional(tObject({}));
@@ -2718,16 +2721,15 @@ scheme.BindingCallResolveParams = tObject({
 scheme.BindingCallResolveResult = tOptional(tObject({}));
 scheme.DebuggerInitializer = tOptional(tObject({}));
 scheme.DebuggerPausedStateChangedEvent = tObject({
-  pausedDetails: tArray(
-    tObject({
-      location: tObject({
-        file: tString,
-        line: tOptional(tInt),
-        column: tOptional(tInt),
-      }),
-      title: tString,
-    })
-  ),
+  pausedDetails: tOptional(tObject({
+    location: tObject({
+      file: tString,
+      line: tOptional(tInt),
+      column: tOptional(tInt),
+    }),
+    title: tString,
+    stack: tOptional(tString),
+  })),
 });
 scheme.DebuggerPauseParams = tOptional(tObject({}));
 scheme.DebuggerPauseResult = tOptional(tObject({}));

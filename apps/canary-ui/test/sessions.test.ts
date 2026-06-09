@@ -25,7 +25,7 @@ function manifestJson(
       browser: "chromium",
       headless: false,
       platform: "linux",
-      playwrightVersion: "1.58.2",
+      playwrightVersion: "1.61.1",
     },
     id,
     kind: "canary-session-result",

@@ -45,11 +45,17 @@ export interface HostBridgeDispatcherOptions {
   sharedBrowser?: boolean;
 }
 
-function resolvePlaywrightInternal(modulePath: string): string {
+function resolveCoreBundlePath(): string {
   const candidates = [
-    path.resolve(currentDir, "../../node_modules/playwright-core", modulePath),
-    path.resolve(currentDir, "node_modules/playwright-core", modulePath),
-    path.resolve(process.cwd(), "node_modules/playwright-core", modulePath),
+    path.resolve(
+      currentDir,
+      "../../node_modules/playwright-core/lib/coreBundle.js"
+    ),
+    path.resolve(currentDir, "node_modules/playwright-core/lib/coreBundle.js"),
+    path.resolve(
+      process.cwd(),
+      "node_modules/playwright-core/lib/coreBundle.js"
+    ),
   ];
 
   for (const candidate of candidates) {
@@ -58,48 +64,66 @@ function resolvePlaywrightInternal(modulePath: string): string {
     }
   }
 
-  throw new Error(`Could not locate Playwright internals at ${modulePath}`);
+  throw new Error("Could not locate playwright-core/lib/coreBundle.js");
 }
 
-const serverInternals = require(
-  resolvePlaywrightInternal(path.join("lib", "server", "index.js"))
-) as {
-  createPlaywright: (options: { sdkLanguage: string }) => unknown;
-  DispatcherConnection: new (isLocal?: boolean) => DispatcherConnectionLike;
-  RootDispatcher: new (
-    connection: DispatcherConnectionLike,
-    createPlaywright?: (
+interface CoreBundle {
+  inprocess: {
+    createInProcessPlaywright: () => {
+      _connection: {
+        constructor: new (platform: unknown) => ClientConnectionLike;
+      };
+    };
+  };
+  server: {
+    createPlaywright: (options: { sdkLanguage: string }) => unknown;
+    DispatcherConnection: new (isLocal?: boolean) => DispatcherConnectionLike;
+    RootDispatcher: new (
+      connection: DispatcherConnectionLike,
+      createPlaywright?: (
+        scope: unknown,
+        params: RootInitializeParams
+      ) => Promise<unknown>
+    ) => RootDispatcherLike;
+    PlaywrightDispatcher: new (
       scope: unknown,
-      params: RootInitializeParams
-    ) => Promise<unknown>
-  ) => RootDispatcherLike;
-  PlaywrightDispatcher: new (
-    scope: unknown,
-    playwright: unknown,
-    options?: HostBridgeDispatcherOptions
-  ) => PlaywrightDispatcherLike;
-};
+      playwright: unknown,
+      options?: HostBridgeDispatcherOptions
+    ) => PlaywrightDispatcherLike;
+  };
+  utils: { nodePlatform: (coreDir: string) => unknown };
+}
 
-const clientInternals = require(
-  resolvePlaywrightInternal(path.join("lib", "client", "connection.js"))
-) as {
-  Connection: new (platform: unknown) => ClientConnectionLike;
-};
-
-const nodePlatformInternals = require(
-  resolvePlaywrightInternal(
-    path.join("lib", "server", "utils", "nodePlatform.js")
-  )
-) as {
-  nodePlatform: unknown;
-};
+const bundlePath = resolveCoreBundlePath();
+const bundle = require(bundlePath) as CoreBundle;
 
 export const {
   createPlaywright,
   DispatcherConnection,
   RootDispatcher,
   PlaywrightDispatcher,
-} = serverInternals;
+} = bundle.server;
 
-export const { Connection } = clientInternals;
-export const { nodePlatform } = nodePlatformInternals;
+// nodePlatform is a factory in 1.60+: call it with coreDir to get an instance.
+export const nodePlatform: unknown = bundle.utils.nodePlatform(
+  path.dirname(bundlePath)
+);
+
+// Connection is no longer a named export in 1.60+; extract it from a throwaway in-process instance.
+export const Connection: new (platform: unknown) => ClientConnectionLike =
+  (() => {
+    const tmp = bundle.inprocess.createInProcessPlaywright();
+    const ctor = (
+      tmp as {
+        _connection?: {
+          constructor: new (platform: unknown) => ClientConnectionLike;
+        };
+      }
+    )._connection?.constructor;
+    if (!ctor) {
+      throw new Error(
+        "Could not extract Connection constructor from playwright-core inprocess bundle"
+      );
+    }
+    return ctor;
+  })();

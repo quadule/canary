@@ -1138,11 +1138,14 @@ export class Page extends ChannelOwner<channels.PageChannel> implements api.Page
   async snapshotForAI(
     options: TimeoutOptions & { track?: string; depth?: number } = {}
   ): Promise<{ full: string; incremental?: string }> {
-    return await this._channel.snapshotForAI({
-      timeout: this._timeoutSettings.timeout(options),
+    // Page.snapshotForAI was merged into Frame.ariaSnapshot(mode:"ai") in Playwright 1.60.
+    const { snapshot } = await this._mainFrame._channel.ariaSnapshot({
+      mode: "ai",
       track: options.track,
       depth: options.depth,
+      timeout: this._timeoutSettings.timeout(options),
     });
+    return { full: snapshot };
   }
 
   async _setDockTile(image: Buffer) {

@@ -515,11 +515,14 @@ export class Locator implements api.Locator {
   async snapshotForAI(
     options: TimeoutOptions & { depth?: number } = {}
   ): Promise<{ full: string }> {
-    return await this._frame._page!._channel.snapshotForAI({
-      timeout: this._frame._timeout(options),
+    // Page.snapshotForAI was merged into Frame.ariaSnapshot(mode:"ai") in Playwright 1.60.
+    const { snapshot } = await this._frame._channel.ariaSnapshot({
+      mode: "ai",
       selector: this._selector,
       depth: options.depth,
+      timeout: this._frame._timeout(options),
     });
+    return { full: snapshot };
   }
 
   async _expect(

@@ -280,12 +280,15 @@ export const SESSION_SCREENSHOT_EXT = ".png";
 // identical EMBEDDED_PACKAGE_JSON, and the readiness check derives its allowlist
 // from DAEMON_RUNTIME_DEPENDENCIES — so adding a dependency can't drift them.
 
-export const DAEMON_RUNTIME_DEPENDENCIES: Record<string, string> = {
+// `satisfies` (not a `Record<string, string>` annotation) so consumers reading
+// a known key — e.g. `.playwright` for the report manifest — get a defined
+// `string`, not `string | undefined` under noUncheckedIndexedAccess.
+export const DAEMON_RUNTIME_DEPENDENCIES = {
   pino: "^9.5.0",
-  playwright: "1.58.2",
-  "playwright-core": "1.58.2",
+  playwright: "1.61.1",
+  "playwright-core": "1.61.1",
   "quickjs-emscripten": "^0.32.0",
-};
+} satisfies Record<string, string>;
 
 export const EMBEDDED_PACKAGE_JSON: string = JSON.stringify(
   {

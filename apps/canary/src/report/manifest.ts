@@ -1,6 +1,7 @@
 import path from "node:path";
 import {
   type CaptureOptions,
+  DAEMON_RUNTIME_DEPENDENCIES,
   type SessionEndResult,
   sessionStepSlug,
 } from "@usecanary/protocol";
@@ -8,7 +9,9 @@ import type { SessionRecord } from "../session/registry.js";
 import type { TraceAction } from "./parse-trace.js";
 
 export const MANIFEST_VERSION = 1;
-const PLAYWRIGHT_VERSION = "1.58.2";
+// Reported in the manifest's environment block — derive from the single source
+// of truth so it can't drift from the runtime `canary install` actually pins.
+const PLAYWRIGHT_VERSION = DAEMON_RUNTIME_DEPENDENCIES.playwright;
 
 export interface ArtifactRef {
   bytes: number;

@@ -53,8 +53,8 @@ The provenance markers for this fork do not fully agree, so treat this directory
 - `../../../package.json` declares:
 
 ```json
-"playwright": "^1.52.0",
-"playwright-core": "^1.52.0"
+"playwright": "1.61.1",
+"playwright-core": "1.61.1"
 ```
 
 - The recorded upstream baseline is Playwright commit `3912da7`.
