@@ -115,10 +115,11 @@ build on). Read the printed code, then continue driving the flow.
   it lives inside a closed menu, dropdown, accordion, tab, or unopened modal, open that container
   first (as its own action), then interact. Any `scrollIntoViewIfNeeded` / `page.isVisible(sel)`
   checks fold into the interaction's own script — keep them out of the step list as bookkeeping.
-- Toggle a checkbox or radio by clicking its LABEL, not the input — apps routinely hide the real
-  `<input>` and draw a custom control with CSS, so the input is zero-size/invisible and clicking
-  it fails or does nothing. `humanClick` the visible label text (`getByText("Accept terms")`, or
-  the `<label>`); a user clicks the words and the box, not the hidden input.
+- Toggle a checkbox or radio with `humanClick` — target it by role/name
+  (`getByRole("checkbox", { name })`) or its label text. Apps routinely hide the real `<input>` and
+  draw a custom control with CSS, so the input is zero-size and a direct click misses; `humanClick`
+  detects that and clicks the input's `<label>` for you (what a real user clicks). You don't need
+  to find the label yourself — just don't reach past `humanClick` to a raw `click` on the input.
 - Before interacting, make sure the target isn't covered by an overlay or modal — a cookie
   banner, dialog, toast, or loading spinner. A click that fails with "intercepts pointer events" /
   "not clickable" means something is on top: deal with that overlay first (act within the modal,

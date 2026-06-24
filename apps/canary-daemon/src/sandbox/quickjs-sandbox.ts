@@ -503,9 +503,9 @@ export class QuickJSSandbox {
                 }, on)
                 .catch(() => undefined);
 
-            const revealAndGlide = async (page, locator) => {
-              await locator.scrollIntoViewIfNeeded();
-              const box = await locator.boundingBox();
+            const revealAndGlide = async (page, target) => {
+              await target.scrollIntoViewIfNeeded();
+              const box = await target.boundingBox();
               if (!box) {
                 return false;
               }
@@ -515,13 +515,49 @@ export class QuickJSSandbox {
               return true;
             };
 
+            // A checkbox/radio is frequently a visually-hidden <input> with a
+            // custom CSS control drawn over a <label>; clicking the input itself
+            // misses (it's zero-size/invisible). When the target resolves to such
+            // a hidden input, retarget the click to its label — what a real user
+            // clicks. Returns a Locator or an ElementHandle (both support the
+            // scrollIntoViewIfNeeded / boundingBox / click that follow).
+            const resolveClickTarget = async (page, target) => {
+              const locator = resolveLocator(page, target);
+              const handle = await locator.elementHandle().catch(() => null);
+              if (!handle) {
+                return locator;
+              }
+              const labelHandle = await handle
+                .evaluateHandle((el) => {
+                  if (
+                    !(el instanceof HTMLInputElement) ||
+                    (el.type !== "checkbox" && el.type !== "radio")
+                  ) {
+                    return null;
+                  }
+                  const rect = el.getBoundingClientRect();
+                  const cs = getComputedStyle(el);
+                  const hidden =
+                    rect.width <= 1 ||
+                    rect.height <= 1 ||
+                    cs.visibility === "hidden" ||
+                    cs.display === "none" ||
+                    Number(cs.opacity) === 0;
+                  const label = el.labels && el.labels[0];
+                  return hidden && label ? label : null;
+                })
+                .catch(() => null);
+              const labelEl = labelHandle ? labelHandle.asElement() : null;
+              return labelEl || locator;
+            };
+
             const augmentPage = (page) => {
               if (!page || page.__canaryHuman) {
                 return page;
               }
               Object.defineProperty(page, "__canaryHuman", { value: true });
               page.humanClick = async (target, options) => {
-                const locator = resolveLocator(page, target);
+                const locator = await resolveClickTarget(page, target);
                 await revealAndGlide(page, locator);
                 try {
                   await locator.click(options);
