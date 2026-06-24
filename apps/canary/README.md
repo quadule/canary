@@ -24,6 +24,11 @@ You drive the daemon through a four-step session lifecycle:
 | 3. end | `canary session end <id>` | writes `report.html` |
 | 4. view | `canary ui` | browse every session |
 
+Mid-session you can hand the live (headed) browser to a human and capture what they do as a step:
+`canary session takeover <id>` starts recording their actions, `--stop` ends it and saves the
+generated Playwright code (`--cancel` discards). Handy for logins, feature flags, or anything off
+the happy path — it pairs with the `/canary:session-interactive` flow in the Claude Code plugin.
+
 ## Install
 
 ```bash

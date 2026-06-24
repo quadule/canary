@@ -106,8 +106,9 @@ console, the network, the full trace. Nothing summarized, nothing reconstructed:
 
 ### The session at a glance
 
-Status, a per-step timeline, the exact environment, and a full **video replay** of the run with a
-filmstrip of per-step screenshots — scrub straight to the moment something happened.
+Status, a per-step timeline, the exact environment, and a full **video replay** of the run — with
+an animated cursor that shows exactly where the agent acted and dead air trimmed out — plus a
+filmstrip of per-step screenshots to scrub straight to the moment something happened.
 
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/c538d7a3-5e03-4aa1-9412-3ae43cac4f34" />
 
@@ -164,10 +165,11 @@ and `/canary:*` slash commands. Tell Claude what you changed or what to check; i
 a real browser, and hands back the report.
 
 ```
-/canary:verify    # what changed? → a prioritized QA plan, then record it
-/canary:session   # record a flow end to end and render report.html
-/canary:run       # drive the browser once, nothing recorded
-/canary:review    # open the viewer and triage a recorded session
+/canary:verify              # what changed? → a prioritized QA plan, then record it
+/canary:session             # record a flow end to end and render report.html
+/canary:session-interactive # record collaboratively — the agent asks you, or hands you the browser
+/canary:run                 # drive the browser once, nothing recorded
+/canary:review              # open the viewer and triage a recorded session
 ```
 
 Or skip the slash and just say *"QA the checkout flow and give me a report"* — Canary's subagents pick
@@ -199,7 +201,9 @@ codex marketplace add wizenheimer/canary        # then /plugins → install "can
 You get **`canary-scripting`** (the sandbox API, with `references/REFERENCE.md`) plus the workflow
 skills **`canary-verify`**, **`canary-automate`**, **`canary-session`**, and **`canary-review`** —
 each paired with a subagent and a slash command: `/canary:verify`, `/canary:run`, `/canary:session`,
-`/canary:review`.
+`/canary:review`. There's also **`canary-session-interactive`** (`/canary:session-interactive`),
+which records a session collaboratively in the main conversation — no subagent — so the agent can
+pause to ask you, or hand you the live browser mid-flow (its actions captured as a step).
 
 ## Three tools, one runtime
 
@@ -290,6 +294,12 @@ the same API (`goto`, `click`, `fill`, `locator`, `evaluate`, `getByRole`, `wait
 https://playwright.dev/docs/api/class-page
 <!-- canary:end api-playwright-note -->
 
+**Human interaction & captions.** In recorded sessions, prefer `page.humanClick(target)` and
+`page.humanFill(target, text)` over raw `click` / `fill`: they reveal the element, glide the
+on-screen cursor onto it, and act through real input (typed text, a true click) so the video reads
+like a real user. `page.showCaption(text)` overlays a short caption to label a moment, and
+`page.waitForSettled()` waits (bounded) for the page to stop changing after a navigation.
+
 For element discovery, `await page.snapshotForAI()` returns an LLM-friendly outline of the page —
 the `canary-scripting` skill and its `references/REFERENCE.md` carry the full API.
 
@@ -342,9 +352,9 @@ canary/
 │   ├── logger/             # @usecanary/logger           pino-backed structured logger
 │   ├── cli-kit/            # @usecanary/cli-kit          shared CLI helpers
 │   └── daemon-client/      # @usecanary/daemon-client    daemon transport + lifecycle; embeds the daemon bundle
-├── skills/                 # agent skills: canary-scripting (+references), -verify, -automate, -session, -review
+├── skills/                 # agent skills: canary-scripting (+references), -verify, -automate, -session, -session-interactive, -review
 ├── agents/                 # JTBD subagents: verify-agent, automate-agent, session-agent, review-agent
-├── commands/               # slash commands: /canary:verify, :run, :session, :review
+├── commands/               # slash commands: /canary:verify, :run, :session, :session-interactive, :review
 ├── .claude-plugin/         # Claude Code plugin + marketplace manifests
 ├── .cursor-plugin/         # Cursor plugin manifest (pairs with rules/)
 ├── plugins/canary/         # Codex plugin wrapper (.codex-plugin → canonical skills/)
