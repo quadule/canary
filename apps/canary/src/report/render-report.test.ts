@@ -117,7 +117,7 @@ describe("renderReport", () => {
     expect(html).toContain("http://x/boom");
   });
 
-  it("renders the full tab set (summary, screenshots, execution, videos)", () => {
+  it("renders the merged tab set (summary, steps, screenshots, videos)", () => {
     const html = renderReport(fixtureManifest(), {
       consoleEntries: [],
       parsedHar: { entries: [], failed: 0, slowest: [], total: 0 },
@@ -125,14 +125,39 @@ describe("renderReport", () => {
     });
 
     expect(html).toContain('data-tab="summary"');
+    expect(html).toContain('id="panel-steps"');
     expect(html).toContain('id="panel-screenshots"');
-    expect(html).toContain('id="panel-execution"');
     expect(html).toContain('id="panel-videos"');
+    // execution + commands merged into the steps panel
+    expect(html).not.toContain('id="panel-execution"');
+    expect(html).not.toContain('id="panel-commands"');
+    // list/timeline toggle + per-step timeline bar
+    expect(html).toContain('data-view="timeline"');
+    expect(html).toContain('class="bar pass"');
+    // environment table moved into the summary panel
+    expect(html).toContain("Playwright");
     // step screenshot moved into the gallery
     expect(html).toContain('id="shot-main"');
   });
 
-  it("renders the Commands tab with actions, script, and escaping", () => {
+  it("links steps and screenshots bidirectionally with gallery navigation", () => {
+    const html = renderReport(fixtureManifest(), {
+      consoleEntries: [],
+      parsedHar: { entries: [], failed: 0, slowest: [], total: 0 },
+      screenshots: { [LOGIN_SLUG]: "data:image/png;base64,AAAA" },
+    });
+
+    // step row -> screenshot (only the step that has one)
+    expect(html).toContain(`data-goto-shot="${LOGIN_SLUG}"`);
+    // screenshot caption -> step
+    expect(html).toContain('id="shot-cap-link"');
+    expect(html).toContain('data-goto-step="step-0"');
+    expect(html).toContain(`data-step="step-0"`);
+    // arrow-key handler is part of the inlined script
+    expect(html).toContain("ArrowRight");
+  });
+
+  it("renders step bodies with actions, script, and escaping", () => {
     const html = renderReport(
       fixtureManifest({
         actionsByStep: {
@@ -154,8 +179,7 @@ describe("renderReport", () => {
         screenshots: {},
       }
     );
-    expect(html).toContain('data-tab="commands"');
-    expect(html).toContain('id="panel-commands"');
+    expect(html).toContain('id="panel-steps"');
     expect(html).toContain("Frame.goto");
     expect(html).toContain("await page.goto");
     // injected markup in the script/params is escaped, never emitted raw

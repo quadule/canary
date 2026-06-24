@@ -42,9 +42,9 @@ function fmtClock(iso: string): string {
 
 // "High-Contrast Precision": centered single column, big title, lime status pill,
 // and a horizontal tab nav with a lime active underline. Self-contained — inlined
-// CSS + a tiny vanilla tab/gallery script (no fonts/CDN/framework). Surfaces are
-// white on #f9f9f9, depth comes from 1px outlines + tonal wells (no shadows), and
-// the lime accent (#e4f222) is reserved for status and the active tab.
+// CSS + a tiny vanilla tab/steps/gallery script (no fonts/CDN/framework). Surfaces
+// are white on #f9f9f9, depth comes from 1px outlines + tonal wells (no shadows),
+// and the lime accent (#e4f222) is reserved for status and the active tab.
 const STYLE = `
 :root{
   --surface:#f9f9f9; --card:#fff; --well:#f3f3f3; --well-2:#eeeeee;
@@ -87,7 +87,7 @@ body{margin:0;background:var(--surface);color:var(--ink);
 /* panels */
 .panel.is-hidden{display:none}
 /* kpis */
-.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:24px}
 .kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--r-md);padding:22px 24px}
 .kpi .n{font-size:30px;font-weight:700;letter-spacing:-.02em;line-height:1.1;color:var(--ink);font-variant-numeric:tabular-nums}
 .kpi .n.fail{color:var(--fail)}
@@ -98,36 +98,66 @@ body{margin:0;background:var(--surface);color:var(--ink);
 h2{font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:0}
 .card-h .count{margin-left:auto;color:var(--faint);font-size:13px;font-variant-numeric:tabular-nums}
 .empty{color:var(--faint);font-style:italic;padding:40px 24px;text-align:center}
-/* steps */
-.srow{display:flex;align-items:center;gap:14px;padding:15px 24px;border-bottom:1px solid var(--line)}
-.srow:last-child{border-bottom:0}
+/* steps view toggle */
+.card-h .viewtoggle{margin-left:auto;display:flex;gap:3px;background:var(--well);
+  border:1px solid var(--line);border-radius:var(--r-full);padding:3px}
+.card-h .viewtoggle+.count{margin-left:0}
+.vbtn{appearance:none;border:0;background:transparent;font:inherit;font-size:12px;font-weight:600;
+  color:var(--muted);padding:3px 12px;border-radius:var(--r-full);cursor:pointer}
+.vbtn:hover{color:var(--ink)}
+.vbtn.is-active{background:var(--card);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line-2)}
+/* steps (merged list/timeline + expandable detail) */
+.step{border-bottom:1px solid var(--line)}
+.step:last-child{border-bottom:0}
+.step>summary{list-style:none;cursor:pointer}
+.step>summary::-webkit-details-marker{display:none}
+.srow{display:flex;align-items:center;gap:14px;padding:15px 24px}
 .srow:hover{background:rgba(228,242,34,.06)}
 .dot{flex:0 0 auto;width:9px;height:9px;border-radius:50%;background:var(--line-2);box-shadow:inset 0 0 0 1px rgba(0,0,0,.12)}
 .dot.pass{background:var(--primary)}
 .dot.fail{background:var(--fail);box-shadow:none}
 .sname{font-weight:600;letter-spacing:-.005em;min-width:0;word-break:break-word}
 .smeta{margin-left:auto;color:var(--faint);font-size:13px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.shotlink{appearance:none;border:0;background:transparent;padding:4px;border-radius:var(--r);
+  color:var(--faint);cursor:pointer;display:inline-flex;align-items:center}
+.shotlink:hover{color:var(--ink);background:var(--well-2)}
+.chev{flex:0 0 auto;color:var(--faint);display:inline-flex;transition:transform .15s ease}
+.step[open] .chev{transform:rotate(180deg)}
+.step.flash>summary .srow{animation:stepflash 1.4s ease-out}
+@keyframes stepflash{0%{background:rgba(228,242,34,.45)}100%{background:transparent}}
+.sbody{border-top:1px dashed var(--line);background:var(--surface)}
+.sbody .empty{padding:18px 24px}
+/* timeline mode: same rows, bars instead of plain labels */
+.steps .track{display:none}
+.steps.view-timeline .sname{flex:0 0 200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.steps.view-timeline .track{display:block;position:relative;flex:1;height:14px;background:var(--well);border-radius:var(--r-full)}
+.steps.view-timeline .smeta{margin-left:0;flex:0 0 auto;width:84px;text-align:right}
+.bar{position:absolute;top:0;height:14px;border-radius:var(--r-full);min-width:4px}
+.bar.pass{background:var(--primary)}
+.bar.fail{background:var(--fail)}
 /* screenshots gallery */
 .gallery{margin:0}
-.stage{background:var(--well);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;
+.stage{position:relative;background:var(--well);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden;
   display:flex;align-items:center;justify-content:center;min-height:200px}
 .stage img{display:block;max-width:100%;max-height:62vh;width:auto;height:auto}
-#shot-cap{text-align:center;color:var(--muted);font-size:14px;font-weight:500;margin:14px 0 20px;word-break:break-word}
+.navbtn{position:absolute;top:50%;transform:translateY(-50%);z-index:2;width:38px;height:38px;
+  display:flex;align-items:center;justify-content:center;border-radius:var(--r-full);
+  border:1px solid var(--line-2);background:rgba(255,255,255,.92);color:var(--ink);cursor:pointer;padding:0}
+.navbtn:hover{border-color:var(--ink-strong)}
+.navbtn.prev{left:12px}
+.navbtn.next{right:12px}
+#shot-cap{display:flex;align-items:baseline;justify-content:center;gap:10px;
+  color:var(--muted);font-size:14px;font-weight:500;margin:14px 0 20px;word-break:break-word}
+.caplink{appearance:none;border:0;background:transparent;font:inherit;font-weight:600;padding:0;
+  color:var(--ink);cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+.caplink:hover{color:var(--ink-strong);text-decoration-style:solid}
+.shot-pos{color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
 .thumbs{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
 .thumb{padding:0;border:2px solid transparent;border-radius:var(--r);background:var(--well);
   cursor:pointer;overflow:hidden;width:132px;height:84px}
 .thumb img{display:block;width:100%;height:100%;object-fit:cover}
 .thumb:hover{border-color:var(--line-2)}
 .thumb.is-active{border-color:var(--primary)}
-/* execution timeline */
-.timeline{padding:18px 24px}
-.trow{display:flex;align-items:center;gap:16px;padding:7px 0}
-.tname{flex:0 0 200px;font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.track{position:relative;flex:1;height:14px;background:var(--well);border-radius:var(--r-full)}
-.bar{position:absolute;top:0;height:14px;border-radius:var(--r-full);min-width:4px}
-.bar.pass{background:var(--primary)}
-.bar.fail{background:var(--fail)}
-.tmeta{flex:0 0 auto;color:var(--faint);font-size:13px;font-variant-numeric:tabular-nums;width:64px;text-align:right}
 /* tables */
 table{width:100%;border-collapse:collapse;font-size:14px}
 thead th{text-align:left;padding:11px 24px;color:var(--faint);font-weight:600;font-size:11px;
@@ -158,7 +188,7 @@ tr.err td{background:var(--fail-bg)}
 .hint{font-size:13px;color:var(--muted);margin-top:8px}
 code{background:var(--well-2);border:1px solid var(--line);border-radius:var(--r-sm);padding:2px 7px;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
-/* commands */
+/* per-step script */
 .scriptbox{margin:0;padding:14px 24px;border-bottom:1px solid var(--line)}
 .scriptbox summary{cursor:pointer;font-weight:700;font-size:11px;letter-spacing:.06em;
   text-transform:uppercase;color:var(--muted)}
@@ -177,8 +207,8 @@ code{background:var(--well-2);border:1px solid var(--line);border-radius:var(--r
   .tabs{gap:18px;justify-content:flex-start;flex-wrap:nowrap;overflow-x:auto}
   .tab{white-space:nowrap}
   .kpis{grid-template-columns:repeat(2,1fr)}
-  .tname{flex-basis:120px}
-  .card-h,thead th,tbody td,.srow,.timeline,.vids,.art{padding-left:16px;padding-right:16px}
+  .steps.view-timeline .sname{flex-basis:120px}
+  .card-h,thead th,tbody td,.srow,.vids,.art,.scriptbox{padding-left:16px;padding-right:16px}
 }
 @media (max-width:480px){
   .kpis{grid-template-columns:1fr}
@@ -190,26 +220,85 @@ const TAB_SCRIPT = `
 (function(){
   var tabs=document.querySelectorAll('[data-tab]');
   var panels=document.querySelectorAll('.panel');
+  // Old deep links (#execution / #commands) now live inside the Steps panel.
+  var aliases={execution:'steps',commands:'steps'};
+  var active='summary';
   function show(id){
+    id=aliases[id]||id;
+    if(!document.getElementById('panel-'+id)){id='summary';}
+    active=id;
     for(var i=0;i<panels.length;i++){panels[i].classList.toggle('is-hidden',panels[i].id!=='panel-'+id);}
     for(var j=0;j<tabs.length;j++){tabs[j].classList.toggle('is-active',tabs[j].getAttribute('data-tab')===id);}
   }
   for(var k=0;k<tabs.length;k++){
     tabs[k].addEventListener('click',function(){var id=this.getAttribute('data-tab');show(id);history.replaceState(null,'','#'+id);});
   }
-  var initial=(location.hash||'').replace('#','')||'summary';
-  show(document.getElementById('panel-'+initial)?initial:'summary');
-  var thumbs=document.querySelectorAll('.thumb');
-  var main=document.getElementById('shot-main');
-  var cap=document.getElementById('shot-cap');
-  for(var t=0;t<thumbs.length;t++){
-    thumbs[t].addEventListener('click',function(){
-      var img=this.querySelector('img');
-      if(main&&img){main.src=img.getAttribute('src');main.alt=this.getAttribute('data-cap')||'';}
-      if(cap){cap.textContent=this.getAttribute('data-cap')||'';}
-      for(var n=0;n<thumbs.length;n++){thumbs[n].classList.toggle('is-active',thumbs[n]===this);}
+  show((location.hash||'').replace('#',''));
+
+  // Steps: list <-> timeline toggle.
+  var stepsBox=document.getElementById('steps-list');
+  var vbtns=document.querySelectorAll('.vbtn');
+  for(var v=0;v<vbtns.length;v++){
+    vbtns[v].addEventListener('click',function(){
+      if(stepsBox){stepsBox.classList.toggle('view-timeline',this.getAttribute('data-view')==='timeline');}
+      for(var w=0;w<vbtns.length;w++){vbtns[w].classList.toggle('is-active',vbtns[w]===this);}
     });
   }
+
+  // Screenshot gallery: index-based model with thumbs, on-screen prev/next,
+  // and arrow keys while the panel is visible.
+  var thumbs=[].slice.call(document.querySelectorAll('.thumb'));
+  var main=document.getElementById('shot-main');
+  var capLink=document.getElementById('shot-cap-link');
+  var capPos=document.getElementById('shot-pos');
+  var current=0;
+  function showShot(i){
+    if(thumbs.length===0||!main){return;}
+    current=((i%thumbs.length)+thumbs.length)%thumbs.length;
+    var t=thumbs[current];
+    var img=t.querySelector('img');
+    if(img){main.src=img.getAttribute('src');main.alt=t.getAttribute('data-cap')||'';}
+    if(capLink){capLink.textContent=t.getAttribute('data-cap')||'';capLink.setAttribute('data-goto-step',t.getAttribute('data-step')||'');}
+    if(capPos){capPos.textContent=(current+1)+' / '+thumbs.length;}
+    for(var n=0;n<thumbs.length;n++){thumbs[n].classList.toggle('is-active',n===current);}
+  }
+  thumbs.forEach(function(t,i){t.addEventListener('click',function(){showShot(i);});});
+  var prev=document.getElementById('shot-prev');
+  var next=document.getElementById('shot-next');
+  if(prev){prev.addEventListener('click',function(){showShot(current-1);});}
+  if(next){next.addEventListener('click',function(){showShot(current+1);});}
+  document.addEventListener('keydown',function(e){
+    if(active!=='screenshots'||thumbs.length===0){return;}
+    if(e.key==='ArrowLeft'){showShot(current-1);e.preventDefault();}
+    else if(e.key==='ArrowRight'){showShot(current+1);e.preventDefault();}
+  });
+
+  // Step -> screenshot: camera button inside a step row jumps the gallery.
+  var shotBtns=document.querySelectorAll('[data-goto-shot]');
+  for(var s=0;s<shotBtns.length;s++){
+    shotBtns[s].addEventListener('click',function(e){
+      e.preventDefault();e.stopPropagation();
+      var slug=this.getAttribute('data-goto-shot');
+      show('screenshots');history.replaceState(null,'','#screenshots');
+      for(var i=0;i<thumbs.length;i++){
+        if(thumbs[i].getAttribute('data-slug')===slug){showShot(i);break;}
+      }
+    });
+  }
+  // Screenshot -> step: the caption links back to its step, expanded.
+  if(capLink){
+    capLink.addEventListener('click',function(){
+      var step=document.getElementById(this.getAttribute('data-goto-step')||'');
+      if(!step){return;}
+      show('steps');history.replaceState(null,'','#steps');
+      step.open=true;
+      step.classList.remove('flash');
+      void step.offsetWidth;
+      step.classList.add('flash');
+      step.scrollIntoView({block:'center'});
+    });
+  }
+  showShot(0);
 })();
 `;
 
@@ -217,13 +306,20 @@ const TABS: [string, string][] = [
   ["summary", "Summary"],
   ["steps", "Steps"],
   ["screenshots", "Screenshots"],
-  ["execution", "Execution"],
-  ["commands", "Commands"],
   ["videos", "Videos"],
   ["console", "Console"],
   ["network", "Network"],
   ["artifacts", "Artifacts"],
 ];
+
+const CAMERA_ICON =
+  '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
+const CHEVRON_ICON =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+const ARROW_LEFT_ICON =
+  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
+const ARROW_RIGHT_ICON =
+  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
 
 function statusIcon(status: string): string {
   let inner: string;
@@ -260,6 +356,27 @@ function renderTabs(): string {
   return `<nav class="tabs">${buttons}</nav>`;
 }
 
+function renderEnvironment(m: SessionManifest): string {
+  const flags = Object.entries(m.capture)
+    .filter(([, on]) => on)
+    .map(([k]) => k)
+    .join(" · ");
+  return `
+    <div class="card">
+      <div class="card-h"><h2>Environment</h2></div>
+      <table><tbody>
+        <tr><td class="tag" style="width:150px">Status</td><td><span class="badge sm ${m.status}">${m.status}</span></td></tr>
+        <tr><td class="tag">Browser</td><td>${escapeHtml(m.environment.browser)} · ${m.environment.headless ? "headless" : "headed"}</td></tr>
+        <tr><td class="tag">Playwright</td><td class="mono">${escapeHtml(m.environment.playwrightVersion)}</td></tr>
+        <tr><td class="tag">Platform</td><td class="mono">${escapeHtml(m.environment.platform)}</td></tr>
+        <tr><td class="tag">Captured</td><td>${escapeHtml(flags || "none")}</td></tr>
+        <tr><td class="tag">Started</td><td class="num">${escapeHtml(fmtClock(m.createdAt))}</td></tr>
+        <tr><td class="tag">Ended</td><td class="num">${escapeHtml(fmtClock(m.endedAt))}</td></tr>
+        <tr><td class="tag">Duration</td><td class="num">${fmtMs(m.durationMs)}</td></tr>
+      </tbody></table>
+    </div>`;
+}
+
 function renderSummary(m: SessionManifest): string {
   const s = m.summary;
   const cells: [string, string, string][] = [
@@ -287,128 +404,11 @@ function renderSummary(m: SessionManifest): string {
   return `
   <section class="panel" id="panel-summary">
     <div class="kpis">${kpis}</div>
+    ${renderEnvironment(m)}
   </section>`;
 }
 
-function renderSteps(m: SessionManifest): string {
-  const body =
-    m.steps.length === 0
-      ? '<div class="empty">No steps recorded.</div>'
-      : m.steps
-          .map((step) => {
-            const n = step.actions.length;
-            const note = n > 0 ? ` · ${n} action${n === 1 ? "" : "s"}` : "";
-            return `
-        <div class="srow">
-          <span class="dot ${step.status}"></span>
-          <span class="sname">${escapeHtml(step.name)}</span>
-          <span class="smeta">exit ${step.exitCode} · ${fmtMs(step.durationMs)}${note}</span>
-        </div>`;
-          })
-          .join("");
-  return `
-  <section class="panel is-hidden" id="panel-steps">
-    <div class="card">
-      <div class="card-h"><h2>Steps</h2><span class="count">${m.summary.stepsPassed}/${m.summary.stepsTotal} passed</span></div>
-      ${body}
-    </div>
-  </section>`;
-}
-
-function renderScreenshots(
-  m: SessionManifest,
-  screenshots: Record<string, string>
-): string {
-  const items = m.steps
-    .map((step) => ({
-      cap: step.name,
-      src: screenshots[sessionStepSlug(step.name)],
-    }))
-    .filter((it): it is { cap: string; src: string } => Boolean(it.src));
-  const first = items[0];
-  if (!first) {
-    return `
-  <section class="panel is-hidden" id="panel-screenshots">
-    <div class="card"><div class="empty">No screenshots captured.</div></div>
-  </section>`;
-  }
-  const thumbs = items
-    .map(
-      (it, i) =>
-        `<button class="thumb${i === 0 ? " is-active" : ""}" data-cap="${escapeHtml(it.cap)}"><img alt="${escapeHtml(it.cap)}" src="${escapeHtml(it.src)}"/></button>`
-    )
-    .join("");
-  return `
-  <section class="panel is-hidden" id="panel-screenshots">
-    <figure class="gallery">
-      <div class="stage"><img alt="${escapeHtml(first.cap)}" id="shot-main" src="${escapeHtml(first.src)}"/></div>
-      <figcaption id="shot-cap">${escapeHtml(first.cap)}</figcaption>
-      <div class="thumbs">${thumbs}</div>
-    </figure>
-  </section>`;
-}
-
-function renderExecution(m: SessionManifest): string {
-  const t0 = Date.parse(m.createdAt);
-  const span = Math.max(m.durationMs, 1);
-  const MIN_W = 1.5;
-  let cursor = 0;
-  const rows =
-    m.steps.length === 0
-      ? '<div class="empty">No steps recorded.</div>'
-      : m.steps
-          .map((step) => {
-            const start = Date.parse(step.startedAt);
-            let off: number;
-            if (Number.isNaN(start) || Number.isNaN(t0)) {
-              off = (cursor / span) * 100;
-            } else {
-              off = ((start - t0) / span) * 100;
-            }
-            // Advance the fallback cursor for EVERY step (not just invalid ones)
-            // so an invalid-timestamp step following valid ones lands after
-            // them, not stacked at offset 0.
-            cursor += step.durationMs;
-            off = Math.min(Math.max(off, 0), 100);
-            let w = Math.max((step.durationMs / span) * 100, MIN_W);
-            if (off + w > 100) {
-              w = Math.max(100 - off, MIN_W);
-            }
-            return `
-        <div class="trow">
-          <span class="tname">${escapeHtml(step.name)}</span>
-          <span class="track"><span class="bar ${step.status}" style="left:${off.toFixed(2)}%;width:${w.toFixed(2)}%"></span></span>
-          <span class="tmeta">${fmtMs(step.durationMs)}</span>
-        </div>`;
-          })
-          .join("");
-  const flags = Object.entries(m.capture)
-    .filter(([, on]) => on)
-    .map(([k]) => k)
-    .join(" · ");
-  return `
-  <section class="panel is-hidden" id="panel-execution">
-    <div class="card">
-      <div class="card-h"><h2>Timeline</h2><span class="count">${fmtMs(m.durationMs)} total</span></div>
-      <div class="timeline">${rows}</div>
-    </div>
-    <div class="card">
-      <div class="card-h"><h2>Environment</h2></div>
-      <table><tbody>
-        <tr><td class="tag" style="width:150px">Status</td><td><span class="badge sm ${m.status}">${m.status}</span></td></tr>
-        <tr><td class="tag">Browser</td><td>${escapeHtml(m.environment.browser)} · ${m.environment.headless ? "headless" : "headed"}</td></tr>
-        <tr><td class="tag">Playwright</td><td class="mono">${escapeHtml(m.environment.playwrightVersion)}</td></tr>
-        <tr><td class="tag">Platform</td><td class="mono">${escapeHtml(m.environment.platform)}</td></tr>
-        <tr><td class="tag">Captured</td><td>${escapeHtml(flags || "none")}</td></tr>
-        <tr><td class="tag">Started</td><td class="num">${escapeHtml(fmtClock(m.createdAt))}</td></tr>
-        <tr><td class="tag">Ended</td><td class="num">${escapeHtml(fmtClock(m.endedAt))}</td></tr>
-        <tr><td class="tag">Duration</td><td class="num">${fmtMs(m.durationMs)}</td></tr>
-      </tbody></table>
-    </div>
-  </section>`;
-}
-
-function renderCommandsRow(
+function renderActionRow(
   action: SessionManifest["steps"][number]["actions"][number]
 ): string {
   const params = action.params ? escapeHtml(action.params) : "";
@@ -419,40 +419,141 @@ function renderCommandsRow(
   return `<tr class="${action.error ? "err" : ""}"><td><span class="chip">${escapeHtml(action.apiName)}</span></td><td class="mono cmd-params">${params}${err}</td><td class="num">${time}</td></tr>`;
 }
 
-function renderCommandStep(step: SessionManifest["steps"][number]): string {
+// The expandable body of one step: the script that was sent plus the
+// Playwright actions recovered from the trace.
+function renderStepBody(step: SessionManifest["steps"][number]): string {
   const hasScript = Boolean(step.script?.trim());
-  const hasActions = step.actions.length > 0;
-  if (!(hasScript || hasActions)) {
-    return "";
-  }
   const scriptBlock = hasScript
-    ? `<details class="scriptbox"><summary>Script</summary><pre>${escapeHtml(step.script ?? "")}</pre></details>`
+    ? `<details class="scriptbox" open><summary>Script</summary><pre>${escapeHtml(step.script ?? "")}</pre></details>`
     : "";
-  const body = hasActions
-    ? `<table><thead><tr><th style="width:220px">Action</th><th>Params</th><th style="width:88px">Time</th></tr></thead><tbody>${step.actions
-        .map(renderCommandsRow)
-        .join("")}</tbody></table>`
-    : '<div class="empty">No Playwright actions recorded for this step.</div>';
-  const n = step.actions.length;
-  return `
-    <div class="card">
-      <div class="card-h"><h2>${escapeHtml(step.name)}</h2><span class="count">${n} action${n === 1 ? "" : "s"} · ${fmtMs(step.durationMs)}</span></div>
-      ${scriptBlock}
-      ${body}
-    </div>`;
+  const actions =
+    step.actions.length > 0
+      ? `<table><thead><tr><th style="width:220px">Action</th><th>Params</th><th style="width:88px">Time</th></tr></thead><tbody>${step.actions
+          .map(renderActionRow)
+          .join("")}</tbody></table>`
+      : "";
+  if (!(hasScript || actions)) {
+    return '<div class="empty">No script or Playwright actions recorded for this step. Enable trace capture to record actions.</div>';
+  }
+  return `${scriptBlock}${actions}`;
 }
 
-// "What was sent": the per-step script + the Playwright actions recovered from
-// the trace. Empty when trace capture was off and no scripts were recorded.
-function renderCommands(m: SessionManifest): string {
-  const cards = m.steps.map(renderCommandStep).join("");
+// One panel for the whole run: every step as an expandable row that carries
+// both representations — the flat list line and the proportional timeline bar
+// (toggled via the List/Timeline switch) — and opens to the step's script and
+// Playwright actions.
+function renderSteps(
+  m: SessionManifest,
+  screenshots: Record<string, string>
+): string {
+  const t0 = Date.parse(m.createdAt);
+  const span = Math.max(m.durationMs, 1);
+  const MIN_W = 1.5;
+  let cursor = 0;
+  const rows = m.steps
+    .map((step, i) => {
+      const start = Date.parse(step.startedAt);
+      let off: number;
+      if (Number.isNaN(start) || Number.isNaN(t0)) {
+        off = (cursor / span) * 100;
+      } else {
+        off = ((start - t0) / span) * 100;
+      }
+      // Advance the fallback cursor for EVERY step (not just invalid ones)
+      // so an invalid-timestamp step following valid ones lands after them,
+      // not stacked at offset 0.
+      cursor += step.durationMs;
+      off = Math.min(Math.max(off, 0), 100);
+      let w = Math.max((step.durationMs / span) * 100, MIN_W);
+      if (off + w > 100) {
+        w = Math.max(100 - off, MIN_W);
+      }
+      const slug = sessionStepSlug(step.name);
+      const n = step.actions.length;
+      const note = n > 0 ? ` · ${n} action${n === 1 ? "" : "s"}` : "";
+      const shotBtn = screenshots[slug]
+        ? `<button class="shotlink" data-goto-shot="${escapeHtml(slug)}" title="View screenshot" aria-label="View screenshot">${CAMERA_ICON}</button>`
+        : "";
+      return `
+      <details class="step" id="step-${i}">
+        <summary>
+          <div class="srow">
+            <span class="dot ${step.status}"></span>
+            <span class="sname">${escapeHtml(step.name)}</span>
+            <span class="track"><span class="bar ${step.status}" style="left:${off.toFixed(2)}%;width:${w.toFixed(2)}%"></span></span>
+            <span class="smeta">exit ${step.exitCode} · ${fmtMs(step.durationMs)}${note}</span>
+            ${shotBtn}
+            <span class="chev">${CHEVRON_ICON}</span>
+          </div>
+        </summary>
+        <div class="sbody">${renderStepBody(step)}</div>
+      </details>`;
+    })
+    .join("");
   const body =
-    cards.trim().length > 0
-      ? cards
-      : '<div class="card"><div class="empty">No commands captured. Enable trace capture to record Playwright actions.</div></div>';
+    m.steps.length === 0 ? '<div class="empty">No steps recorded.</div>' : rows;
   return `
-  <section class="panel is-hidden" id="panel-commands">
-    ${body}
+  <section class="panel is-hidden" id="panel-steps">
+    <div class="card">
+      <div class="card-h">
+        <h2>Steps</h2>
+        <div class="viewtoggle" role="group" aria-label="Steps view">
+          <button class="vbtn is-active" data-view="list">List</button>
+          <button class="vbtn" data-view="timeline">Timeline</button>
+        </div>
+        <span class="count">${m.summary.stepsPassed}/${m.summary.stepsTotal} passed · ${fmtMs(m.durationMs)}</span>
+      </div>
+      <div class="steps" id="steps-list">${body}</div>
+    </div>
+  </section>`;
+}
+
+function renderScreenshots(
+  m: SessionManifest,
+  screenshots: Record<string, string>
+): string {
+  const items = m.steps
+    .map((step, i) => ({
+      cap: step.name,
+      slug: sessionStepSlug(step.name),
+      step: `step-${i}`,
+      src: screenshots[sessionStepSlug(step.name)],
+    }))
+    .filter(
+      (it): it is { cap: string; slug: string; step: string; src: string } =>
+        Boolean(it.src)
+    );
+  const first = items[0];
+  if (!first) {
+    return `
+  <section class="panel is-hidden" id="panel-screenshots">
+    <div class="card"><div class="empty">No screenshots captured.</div></div>
+  </section>`;
+  }
+  const thumbs = items
+    .map(
+      (it, i) =>
+        `<button class="thumb${i === 0 ? " is-active" : ""}" data-cap="${escapeHtml(it.cap)}" data-slug="${escapeHtml(it.slug)}" data-step="${it.step}"><img alt="${escapeHtml(it.cap)}" src="${escapeHtml(it.src)}"/></button>`
+    )
+    .join("");
+  const nav =
+    items.length > 1
+      ? `<button class="navbtn prev" id="shot-prev" aria-label="Previous screenshot">${ARROW_LEFT_ICON}</button>
+      <button class="navbtn next" id="shot-next" aria-label="Next screenshot">${ARROW_RIGHT_ICON}</button>`
+      : "";
+  return `
+  <section class="panel is-hidden" id="panel-screenshots">
+    <figure class="gallery">
+      <div class="stage">
+        ${nav}
+        <img alt="${escapeHtml(first.cap)}" id="shot-main" src="${escapeHtml(first.src)}"/>
+      </div>
+      <figcaption id="shot-cap">
+        <button class="caplink" id="shot-cap-link" data-goto-step="${first.step}" title="Open this step">${escapeHtml(first.cap)}</button>
+        <span class="shot-pos" id="shot-pos">1 / ${items.length}</span>
+      </figcaption>
+      <div class="thumbs">${thumbs}</div>
+    </figure>
   </section>`;
 }
 
@@ -580,10 +681,8 @@ ${renderHeader(manifest)}
 ${renderTabs()}
 <main>
 ${renderSummary(manifest)}
-${renderSteps(manifest)}
+${renderSteps(manifest, ctx.screenshots)}
 ${renderScreenshots(manifest, ctx.screenshots)}
-${renderExecution(manifest)}
-${renderCommands(manifest)}
 ${renderVideos(manifest)}
 ${renderConsole(ctx.consoleEntries)}
 ${renderNetwork(ctx.parsedHar)}
