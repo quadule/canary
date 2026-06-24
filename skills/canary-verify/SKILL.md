@@ -49,9 +49,10 @@ the approved flows to **canary-session** for a report.
    route/page/flow, and group by **workflow** (sign-up, checkout, …), not by file. File→workflow
    heuristics are in [`references/REFERENCE.md`](references/REFERENCE.md).
 3. **Suggest a prioritized plan.** For each workflow: a one-line intent, a **P0/P1/P2** priority, the
-   entry URL, the **checks that must hold** (visible text / URL / state / no console error), the likely
-   phases as a guide — not a pre-written script — and which changed files put it at risk. Use the plan
-   template in [`references/REFERENCE.md`](references/REFERENCE.md).
+   entry URL, the **checks that must hold** (visible text / URL / state that proves the change works),
+   the likely phases as a guide — not a pre-written script — and which changed files put it at risk.
+   Tie checks to the change under test, not incidental noise (see *Hard rules*). Use the plan template
+   in [`references/REFERENCE.md`](references/REFERENCE.md).
 4. **Confirm, then hand off.** Present the plan and ask which flows to record. For approved flows,
    follow **canary-session**'s explore-and-record loop (one session per flow: observe the live page,
    small intent-named steps, assertion steps for the checks) → `report.html`; offer **canary-review**
@@ -65,3 +66,18 @@ the approved flows to **canary-session** for a report.
 - **Read-only on the repo** — inspect the diff and code; never stage, commit, or modify source.
 - Recording reuses **canary-session** — don't reinvent `session start` / `run` / `session end` here.
 - No diff (or all non-UI)? Say so plainly and stop — don't fabricate a plan.
+
+<!-- canary:snippet rule-pass-fail -->
+- Decide pass/fail ONLY against the flow's stated success criteria — the behavior you set out to
+  verify. A step fails (exit non-zero, or log `FAIL`) when THAT behavior is wrong; otherwise it
+  passes. The session is marked failed if any step's script exits non-zero, so reserve a non-zero
+  exit / `FAIL` for a genuine criteria miss — not incidental noise.
+- Console and page errors are captured as evidence, not verdicts. They DON'T by themselves fail a
+  run — most are pre-existing noise (third-party scripts, analytics, unrelated warnings). Treat an
+  error as a failure only when it IS the thing under test or actually blocks the flow.
+- Same for the network: a non-2xx response (e.g. a 422 from form validation) is not a failure
+  unless it's the behavior you're verifying. Expected validation, or an error on a field unrelated
+  to the change, is not a regression — note it (`WARN`) and move on.
+- When unsure, judge against intent — "did the thing I'm testing work?", not "did anything on the
+  page emit an error?". Record incidental issues so a human can see them; don't fail the run on them.
+<!-- canary:end rule-pass-fail -->
