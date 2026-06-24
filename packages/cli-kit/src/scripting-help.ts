@@ -19,6 +19,7 @@ import {
   EX_SNAPSHOT,
   RULE_DEV_SERVER,
   RULE_OBSERVE_FIRST,
+  RULE_VISIBLE_INTERACTION,
 } from "./snippets.generated.js";
 
 // Prefix every non-empty line — used to nest shared blocks under headings.
@@ -189,6 +190,11 @@ export function buildScriptingGuide(options: ScriptingGuideOptions): string {
     indent(RULE_OBSERVE_FIRST, "    "),
   ].join("\n");
 
+  const visibleInteraction = [
+    "  Interacting with elements:",
+    indent(RULE_VISIBLE_INTERACTION, "    "),
+  ].join("\n");
+
   const screenshots = [
     "  Screenshots for visual state:",
     indent(example(SCREENSHOT_BODY, { step: "capture" }), "    "),
@@ -240,6 +246,7 @@ export function buildScriptingGuide(options: ScriptingGuideOptions): string {
     quickInspection,
     aiSnapshots,
     choosingApproach,
+    visibleInteraction,
     screenshots,
     waiting,
     devServer,

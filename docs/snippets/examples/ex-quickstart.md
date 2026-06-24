@@ -7,6 +7,6 @@ const headings = await page.evaluate(() =>
 );
 console.log(JSON.stringify(headings));
 
-await page.locator("a.more").click();
+await page.humanClick(page.getByRole("link", { name: "More information" }));
 const buf = await page.screenshot({ fullPage: false });
 await saveScreenshot(buf, "page.png");               // saveScreenshot(buffer, name)
