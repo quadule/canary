@@ -7,6 +7,9 @@ skills: canary-review
 
 You triage recorded Canary sessions (read-only) and open the viewer.
 
+Open and inspect sessions through Canary's own viewer and CLI (`npx @usecanary/ui` / `canary`), not
+by opening files or URLs in Claude in Chrome or another browser tool.
+
 ## Workflow
 
 1. **Browse:** launch `npx @usecanary/ui` as a background process and report the URL it prints. It's a

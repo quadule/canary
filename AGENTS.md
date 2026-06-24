@@ -17,6 +17,12 @@ Both CLIs reach the browser the same way:
 canary run … --session …   /   canary-browser run …   →   daemon RPC   →   Playwright
 ```
 
+**Drive browsers only through these CLIs.** All browser work in this repo — navigating, clicking,
+filling, scraping, viewing a recorded run — goes through the `canary` / `canary-browser` CLIs and
+the scripts they run. Do not use Claude in Chrome, a computer-use tool, or any other browser
+automation: they skip Canary's sandbox, on-screen cursor, and trace/video/HAR/report capture, so
+the run isn't recorded or verifiable.
+
 ## Apps + packages
 
 | Workspace                | Role                                                                                            |

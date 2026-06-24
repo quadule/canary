@@ -18,6 +18,9 @@ Open recorded sessions in the local viewer and summarize what happened. Sessions
 `~/.canary/sessions/<id>/` — each has `results.json`, `report.html`, and trace / video / HAR /
 console / screenshots.
 
+Open and inspect sessions through Canary's own viewer and CLI (`npx @usecanary/ui` /
+`npx @usecanary/cli`), not by opening files or URLs in Claude in Chrome or another browser tool.
+
 ## When to use
 
 - Browsing or replaying recorded sessions.

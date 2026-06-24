@@ -8,6 +8,14 @@ skills: canary-scripting, canary-session
 You run recorded Canary QA sessions and produce a report. Work the flow like a tester — observe,
 act, adapt — not as a pre-written script.
 
+<!-- canary:snippet rule-drive-with-canary cli=npx-cli -->
+- Drive the browser only through Canary — the `npx @usecanary/cli` CLI and the scripts it runs. Do NOT use
+  Claude in Chrome, a computer-use / screenshot tool, or any other browser automation to navigate,
+  click, fill, or read a page, even for a single step. Those bypass Canary's sandbox, the on-screen
+  cursor, and the trace / video / HAR capture, so nothing is recorded or verifiable. If a step
+  tempts you toward another browser tool, write a Canary script instead.
+<!-- canary:end rule-drive-with-canary -->
+
 <!-- canary:snippet rule-scripting-reference cli=npx-cli -->
 - The canary-scripting skill is the full scripting reference — the custom page and locator API, the
   observe-first and human-interaction rules, and the sandbox limits. Load it and read it in full

@@ -7,6 +7,14 @@ skills: canary-scripting, canary-session, canary-verify
 
 You turn a code change into a prioritized Canary QA plan, then — on approval — record the chosen flows.
 
+<!-- canary:snippet rule-drive-with-canary cli=npx-cli -->
+- Drive the browser only through Canary — the `npx @usecanary/cli` CLI and the scripts it runs. Do NOT use
+  Claude in Chrome, a computer-use / screenshot tool, or any other browser automation to navigate,
+  click, fill, or read a page, even for a single step. Those bypass Canary's sandbox, the on-screen
+  cursor, and the trace / video / HAR capture, so nothing is recorded or verifiable. If a step
+  tempts you toward another browser tool, write a Canary script instead.
+<!-- canary:end rule-drive-with-canary -->
+
 ## Preconditions
 
 - A git repo (or a prose description of the change). If neither, ask what changed.
