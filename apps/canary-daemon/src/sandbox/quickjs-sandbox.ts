@@ -4,6 +4,7 @@ import util from "node:util";
 import type { Page } from "playwright";
 
 import type { BrowserManager } from "../browser-manager.js";
+import { CURSOR_GLIDE_MS } from "../session-cursor.js";
 import {
   ensureCanaryTempDir,
   readCanaryTempFile,
@@ -14,6 +15,11 @@ import { type QuickJSConsoleLevel, QuickJSHost } from "./quickjs-host.js";
 
 const DEFAULT_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024;
 const WAIT_FOR_OBJECT_ATTEMPTS = 1000;
+// The human-interaction helpers move the pointer to the target and wait this
+// long before pressing, so the virtual cursor finishes gliding into place and
+// then visibly rests on the target for a beat before the click — rather than
+// teleporting. The cursor's glide duration plus a 200ms post-arrival pause.
+const CURSOR_SETTLE_MS = CURSOR_GLIDE_MS + 200;
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -477,6 +483,215 @@ export class QuickJSSandbox {
               );
             };
 
+            // Human-interaction helpers attached to every page handed to a
+            // script. They reveal the target, glide the virtual cursor to it,
+            // wait for the glide to land, then act through real input — so the
+            // recording shows what a person would see. Pure wrappers over the
+            // documented page/locator API; the daemon's Playwright is untouched.
+            const resolveLocator = (page, target) =>
+              typeof target === "string" ? page.locator(target) : target;
+
+            // Tell the virtual cursor whether the agent is driving input. It
+            // only follows mouse events while driving, so it never chases the
+            // user's real pointer between actions.
+            const setDriving = (page, on) =>
+              page
+                .evaluate((v) => {
+                  if (window.__canaryCursor) {
+                    window.__canaryCursor.driving = v;
+                  }
+                }, on)
+                .catch(() => undefined);
+
+            const revealAndGlide = async (page, locator) => {
+              await locator.scrollIntoViewIfNeeded();
+              const box = await locator.boundingBox();
+              if (!box) {
+                return false;
+              }
+              await setDriving(page, true);
+              await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+              await page.waitForTimeout(${CURSOR_SETTLE_MS});
+              return true;
+            };
+
+            const augmentPage = (page) => {
+              if (!page || page.__canaryHuman) {
+                return page;
+              }
+              Object.defineProperty(page, "__canaryHuman", { value: true });
+              page.humanClick = async (target, options) => {
+                const locator = resolveLocator(page, target);
+                await revealAndGlide(page, locator);
+                try {
+                  await locator.click(options);
+                } finally {
+                  await setDriving(page, false);
+                }
+              };
+              page.humanFill = async (target, text, options) => {
+                const locator = resolveLocator(page, target);
+                await revealAndGlide(page, locator);
+                try {
+                  await locator.click();
+                  await locator.fill("");
+                  await locator.pressSequentially(String(text), options);
+                } finally {
+                  await setDriving(page, false);
+                }
+              };
+              // Generic "let the page settle" wait — framework-agnostic. Waits
+              // for the document load (a no-op once loaded) and then for the DOM
+              // to stop mutating for a quiet window, bounded by a timeout. Unlike
+              // networkidle it watches the DOM, not the network, so it doesn't
+              // hang on long-lived connections (websockets, polling). Ignores
+              // Canary's own overlays so the cursor/ripple/caption animations
+              // don't count as page activity. Use after a client-side navigation
+              // before snapshotting; for an action, prefer acting on the
+              // destination element (Playwright auto-waits for it).
+              page.waitForSettled = async (options) => {
+                const quietMs =
+                  options && typeof options.quietMs === "number"
+                    ? options.quietMs
+                    : 400;
+                const timeoutMs =
+                  options && typeof options.timeoutMs === "number"
+                    ? options.timeoutMs
+                    : 5000;
+                await page.waitForLoadState("load").catch(() => undefined);
+                await page
+                  .evaluate(
+                    (arg) =>
+                      new Promise((resolve) => {
+                        const isOverlay = (node) => {
+                          let el =
+                            node && node.nodeType === 1 ? node : node?.parentElement;
+                          while (el) {
+                            const t = el.tagName;
+                            if (
+                              t === "CANARY-VIRTUAL-CURSOR" ||
+                              t === "CANARY-CLICK-RIPPLE" ||
+                              t === "CANARY-CAPTION"
+                            ) {
+                              return true;
+                            }
+                            el = el.parentElement;
+                          }
+                          return false;
+                        };
+                        let quiet;
+                        const finish = () => {
+                          observer.disconnect();
+                          clearTimeout(hard);
+                          clearTimeout(quiet);
+                          resolve(undefined);
+                        };
+                        const bump = () => {
+                          clearTimeout(quiet);
+                          quiet = setTimeout(finish, arg.quietMs);
+                        };
+                        const observer = new MutationObserver((records) => {
+                          for (const r of records) {
+                            if (!isOverlay(r.target)) {
+                              bump();
+                              return;
+                            }
+                          }
+                        });
+                        observer.observe(document.documentElement, {
+                          attributes: true,
+                          characterData: true,
+                          childList: true,
+                          subtree: true,
+                        });
+                        const hard = setTimeout(finish, arg.timeoutMs);
+                        bump();
+                      }),
+                    { quietMs, timeoutMs }
+                  )
+                  .catch(() => undefined);
+              };
+              // Show a caption overlay in the page to label a section of the
+              // recording for a human viewer. Non-blocking: it fades in, holds
+              // for durationMs, then fades out. Cosmetic only (custom element,
+              // pointer-events:none, aria-hidden) so it never affects the page
+              // or snapshots. Replaces any caption already showing. The hold
+              // gently breathes so the frame never reads as "still" — otherwise
+              // the condense pass (which now drops every motionless stretch)
+              // would collapse a caption shown over a static page.
+              page.showCaption = async (text, options) => {
+                const ms =
+                  options && typeof options.durationMs === "number"
+                    ? options.durationMs
+                    : 3000;
+                await page
+                  .evaluate(
+                    (arg) => {
+                      const host = document.documentElement;
+                      if (!host) {
+                        return;
+                      }
+                      for (const prev of document.querySelectorAll(
+                        "canary-caption"
+                      )) {
+                        prev.remove();
+                      }
+                      const el = document.createElement("canary-caption");
+                      el.setAttribute("aria-hidden", "true");
+                      el.textContent = arg.text;
+                      el.style.cssText =
+                        "position:fixed;left:50%;bottom:36px;" +
+                        "transform:translateX(-50%) translateY(8px);" +
+                        "max-width:80vw;padding:12px 20px;border-radius:10px;" +
+                        "background:rgba(17,17,17,0.86);color:#fff;" +
+                        "font:500 18px/1.45 system-ui,-apple-system,sans-serif;" +
+                        "z-index:2147483646;pointer-events:none;white-space:pre-wrap;" +
+                        "text-align:center;box-shadow:0 4px 18px rgba(0,0,0,0.35);opacity:0;";
+                      host.appendChild(el);
+                      const FADE = 250;
+                      const hold = Math.max(0, arg.ms - FADE * 2);
+                      try {
+                        const fadeIn = el.animate(
+                          [
+                            {
+                              opacity: 0,
+                              transform: "translateX(-50%) translateY(8px)",
+                            },
+                            {
+                              opacity: 1,
+                              transform: "translateX(-50%) translateY(0)",
+                            },
+                          ],
+                          { duration: FADE, easing: "ease-out", fill: "forwards" }
+                        );
+                        fadeIn.onfinish = () => {
+                          // Whole-box opacity breathing — enough changing area
+                          // per frame to clear the freeze-detector's threshold.
+                          const breathe = el.animate(
+                            [{ opacity: 1 }, { opacity: 0.78 }, { opacity: 1 }],
+                            { duration: 1400, iterations: Number.POSITIVE_INFINITY }
+                          );
+                          setTimeout(() => {
+                            breathe.cancel();
+                            const out = el.animate(
+                              [{ opacity: 1 }, { opacity: 0 }],
+                              { duration: FADE, easing: "ease-in", fill: "forwards" }
+                            );
+                            out.onfinish = () => el.remove();
+                            setTimeout(() => el.remove(), FADE + 250);
+                          }, hold);
+                        };
+                      } catch {
+                        setTimeout(() => el.remove(), arg.ms);
+                      }
+                    },
+                    { ms, text: String(text) }
+                  )
+                  .catch(() => undefined);
+              };
+              return page;
+            };
+
             return (async () => {
               await connection.initializePlaywright();
 
@@ -485,14 +700,14 @@ export class QuickJSSandbox {
                 getPage: {
                   value: async (name) => {
                     const guid = await hostCall("getPage", JSON.stringify([name]));
-                    return await waitForConnectionObject(guid, \`page "\${name}"\`);
+                    return augmentPage(await waitForConnectionObject(guid, \`page "\${name}"\`));
                   },
                   enumerable: true,
                 },
                 newPage: {
                   value: async () => {
                     const guid = await hostCall("newPage", JSON.stringify([]));
-                    return await waitForConnectionObject(guid, "anonymous page");
+                    return augmentPage(await waitForConnectionObject(guid, "anonymous page"));
                   },
                   enumerable: true,
                 },

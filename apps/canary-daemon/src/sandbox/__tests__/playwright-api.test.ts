@@ -864,4 +864,111 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       ]);
     });
   });
+
+  describe.sequential("human interaction helpers", () => {
+    const browserName = "playwright-human-helpers";
+    let harness: JsonSandboxHarness;
+
+    beforeAll(async () => {
+      harness = await createSandboxHarness(manager, browserName);
+    }, 180_000);
+
+    afterAll(async () => {
+      await harness.dispose();
+      await manager.stopBrowser(browserName);
+    }, 180_000);
+
+    it("humanClick glides the pointer onto the target before pressing", async () => {
+      // Record every pointer event the page sees so we can prove a mousemove
+      // arrived at the element's centre BEFORE the mousedown — i.e. the cursor
+      // travelled to the target rather than the press landing on a teleport.
+      const result = await harness.runJson<{
+        events: Array<{ type: string; x: number; y: number }>;
+        centerX: number;
+        centerY: number;
+        mouseResult: string | null;
+        elapsedMs: number;
+      }>(
+        withTestPage(
+          "human-click",
+          `
+          await page.evaluate(() => {
+            window.__pointer = [];
+            const record = (type) => (event) =>
+              window.__pointer.push({
+                type,
+                x: Math.round(event.clientX),
+                y: Math.round(event.clientY),
+              });
+            window.addEventListener("mousemove", record("move"), true);
+            window.addEventListener("mousedown", record("down"), true);
+          });
+          const box = await page.locator("#mouse-target").boundingBox();
+          const start = Date.now();
+          await page.humanClick("#mouse-target");
+          const elapsedMs = Date.now() - start;
+          console.log(JSON.stringify({
+            events: await page.evaluate(() => window.__pointer),
+            centerX: Math.round(box.x + box.width / 2),
+            centerY: Math.round(box.y + box.height / 2),
+            mouseResult: await page.getAttribute("#result", "data-mouse"),
+            elapsedMs,
+          }));
+        `
+        )
+      );
+
+      // The click landed.
+      expect(result.mouseResult).toBe("clicked");
+
+      const firstDown = result.events.findIndex((e) => e.type === "down");
+      expect(firstDown).toBeGreaterThan(0); // a move preceded the press
+
+      // The move immediately before the press sat on the element's centre.
+      const moveBeforeDown = result.events[firstDown - 1]!;
+      expect(moveBeforeDown.type).toBe("move");
+      expect(Math.abs(moveBeforeDown.x - result.centerX)).toBeLessThanOrEqual(
+        3
+      );
+      expect(Math.abs(moveBeforeDown.y - result.centerY)).toBeLessThanOrEqual(
+        3
+      );
+
+      // The settle pause (cursor glide) actually elapsed before the press.
+      expect(result.elapsedMs).toBeGreaterThanOrEqual(250);
+    }, 15_000);
+
+    it("humanFill clears the field and types with real per-character key events", async () => {
+      const result = await harness.runJson<{
+        value: string;
+        inputCount: number;
+        accepts: string;
+      }>(
+        withTestPage(
+          "human-fill",
+          `
+          // Seed an existing value to prove humanFill clears before typing.
+          await page.fill("#name", "stale");
+          await page.evaluate(() => { window.events.inputCount = 0; });
+          // Accepts a string selector...
+          await page.humanFill("#name", "Ada");
+          const value = await page.inputValue("#name");
+          const inputCount = await page.evaluate(() => window.events.inputCount);
+          // ...and a Locator.
+          await page.humanFill(page.getByPlaceholder("Email"), "ada@example.com");
+          console.log(JSON.stringify({
+            value,
+            inputCount,
+            accepts: await page.inputValue("#email"),
+          }));
+        `
+        )
+      );
+
+      expect(result.value).toBe("Ada");
+      expect(result.accepts).toBe("ada@example.com");
+      // One input event per typed character (3) — atomic fill would be 1.
+      expect(result.inputCount).toBeGreaterThanOrEqual(3);
+    }, 15_000);
+  });
 });
