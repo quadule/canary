@@ -225,6 +225,15 @@ async function handleExecute(
     return;
   }
 
+  if (targetSession && sessions.isRecording(targetSession)) {
+    await writeMessage(socket, {
+      id: request.id,
+      type: "error",
+      message: `Session "${targetSession}" is in an interactive takeover; stop it with \`canary session takeover ${targetSession} --stop\` before running steps.`,
+    });
+    return;
+  }
+
   await withBrowserLock(request.browser, async () => {
     if (!(await resolveExecuteBrowser(socket, request, targetSession))) {
       return;
@@ -541,6 +550,66 @@ async function handleRequest(socket: net.Socket, line: string): Promise<void> {
       await withBrowserLock(sessionBrowserName(request.sessionId), async () => {
         try {
           const result = await sessions.end(request.sessionId, request.reason);
+          await writeMessage(socket, {
+            id: request.id,
+            type: "result",
+            data: result,
+          });
+          await writeMessage(socket, {
+            id: request.id,
+            type: "complete",
+            success: true,
+          });
+        } catch (error) {
+          await writeMessage(socket, {
+            id: request.id,
+            type: "error",
+            message: formatError(error),
+          });
+        }
+      });
+      return;
+
+    case "session-takeover-start":
+      await withBrowserLock(sessionBrowserName(request.sessionId), async () => {
+        try {
+          await sessions.takeoverStart(request.sessionId, {
+            language: request.language,
+            step: request.step,
+          });
+          await writeMessage(socket, {
+            id: request.id,
+            type: "result",
+            data: { ok: true },
+          });
+          await writeMessage(socket, {
+            id: request.id,
+            type: "complete",
+            success: true,
+          });
+        } catch (error) {
+          await writeMessage(socket, {
+            id: request.id,
+            type: "error",
+            message: formatError(error),
+          });
+        }
+      });
+      return;
+
+    case "session-takeover-stop":
+      await withBrowserLock(sessionBrowserName(request.sessionId), async () => {
+        try {
+          const result = await sessions.takeoverStop(request.sessionId);
+          if (!request.cancel) {
+            // Screenshot the end state for the report's step timeline, same as
+            // an executed step does.
+            await captureStepScreenshot(
+              sessionBrowserName(request.sessionId),
+              request.sessionId,
+              result.step
+            );
+          }
           await writeMessage(socket, {
             id: request.id,
             type: "result",

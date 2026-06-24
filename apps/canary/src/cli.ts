@@ -26,6 +26,7 @@ import { sessionAbort } from "./commands/session-abort.js";
 import { sessionEnd } from "./commands/session-end.js";
 import { sessionList } from "./commands/session-list.js";
 import { sessionStart } from "./commands/session-start.js";
+import { sessionTakeover } from "./commands/session-takeover.js";
 import { statusCommand } from "./commands/status.js";
 import { uiCommand } from "./commands/ui.js";
 import { logger } from "./logger.js";
@@ -87,11 +88,13 @@ async function readScriptFromStdin(): Promise<string> {
 
 interface SessionStartOpts {
   console: boolean;
+  cursor: boolean;
   har: boolean;
   headless?: boolean;
   name?: string;
   trace: boolean;
   video: boolean;
+  viewport?: string;
 }
 
 interface RunOpts {
@@ -101,6 +104,7 @@ interface RunOpts {
 }
 
 interface SessionEndOpts {
+  condense?: boolean;
   stopDaemon?: boolean;
 }
 
@@ -109,6 +113,12 @@ interface UiOpts {
   host?: string;
   open?: boolean;
   port?: number;
+}
+
+interface TakeoverOpts {
+  cancel?: boolean;
+  step?: string;
+  stop?: boolean;
 }
 
 export function buildProgram(): CommandType {
@@ -140,6 +150,14 @@ export function buildProgram(): CommandType {
     .option("--no-video", "Disable video recording")
     .option("--no-har", "Disable network HAR capture")
     .option("--no-console", "Disable console / page-error capture")
+    .option(
+      "--viewport <WxH>",
+      "Page viewport for the recording, e.g. 1440x900 (default 1280x720)"
+    )
+    .option(
+      "--no-cursor",
+      "Disable the virtual cursor / click animation overlay in recordings"
+    )
     .action(async (opts: SessionStartOpts) => {
       const code = await sessionStart({
         name: opts.name,
@@ -150,6 +168,8 @@ export function buildProgram(): CommandType {
           har: opts.har,
           console: opts.console,
         },
+        viewport: opts.viewport,
+        cursor: opts.cursor,
         json: isJson(program),
       });
       throw new ExitCodeError(code);
@@ -164,9 +184,14 @@ export function buildProgram(): CommandType {
       "--stop-daemon",
       "After ending, stop the daemon if no other sessions/browsers remain"
     )
+    .option(
+      "--no-condense",
+      "Keep raw videos (skip trimming pre-load frames and long stills)"
+    )
     .action(async (id: string, opts: SessionEndOpts) => {
       const code = await sessionEnd(id, isJson(program), {
         stopDaemon: opts.stopDaemon === true,
+        condense: opts.condense,
       });
       throw new ExitCodeError(code);
     });
@@ -191,6 +216,24 @@ export function buildProgram(): CommandType {
     .description("List recorded sessions")
     .action(async () => {
       const code = await sessionList(isJson(program));
+      throw new ExitCodeError(code);
+    });
+
+  session
+    .command("takeover")
+    .description(
+      "Hand the live headed browser to a human and record their actions as a step"
+    )
+    .argument("<id>", "Session id")
+    .option("--step <name>", "Step label for the captured actions")
+    .option("--stop", "Stop the active takeover and record the captured step")
+    .option("--cancel", "Stop the active takeover and discard the capture")
+    .action(async (id: string, opts: TakeoverOpts) => {
+      const code = await sessionTakeover(id, isJson(program), {
+        step: opts.step,
+        stop: opts.stop === true,
+        cancel: opts.cancel === true,
+      });
       throw new ExitCodeError(code);
     });
 

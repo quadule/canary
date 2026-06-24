@@ -63,6 +63,19 @@ export const CaptureOptionsSchema = z.object({
   console: z.boolean().default(true),
 });
 
+// Fixed page viewport for a session's capture context. Recordings need a
+// deterministic, realistic desktop size — the daemon also sizes the video to
+// match so frames aren't downscaled to Playwright's 800x800 default.
+export const ViewportSchema = z.object({
+  width: z.number().int().min(1).max(7680),
+  height: z.number().int().min(1).max(4320),
+});
+
+// Default recording viewport: Playwright's own default, so a session records
+// at the size every other Playwright run renders at — set explicitly because
+// headed contexts would otherwise track the OS window size.
+export const DEFAULT_SESSION_VIEWPORT = { width: 1280, height: 720 } as const;
+
 // Session ids double as on-disk directory names and the reserved browser key
 // `__session__<id>`. Reject path traversal and anything outside a safe set.
 const SessionIdSchema = z
@@ -78,12 +91,34 @@ export const SessionStartRequestSchema = RequestBaseSchema.extend({
   headless: z.boolean().optional(),
   ignoreHTTPSErrors: z.boolean().optional(),
   capture: CaptureOptionsSchema.default({}),
+  viewport: ViewportSchema.optional(),
+  // Render a virtual mouse cursor + click animation into the recording (the
+  // OS cursor is never captured for CDP-driven input). On unless disabled.
+  cursor: z.boolean().default(true),
 });
 
 export const SessionEndRequestSchema = RequestBaseSchema.extend({
   type: z.literal("session-end"),
   sessionId: SessionIdSchema,
   reason: z.enum(["end", "abort"]).default("end"),
+});
+
+// Begin an interactive takeover: enable Playwright's recorder (api mode) on the
+// live session context so a human can drive the headed browser and have their
+// actions captured as generated Playwright source. Paired with -stop.
+export const SessionTakeoverStartRequestSchema = RequestBaseSchema.extend({
+  type: z.literal("session-takeover-start"),
+  sessionId: SessionIdSchema,
+  step: z.string().min(1).max(200).default("manual-takeover"),
+  language: z.string().min(1).max(40).default("javascript"),
+});
+
+// Stop the active takeover: disable the recorder and return the captured code.
+// `cancel` discards the capture instead of recording it as a step.
+export const SessionTakeoverStopRequestSchema = RequestBaseSchema.extend({
+  type: z.literal("session-takeover-stop"),
+  sessionId: SessionIdSchema,
+  cancel: z.boolean().default(false),
 });
 
 export const SessionStatusRequestSchema = RequestBaseSchema.extend({
@@ -104,6 +139,8 @@ export const RequestSchema = z.discriminatedUnion("type", [
   StopRequestSchema,
   SessionStartRequestSchema,
   SessionEndRequestSchema,
+  SessionTakeoverStartRequestSchema,
+  SessionTakeoverStopRequestSchema,
   SessionStatusRequestSchema,
   SessionListRequestSchema,
 ]);
@@ -117,9 +154,16 @@ export type InstallRequest = z.infer<typeof InstallRequestSchema>;
 export type StopRequest = z.infer<typeof StopRequestSchema>;
 export type SessionStartRequest = z.infer<typeof SessionStartRequestSchema>;
 export type SessionEndRequest = z.infer<typeof SessionEndRequestSchema>;
+export type SessionTakeoverStartRequest = z.infer<
+  typeof SessionTakeoverStartRequestSchema
+>;
+export type SessionTakeoverStopRequest = z.infer<
+  typeof SessionTakeoverStopRequestSchema
+>;
 export type SessionStatusRequest = z.infer<typeof SessionStatusRequestSchema>;
 export type SessionListRequest = z.infer<typeof SessionListRequestSchema>;
 export type CaptureOptions = z.infer<typeof CaptureOptionsSchema>;
+export type Viewport = z.infer<typeof ViewportSchema>;
 
 // ---------- Responses ----------
 
