@@ -27,7 +27,8 @@ CLI     := @usecanary/cli
         typecheck lint format doctor docs docs-check \
         test test-browser test-daemon test-ui test-cli \
         watch-browser watch-daemon watch-ui watch-cli \
-        check ci ui release
+        check ci ui release \
+        install-local link unlink plugin-dev plugin-update
 
 ##@ General
 
@@ -147,6 +148,31 @@ ci: ## Full CI gate from clean: frozen install + check
 
 ui: build-ui ## Build and serve the local session viewer
 	pnpm --filter $(UI) start
+
+##@ Local install (run THIS checkout everywhere)
+
+install-local: build link plugin-dev ## Build + global npm links + Claude Code plugin from this checkout
+
+link: ## Globally symlink the CLIs so `npx @usecanary/cli` / `canary` run this checkout
+	npm install -g ./apps/canary ./apps/canary-browser ./apps/canary-ui
+	@echo "Linked. New builds (make build) are picked up automatically;"
+	@echo "restart the daemon to load them: canary stop"
+
+unlink: ## Remove the global npm links (next npx falls back to the registry)
+	npm uninstall -g @usecanary/cli @usecanary/browser @usecanary/ui
+
+plugin-dev: ## Point the Claude Code canary plugin at this checkout (replaces the installed copy)
+	-claude plugin marketplace remove canary-marketplace 2>/dev/null
+	claude plugin marketplace add "$(CURDIR)"
+	claude plugin install canary@canary-marketplace --scope user
+	@echo "Installed. The plugin cache is a SNAPSHOT - run 'make plugin-update' after skill edits."
+
+# `claude plugin update` compares versions and the dev version rarely changes,
+# so refresh by reinstalling — that always re-copies the checkout.
+plugin-update: ## Re-copy this checkout's skills into the installed Claude Code plugin
+	-claude plugin uninstall canary@canary-marketplace 2>/dev/null
+	claude plugin install canary@canary-marketplace --scope user
+	@echo "Updated. Restart Claude Code sessions to load the new skill content."
 
 ##@ Release
 
