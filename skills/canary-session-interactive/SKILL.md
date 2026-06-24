@@ -1,6 +1,12 @@
 ---
 name: canary-session-interactive
 description: Record a Canary QA session collaboratively, in the main conversation — the agent drives autonomously but pauses to ask you for direction when unsure, and can hand you the live browser to do steps it can't (log in, flip a feature flag, change settings), capturing your actions as recorded steps. Use when a flow needs your input or manual setup mid-run. Trigger phrases — "record this with me", "interactive session", "I'll need to take over", "let me do part of it", "ask me if you get stuck".
+allowed-tools:
+  - Bash(canary:*)
+  - Bash(canary-browser:*)
+  - Bash(npx @usecanary/cli:*)
+  - Bash(npx @usecanary/browser:*)
+  - Bash(npx @usecanary/ui:*)
 license: MIT
 metadata:
   author: usecanary

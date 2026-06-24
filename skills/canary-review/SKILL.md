@@ -1,6 +1,12 @@
 ---
 name: canary-review
 description: Open and triage recorded Canary sessions in the local viewer. Use when the user wants to look at, replay, compare, or triage a recorded session — or asks what happened in a run, to open the report, or to see the trace/video/screenshots. Trigger phrases — "open the canary viewer", "show me the last session", "what failed in that run", "review the recording", "open the report".
+allowed-tools:
+  - Bash(canary:*)
+  - Bash(canary-browser:*)
+  - Bash(npx @usecanary/cli:*)
+  - Bash(npx @usecanary/browser:*)
+  - Bash(npx @usecanary/ui:*)
 license: MIT
 metadata:
   author: usecanary

@@ -1,6 +1,12 @@
 ---
 name: canary-automate
 description: Drive a real browser for a one-off task with Canary — navigate, click, fill, scrape, screenshot — and return the result. Nothing is recorded. Use when the user asks to automate a browser task, scrape a page, fill a form, or check something on a site without needing a report. Trigger phrases — "go to X and get Y", "scrape this page", "automate this browser task", "log in and check", "take a screenshot of".
+allowed-tools:
+  - Bash(canary:*)
+  - Bash(canary-browser:*)
+  - Bash(npx @usecanary/cli:*)
+  - Bash(npx @usecanary/browser:*)
+  - Bash(npx @usecanary/ui:*)
 license: MIT
 metadata:
   author: usecanary

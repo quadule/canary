@@ -1,6 +1,12 @@
 ---
 name: canary-verify
 description: Turn a code change into a prioritized browser-QA plan with Canary — read the git diff, infer which user-facing workflows it touches, suggest the concrete flows and the checks that must hold, then optionally record those flows as a session with a report.html. Use when the user has changed code and asks what to test, wants to QA a diff, branch, or PR, or wants a focused regression plan before merging. Trigger phrases — "what should I test for this change", "QA my diff", "verify this PR", "I changed X, what flows might break", "regression plan for this branch", "what should I QA before merging".
+allowed-tools:
+  - Bash(canary:*)
+  - Bash(canary-browser:*)
+  - Bash(npx @usecanary/cli:*)
+  - Bash(npx @usecanary/browser:*)
+  - Bash(npx @usecanary/ui:*)
 license: MIT
 metadata:
   author: usecanary

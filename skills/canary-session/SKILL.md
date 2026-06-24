@@ -1,6 +1,12 @@
 ---
 name: canary-session
 description: Record a verifiable QA session with Canary — explore a flow step by step against one persistent browser, each script a recorded step that captures a Playwright trace, video, network HAR, and console, then render a self-contained report.html. Use when the user wants to verify or QA a flow, produce evidence or a report, or capture a trace/video of a browser run. Trigger phrases — "record a session", "QA this flow", "verify the checkout", "capture a trace", "give me a report of this run".
+allowed-tools:
+  - Bash(canary:*)
+  - Bash(canary-browser:*)
+  - Bash(npx @usecanary/cli:*)
+  - Bash(npx @usecanary/browser:*)
+  - Bash(npx @usecanary/ui:*)
 license: MIT
 metadata:
   author: usecanary

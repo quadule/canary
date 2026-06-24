@@ -1,6 +1,12 @@
 ---
 description: Record a Canary QA session collaboratively in this conversation (no subagent).
 argument-hint: "[flow to record]"
+allowed-tools:
+  - Bash(canary:*)
+  - Bash(canary-browser:*)
+  - Bash(npx @usecanary/cli:*)
+  - Bash(npx @usecanary/browser:*)
+  - Bash(npx @usecanary/ui:*)
 ---
 
 Your FIRST action is to load the **canary-session-interactive** skill with the Skill tool and
