@@ -10,8 +10,12 @@ import type { SessionEndRequest, SessionEndResult } from "@usecanary/protocol";
 import { logger } from "../logger.js";
 import { writeSessionReport } from "../report/load-and-render.js";
 import { endResultFromDisk } from "../session/artifacts.js";
-import { readSessionRecord, updateSessionRecord } from "../session/registry.js";
-import { condenseVideo, findFfmpeg } from "../video/condense.js";
+import {
+  readSessionRecord,
+  type SessionRecord,
+  updateSessionRecord,
+} from "../session/registry.js";
+import { condenseVideo, findFfmpeg, type Segment } from "../video/condense.js";
 import { stopDaemonIfIdle } from "./daemon-stop.js";
 
 interface SessionEndOpts {
@@ -46,11 +50,48 @@ function openInOSDefault(target: string): void {
   }
 }
 
-// Trim dead air from the recorded videos (pre-load white frames, long stills)
-// before the report is rendered, refreshing each artifact's byte size so the
-// manifest reflects the condensed file. Purely best-effort: without ffmpeg or
-// on any failure, originals are kept and the report renders unchanged.
-async function condenseSessionVideos(result: SessionEndResult): Promise<void> {
+// How much to keep around each step's script execution. The browser is driven
+// during a step; the long idle gaps BETWEEN steps (the agent reasoning) plus the
+// leading page load and the trailing tail are the dead air worth trimming.
+const STEP_PAD_BEFORE_SEC = 0.4;
+// Generous tail: an action's visual effect (a navigation, a re-render) often
+// lands just AFTER the step's script returns, and the video clock can begin a
+// touch before createdAt — both must stay inside the kept window.
+const STEP_PAD_AFTER_SEC = 1.5;
+
+// Map each recorded step to a keep-window in video time. The video starts at the
+// session's createdAt, and each step is stamped with the same wall clock, so
+// (step.startedAt - createdAt) is the step's offset into the recording.
+function stepKeepWindows(record: SessionRecord): Segment[] {
+  const t0 = Date.parse(record.createdAt);
+  if (!Number.isFinite(t0)) {
+    return [];
+  }
+  const windows: Segment[] = [];
+  for (const step of record.steps) {
+    const startMs = Date.parse(step.startedAt);
+    if (!Number.isFinite(startMs)) {
+      continue;
+    }
+    const start = (startMs - t0) / 1000;
+    windows.push({
+      start: Math.max(0, start - STEP_PAD_BEFORE_SEC),
+      end: start + step.durationMs / 1000 + STEP_PAD_AFTER_SEC,
+    });
+  }
+  return windows;
+}
+
+// Trim dead air from the recorded videos before the report is rendered,
+// refreshing each artifact's byte size so the manifest reflects the condensed
+// file. Interaction-aware when the session has timed steps: keep the step
+// windows, trim the idle gaps / leading load / trailing tail. Otherwise fall
+// back to freezedetect. Best-effort: without ffmpeg or on failure, originals
+// are kept and the report renders unchanged.
+async function condenseSessionVideos(
+  result: SessionEndResult,
+  record: SessionRecord
+): Promise<void> {
   const videos = result.artifacts.filter((a) => a.kind === "video");
   if (videos.length === 0) {
     return;
@@ -60,12 +101,16 @@ async function condenseSessionVideos(result: SessionEndResult): Promise<void> {
     logger.info("ffmpeg not found; keeping raw session videos");
     return;
   }
+  const keepWindows = stepKeepWindows(record);
   // Re-encoding can take a few seconds per video; without feedback the command
   // looks hung. Progress goes to stderr (stdout stays machine-readable).
   const label = videos.length === 1 ? "recording" : "recordings";
   process.stderr.write(`Condensing ${videos.length} ${label}…\n`);
   for (const video of videos) {
-    const outcome = await condenseVideo(video.path, logger, ffmpeg);
+    const outcome = await condenseVideo(video.path, logger, {
+      ffmpegPath: ffmpeg,
+      keepWindows,
+    });
     if (outcome.condensed) {
       video.bytes = await stat(video.path)
         .then((s) => s.size)
@@ -143,7 +188,7 @@ export async function sessionEnd(
     code === 0 && result ? result : await endResultFromDisk(record);
 
   if (opts.condense !== false) {
-    await condenseSessionVideos(endResult);
+    await condenseSessionVideos(endResult, record);
   }
 
   // Resilient like `session abort`: a report-write failure must not crash the

@@ -4,6 +4,7 @@ import {
   computeKeepSegments,
   keptSeconds,
   MAX_SELECT_TERMS,
+  mergeWindows,
   parseFreezeOutput,
 } from "./condense.js";
 
@@ -138,5 +139,28 @@ describe("chunk", () => {
 
   it("handles an empty list", () => {
     expect(chunk([], MAX_SELECT_TERMS)).toEqual([]);
+  });
+});
+
+describe("mergeWindows", () => {
+  it("clamps to [0, duration], sorts, and merges overlapping/touching windows", () => {
+    const merged = mergeWindows(
+      [
+        { start: 11, end: 30 }, // end clamped to 20
+        { start: -1, end: 3 }, // start clamped to 0
+        { start: 2.5, end: 5 }, // overlaps the previous → merges to 0-5
+        { start: 8, end: 8 }, // empty → dropped
+      ],
+      20
+    );
+    expect(merged).toEqual([
+      { start: 0, end: 5 },
+      { start: 11, end: 20 },
+    ]);
+  });
+
+  it("returns nothing when all windows are empty or out of range", () => {
+    expect(mergeWindows([{ start: 5, end: 5 }], 10)).toEqual([]);
+    expect(mergeWindows([], 10)).toEqual([]);
   });
 });

@@ -350,11 +350,77 @@ async function runFfmpeg(
   return { stdout, stderr };
 }
 
+// Total video duration in seconds, read from the container header (fast — no
+// decode). `ffmpeg -i` with no output exits non-zero but still prints the
+// Duration line to stderr, so tolerate that.
+function parseDurationSec(stderr: string): number {
+  const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+  if (!m) {
+    return 0;
+  }
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+}
+
+async function probeDurationSec(
+  ffmpeg: string,
+  videoPath: string
+): Promise<number> {
+  try {
+    const { stderr } = await execFileAsync(ffmpeg, [
+      "-hide_banner",
+      "-i",
+      videoPath,
+    ]);
+    return parseDurationSec(stderr);
+  } catch (err) {
+    return parseDurationSec(
+      (err as { stderr?: string } | undefined)?.stderr ?? ""
+    );
+  }
+}
+
+// Clamp each window to [0, durationSec], drop empties, and merge overlapping or
+// touching windows into a sorted, disjoint keep list.
+export function mergeWindows(
+  windows: Segment[],
+  durationSec: number
+): Segment[] {
+  const clamped = windows
+    .map((w) => ({
+      start: Math.max(0, Math.min(w.start, durationSec)),
+      end: Math.max(0, Math.min(w.end, durationSec)),
+    }))
+    .filter((w) => w.end > w.start)
+    .sort((a, b) => a.start - b.start);
+  const merged: Segment[] = [];
+  for (const w of clamped) {
+    const last = merged.at(-1);
+    if (last && w.start <= last.end) {
+      last.end = Math.max(last.end, w.end);
+    } else {
+      merged.push({ ...w });
+    }
+  }
+  return merged;
+}
+
 export interface CondenseResult {
   condensed: boolean;
   durationSec?: number;
+  // Kept segments in ORIGINAL video time. With these a consumer can remap any
+  // original timestamp to its position in the condensed video (the report
+  // timeline syncs steps to the trimmed video this way).
+  keeps?: Segment[];
   keptSec?: number;
   reason?: string;
+}
+
+export interface CondenseOptions {
+  ffmpegPath?: string;
+  // Interaction-aware mode: keep exactly these windows (in original video
+  // seconds) and trim everything else — the leading load, the idle gaps between
+  // steps, and the trailing tail. When omitted, fall back to freezedetect.
+  keepWindows?: Segment[];
 }
 
 // Condense one video in place (write to a sibling tmp file, then rename over
@@ -362,7 +428,7 @@ export interface CondenseResult {
 export async function condenseVideo(
   videoPath: string,
   log: Logger,
-  ffmpegPath?: string
+  options: CondenseOptions = {}
 ): Promise<CondenseResult> {
   const tmpPath = `${videoPath}.condensed.webm`;
   // Every temp file created below (the output, plus per-batch segments and the
@@ -370,42 +436,59 @@ export async function condenseVideo(
   // partial failure — otherwise a long session leaks .webm files into its dir.
   const temps: string[] = [tmpPath];
   try {
-    const ffmpeg = ffmpegPath ?? (await findFfmpeg());
+    const ffmpeg = options.ffmpegPath ?? (await findFfmpeg());
     if (!ffmpeg) {
       return { condensed: false, reason: "ffmpeg not found" };
     }
     await access(videoPath);
 
-    const analyze = await runFfmpeg(
-      ffmpeg,
-      [
-        "-hide_banner",
-        "-nostats",
-        "-i",
-        videoPath,
-        "-vf",
-        `freezedetect=n=${FREEZE_NOISE}:d=${FREEZE_MIN_SEC}`,
-        "-map",
-        "0:v:0",
-        "-an",
-        "-progress",
-        "pipe:1",
-        "-f",
-        "null",
-        "-",
-      ],
-      ANALYZE_TIMEOUT_MS
-    );
-    const analysis = parseFreezeOutput(analyze.stderr, analyze.stdout);
-    if (analysis.durationSec <= 0) {
-      return { condensed: false, reason: "could not determine duration" };
+    let durationSec: number;
+    let keeps: Segment[];
+    if (options.keepWindows && options.keepWindows.length > 0) {
+      // Interaction-aware: keep the step windows, trim everything else. No
+      // freezedetect — a typed character / the small virtual cursor change
+      // fewer pixels than the codec's static-frame noise, so frame-diff can't
+      // tell typing from a dead wait; the step windows mark what's active.
+      durationSec = await probeDurationSec(ffmpeg, videoPath);
+      if (durationSec <= 0) {
+        return { condensed: false, reason: "could not determine duration" };
+      }
+      keeps = mergeWindows(options.keepWindows, durationSec);
+    } else {
+      const analyze = await runFfmpeg(
+        ffmpeg,
+        [
+          "-hide_banner",
+          "-nostats",
+          "-i",
+          videoPath,
+          "-vf",
+          `freezedetect=n=${FREEZE_NOISE}:d=${FREEZE_MIN_SEC}`,
+          "-map",
+          "0:v:0",
+          "-an",
+          "-progress",
+          "pipe:1",
+          "-f",
+          "null",
+          "-",
+        ],
+        ANALYZE_TIMEOUT_MS
+      );
+      const analysis = parseFreezeOutput(analyze.stderr, analyze.stdout);
+      durationSec = analysis.durationSec;
+      if (durationSec <= 0) {
+        return { condensed: false, reason: "could not determine duration" };
+      }
+      keeps = computeKeepSegments(analysis);
     }
-    const keeps = computeKeepSegments(analysis);
+
     const keptSec = keptSeconds(keeps);
-    if (analysis.durationSec - keptSec < MIN_SAVINGS_SEC) {
+    if (keeps.length === 0 || durationSec - keptSec < MIN_SAVINGS_SEC) {
       return {
         condensed: false,
-        durationSec: analysis.durationSec,
+        durationSec,
+        keeps,
         keptSec,
         reason: "nothing to trim",
       };
@@ -417,7 +500,7 @@ export async function condenseVideo(
       return { condensed: false, reason: "encoder produced an empty file" };
     }
     await rename(tmpPath, videoPath);
-    return { condensed: true, durationSec: analysis.durationSec, keptSec };
+    return { condensed: true, durationSec, keeps, keptSec };
   } catch (err) {
     log.debug({ err, videoPath }, "video condense failed; keeping original");
     return {
