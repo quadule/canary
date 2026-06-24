@@ -6,6 +6,7 @@ import {
   MAX_SELECT_TERMS,
   mergeWindows,
   parseFreezeOutput,
+  remapToCondensed,
 } from "./condense.js";
 
 const freezeLine = (kind: "start" | "end", t: number) =>
@@ -162,5 +163,29 @@ describe("mergeWindows", () => {
   it("returns nothing when all windows are empty or out of range", () => {
     expect(mergeWindows([{ start: 5, end: 5 }], 10)).toEqual([]);
     expect(mergeWindows([], 10)).toEqual([]);
+  });
+});
+
+describe("remapToCondensed", () => {
+  // Kept 0-5 and 10-15; the 5-10 gap is trimmed. Condensed timeline is 0-10.
+  const keeps = [
+    { start: 0, end: 5 },
+    { start: 10, end: 15 },
+  ];
+
+  it("maps times inside kept segments to their condensed position", () => {
+    expect(remapToCondensed(0, keeps)).toBe(0);
+    expect(remapToCondensed(3, keeps)).toBe(3);
+    expect(remapToCondensed(12, keeps)).toBe(7); // 5 kept + (12-10)
+    expect(remapToCondensed(15, keeps)).toBe(10);
+  });
+
+  it("collapses a time inside a trimmed gap to the gap's near edge", () => {
+    expect(remapToCondensed(7, keeps)).toBe(5); // gap 5-10 → end of first kept
+    expect(remapToCondensed(10, keeps)).toBe(5); // exactly at 2nd segment start
+  });
+
+  it("clamps a time past the end to total kept duration", () => {
+    expect(remapToCondensed(99, keeps)).toBe(10);
   });
 });

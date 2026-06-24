@@ -35,6 +35,9 @@ export interface ManifestStep {
   script?: string;
   startedAt: string;
   status: "pass" | "fail";
+  // Position of this step in the condensed video, in seconds (when known) — the
+  // timeline uses it to seek the video to a step and highlight the playing step.
+  videoTime?: number;
 }
 
 export interface ManifestEnvironment {
@@ -142,6 +145,7 @@ export function buildManifest(input: BuildManifestInput): SessionManifest {
       script: step.script,
       startedAt: step.startedAt,
       status: step.ok ? "pass" : "fail",
+      videoTime: step.videoTime,
     };
   });
   const commandCount = steps.reduce(

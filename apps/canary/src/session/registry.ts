@@ -18,6 +18,10 @@ export interface SessionStep {
   // reviewer can see what the agent actually sent.
   script?: string;
   startedAt: string;
+  // Where this step lands in the CONDENSED video, in seconds. Set at session
+  // end once the video has been trimmed, so the report/viewer timeline can seek
+  // the video to a step (and highlight the current step as it plays).
+  videoTime?: number;
 }
 
 export interface SessionRecord {

@@ -15,7 +15,12 @@ import {
   type SessionRecord,
   updateSessionRecord,
 } from "../session/registry.js";
-import { condenseVideo, findFfmpeg, type Segment } from "../video/condense.js";
+import {
+  condenseVideo,
+  findFfmpeg,
+  remapToCondensed,
+  type Segment,
+} from "../video/condense.js";
 import { stopDaemonIfIdle } from "./daemon-stop.js";
 
 interface SessionEndOpts {
@@ -106,12 +111,17 @@ async function condenseSessionVideos(
   // looks hung. Progress goes to stderr (stdout stays machine-readable).
   const label = videos.length === 1 ? "recording" : "recordings";
   process.stderr.write(`Condensing ${videos.length} ${label}…\n`);
+  // All videos share the same step keep-windows, so any condensed video's kept
+  // segments give the same original→condensed time remap. Capture the first to
+  // stamp each step's position in the trimmed video for the timeline.
+  let mappingKeeps: Segment[] | undefined;
   for (const video of videos) {
     const outcome = await condenseVideo(video.path, logger, {
       ffmpegPath: ffmpeg,
       keepWindows,
     });
     if (outcome.condensed) {
+      mappingKeeps ??= outcome.keeps;
       video.bytes = await stat(video.path)
         .then((s) => s.size)
         .catch(() => video.bytes);
@@ -133,6 +143,19 @@ async function condenseSessionVideos(
         { video: video.path, reason: outcome.reason },
         "could not condense video; keeping the original"
       );
+    }
+  }
+
+  // Stamp each step's position in the condensed video so the report/viewer
+  // timeline can sync to it. Mutating record.steps here flows into the manifest
+  // (built from the record just after this).
+  const t0 = Date.parse(record.createdAt);
+  if (mappingKeeps && Number.isFinite(t0)) {
+    for (const step of record.steps) {
+      const startMs = Date.parse(step.startedAt);
+      if (Number.isFinite(startMs)) {
+        step.videoTime = remapToCondensed((startMs - t0) / 1000, mappingKeeps);
+      }
     }
   }
 }

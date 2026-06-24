@@ -167,6 +167,27 @@ export function keptSeconds(keeps: Segment[]): number {
   return keeps.reduce((sum, k) => sum + (k.end - k.start), 0);
 }
 
+// Map a timestamp in the ORIGINAL video to its position in the CONDENSED video
+// — the sum of kept-segment durations before it. A time that fell inside a
+// trimmed gap maps to the boundary of the surrounding kept content. `keeps`
+// must be sorted and disjoint (as mergeWindows / computeKeepSegments return).
+export function remapToCondensed(
+  originalSec: number,
+  keeps: Segment[]
+): number {
+  let condensed = 0;
+  for (const k of keeps) {
+    if (originalSec >= k.end) {
+      condensed += k.end - k.start;
+    } else if (originalSec > k.start) {
+      return condensed + (originalSec - k.start);
+    } else {
+      return condensed;
+    }
+  }
+  return condensed;
+}
+
 function selectExpression(keeps: Segment[]): string {
   return keeps
     .map((k) => `between(t,${k.start.toFixed(3)},${k.end.toFixed(3)})`)
