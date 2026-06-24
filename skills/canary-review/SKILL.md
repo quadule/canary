@@ -28,7 +28,7 @@ console / screenshots.
 
 ### Example 1: open the viewer
 User says: "open the canary viewer" or "let me see my sessions"
-Run `npx @usecanary/ui` (a local server, like `npx playwright show-trace`) in the background and give the URL. Pass `--dir <path>` for a non-default folder.
+Run `npx @usecanary/ui` (a local server, like `npx playwright show-trace`) in the background and give the URL. `--dir <path>` points at a different sessions folder (one that CONTAINS session subfolders) — never an individual session dir, which would select an empty source. The default covers `~/.canary/sessions`, so usually pass no `--dir`.
 
 ### Example 2: triage the last run
 User says: "what failed in the last session?" or "summarize the latest run"
@@ -36,9 +36,9 @@ Read the newest `~/.canary/sessions/*/results.json`, summarize steps (pass/fail,
 
 ## Workflow
 
-1. **Browse:** `npx @usecanary/ui` (`--dir <path>` for a non-default sessions folder). List sessions
-   without the UI via `npx @usecanary/cli session list`; check what's running with
-   `npx @usecanary/cli status [--session <id>]`.
+1. **Browse:** `npx @usecanary/ui` (`--dir <path>` only for a different sessions folder — one that
+   contains session subfolders, not a single session dir). List sessions without the UI via
+   `npx @usecanary/cli session list`; check what's running with `npx @usecanary/cli status [--session <id>]`.
 2. **Summarize:** read the session's `results.json` (steps, summary, artifacts) and report pass/fail
    with counts; cite the `report.html` path.
 3. Review is **read-only** — don't modify session files.

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -58,5 +58,20 @@ describe("roots registry (CANARY_DIR-isolated)", () => {
     expect(roots.find((r) => r.id === lastRootId)?.path).toBe(
       path.resolve("/tmp/launch-root")
     );
+  });
+
+  it("roots a --dir that points at a single session dir to its parent folder", async () => {
+    // A session dir holds results.json directly; it's not a folder OF sessions.
+    // Pointing --dir at one (as a review flow does) must not select an empty
+    // root — it should resolve to the parent so the session list isn't empty.
+    const sessionsRoot = path.join(home, "sessions");
+    const sessionDir = path.join(sessionsRoot, "sess-abc");
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(path.join(sessionDir, "results.json"), "{}");
+
+    process.env.CANARY_UI_ROOT = sessionDir;
+    const { lastRootId, roots } = await loadRoots();
+    expect(roots.find((r) => r.id === lastRootId)?.path).toBe(sessionsRoot);
+    expect(lastRootId).toBe(rootIdFor(sessionsRoot));
   });
 });

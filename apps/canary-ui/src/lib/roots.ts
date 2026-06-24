@@ -71,6 +71,25 @@ async function readConfig(): Promise<UiConfig> {
   return cfg;
 }
 
+// A launch root (CANARY_UI_ROOT, set from `--dir`) is meant to be a folder
+// that CONTAINS session dirs. If it instead points AT a single session — a
+// directory holding `results.json` — use its parent, so the viewer lists the
+// sessions folder rather than an empty root. This is what happens when a review
+// flow opens `--dir ~/.canary/sessions/<id>`: without this, that session dir
+// becomes a selected-but-empty source and the user sees nothing.
+async function resolveLaunchRoot(envRoot: string): Promise<string> {
+  const resolved = path.resolve(envRoot);
+  try {
+    const info = await stat(path.join(resolved, "results.json"));
+    if (info.isFile()) {
+      return path.dirname(resolved);
+    }
+  } catch {
+    // Not a session dir (no results.json) — use it as given.
+  }
+  return resolved;
+}
+
 // Guarantee the default ~/.canary/sessions root is always registered.
 function seedDefault(cfg: UiConfig): void {
   const def = makeRoot(defaultSessionsRoot(), "Default sessions", true);
@@ -97,7 +116,7 @@ export function loadRoots(): Promise<{
     let initialId = cfg.lastRootId;
     const envRoot = process.env.CANARY_UI_ROOT?.trim();
     if (envRoot) {
-      const r = makeRoot(envRoot);
+      const r = makeRoot(await resolveLaunchRoot(envRoot));
       if (!cfg.roots.some((x) => x.id === r.id)) {
         cfg.roots.push(r);
       }
