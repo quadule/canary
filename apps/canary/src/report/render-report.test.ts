@@ -14,6 +14,7 @@ const LOGIN_SLUG = sessionStepSlug("login");
 function fixtureManifest(extra?: {
   actionsByStep?: Record<string, TraceAction[]>;
   scripts?: Record<string, string>;
+  withVideo?: boolean;
 }) {
   const record: SessionRecord = {
     artifactsDir: DIR,
@@ -73,6 +74,15 @@ function fixtureManifest(extra?: {
       }
     }
   }
+  if (extra?.withVideo) {
+    endResult.artifacts.push({
+      bytes: 4096,
+      kind: "video",
+      path: `${DIR}/video/page.webm`,
+    });
+    record.steps[0].videoTime = 1;
+    record.steps[1].videoTime = 2;
+  }
   return buildManifest({
     actionsByStep: extra?.actionsByStep,
     consoleErrors: 1,
@@ -117,6 +127,23 @@ describe("renderReport", () => {
     expect(html).toContain("http://x/boom");
   });
 
+  it("puts the video in a persistent left column synced to the steps", () => {
+    const html = renderReport(fixtureManifest({ withVideo: true }), {
+      consoleEntries: [],
+      parsedHar: { entries: [], failed: 0, slowest: [], total: 0 },
+      screenshots: {},
+    });
+    // Persistent left column holds the (sync-able) video, not a tab.
+    expect(html).toContain('class="leftcol"');
+    expect(html).toContain('id="report-video"');
+    expect(html).not.toContain('data-tab="videos"');
+    // Steps carry their condensed-video offset for click-to-seek + highlight.
+    expect(html).toContain('data-vtime="1.000"');
+    expect(html).toContain('data-vtime="2.000"');
+    // Page-wide script toggle (scripts collapsed by default).
+    expect(html).toContain('id="scripts-toggle"');
+  });
+
   it("renders the merged tab set (summary, steps, screenshots, videos)", () => {
     const html = renderReport(fixtureManifest(), {
       consoleEntries: [],
@@ -127,7 +154,10 @@ describe("renderReport", () => {
     expect(html).toContain('data-tab="summary"');
     expect(html).toContain('id="panel-steps"');
     expect(html).toContain('id="panel-screenshots"');
-    expect(html).toContain('id="panel-videos"');
+    // Video moved out of a tab into the persistent left column, synced to steps.
+    expect(html).not.toContain('id="panel-videos"');
+    expect(html).not.toContain('data-tab="videos"');
+    expect(html).toContain('class="leftcol"');
     // execution + commands merged into the steps panel
     expect(html).not.toContain('id="panel-execution"');
     expect(html).not.toContain('id="panel-commands"');

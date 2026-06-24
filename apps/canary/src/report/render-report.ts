@@ -306,7 +306,6 @@ const TABS: [string, string][] = [
   ["summary", "Summary"],
   ["steps", "Steps"],
   ["screenshots", "Screenshots"],
-  ["videos", "Videos"],
   ["console", "Console"],
   ["network", "Network"],
   ["artifacts", "Artifacts"],
@@ -424,7 +423,7 @@ function renderActionRow(
 function renderStepBody(step: SessionManifest["steps"][number]): string {
   const hasScript = Boolean(step.script?.trim());
   const scriptBlock = hasScript
-    ? `<details class="scriptbox" open><summary>Script</summary><pre>${escapeHtml(step.script ?? "")}</pre></details>`
+    ? `<details class="scriptbox"><summary>Script</summary><pre>${escapeHtml(step.script ?? "")}</pre></details>`
     : "";
   const actions =
     step.actions.length > 0
@@ -474,8 +473,10 @@ function renderSteps(
       const shotBtn = screenshots[slug]
         ? `<button class="shotlink" data-goto-shot="${escapeHtml(slug)}" title="View screenshot" aria-label="View screenshot">${CAMERA_ICON}</button>`
         : "";
+      const vtime =
+        typeof step.videoTime === "number" ? step.videoTime.toFixed(3) : "";
       return `
-      <details class="step" id="step-${i}">
+      <details class="step" id="step-${i}" data-vtime="${vtime}">
         <summary>
           <div class="srow">
             <span class="dot ${step.status}"></span>
@@ -501,6 +502,7 @@ function renderSteps(
           <button class="vbtn is-active" data-view="list">List</button>
           <button class="vbtn" data-view="timeline">Timeline</button>
         </div>
+        <button class="vbtn" id="scripts-toggle" type="button">Show scripts</button>
         <span class="count">${m.summary.stepsPassed}/${m.summary.stepsTotal} passed · ${fmtMs(m.durationMs)}</span>
       </div>
       <div class="steps" id="steps-list">${body}</div>
@@ -557,24 +559,21 @@ function renderScreenshots(
   </section>`;
 }
 
-function renderVideos(m: SessionManifest): string {
+// The persistent left column: the recording itself, always visible while the
+// reviewer works through the tabs on the right. The first video carries
+// id="report-video" so the Steps timeline can seek/sync to it.
+function renderVideoColumn(m: SessionManifest): string {
   const videos = m.artifacts.videos;
-  const body =
-    videos.length === 0
-      ? '<div class="empty">No video captured.</div>'
-      : videos
-          .map((v) => {
-            const p = escapeHtml(v.path);
-            return `<div class="vid"><video controls preload="metadata" src="./${p}"></video><div class="vmeta"><span class="url">${p}</span><span class="sz">${fmtBytes(v.bytes)}</span></div></div>`;
-          })
-          .join("");
-  return `
-  <section class="panel is-hidden" id="panel-videos">
-    <div class="card">
-      <div class="card-h"><h2>Videos</h2><span class="count">${videos.length} file${videos.length === 1 ? "" : "s"}</span></div>
-      <div class="vids">${body}</div>
-    </div>
-  </section>`;
+  if (videos.length === 0) {
+    return '<div class="empty">No video captured.</div>';
+  }
+  return videos
+    .map((v, i) => {
+      const p = escapeHtml(v.path);
+      const id = i === 0 ? ' id="report-video"' : "";
+      return `<div class="vid"><video${id} controls preload="metadata" src="./${p}"></video><div class="vmeta"><span class="url">${p}</span><span class="sz">${fmtBytes(v.bytes)}</span></div></div>`;
+    })
+    .join("");
 }
 
 function renderConsole(entries: ConsoleEntry[]): string {
@@ -660,9 +659,64 @@ function renderArtifacts(m: SessionManifest): string {
   </section>`;
 }
 
-// Self-contained, centered, tabbed report. Small data (screenshots base64,
-// console, network summary) is inlined; heavy artifacts (trace.zip, *.webm) are
-// linked relatively to siblings in the session dir.
+// Two-column layout (mirrors the server viewer): a persistent left column with
+// the recording, a right column with the tabbed detail. Overrides the centered
+// single-column width from STYLE; sticky keeps the video in view while the
+// right column scrolls, and the columns stack on narrow screens.
+const LAYOUT_STYLE = `
+.page{max-width:1280px}
+.layout{display:flex;align-items:flex-start;gap:8px}
+.leftcol{position:sticky;top:16px;flex:0 0 46%;max-width:680px;padding:20px 8px 20px 24px}
+.rightcol{flex:1 1 auto;min-width:0}
+.leftcol .vid{margin:0}
+.leftcol video{display:block;width:100%;border:1px solid var(--line);border-radius:var(--r-md);background:#000}
+.leftcol .vmeta{display:flex;justify-content:space-between;gap:12px;color:var(--faint);font-size:12px;margin-top:8px}
+.step.is-playing>summary .srow{background:rgba(228,242,34,.18)}
+.step[data-vtime]>summary{cursor:pointer}
+@media(max-width:900px){.layout{flex-direction:column}.leftcol{position:static;flex-basis:auto;max-width:none;width:100%;padding:16px}}
+`;
+
+// Sync the Steps timeline to the persistent video: click a step to seek there,
+// and highlight the step under the playhead as it plays. Plus a page-wide
+// Show/Hide-scripts toggle. Self-contained; appended after the tab script so it
+// doesn't entangle with it.
+const SYNC_SCRIPT = `(function(){
+  var video=document.getElementById('report-video');
+  var steps=[].slice.call(document.querySelectorAll('.step[data-vtime]'));
+  var marks=steps.map(function(s){return {el:s,t:parseFloat(s.getAttribute('data-vtime'))};})
+    .filter(function(m){return !isNaN(m.t);});
+  if(video){
+    steps.forEach(function(s){
+      var sum=s.querySelector('summary');
+      if(!sum)return;
+      sum.addEventListener('click',function(){
+        var t=parseFloat(s.getAttribute('data-vtime'));
+        if(isNaN(t))return;
+        try{video.currentTime=t;}catch(e){}
+        if(video.play){var p=video.play();if(p&&p.catch)p.catch(function(){});}
+      });
+    });
+    video.addEventListener('timeupdate',function(){
+      var ct=video.currentTime,cur=null;
+      for(var i=0;i<marks.length;i++){if(marks[i].t<=ct+0.05)cur=marks[i];else break;}
+      for(var j=0;j<steps.length;j++)steps[j].classList.remove('is-playing');
+      if(cur)cur.el.classList.add('is-playing');
+    });
+  }
+  var toggle=document.getElementById('scripts-toggle');
+  if(toggle){
+    toggle.addEventListener('click',function(){
+      var boxes=[].slice.call(document.querySelectorAll('.scriptbox'));
+      var open=boxes.some(function(b){return !b.open;});
+      boxes.forEach(function(b){b.open=open;});
+      toggle.textContent=open?'Hide scripts':'Show scripts';
+    });
+  }
+})();`;
+
+// Self-contained report. Small data (screenshots base64, console, network
+// summary) is inlined; heavy artifacts (trace.zip, *.webm) are linked relatively
+// to siblings in the session dir.
 export function renderReport(
   manifest: SessionManifest,
   ctx: RenderContext
@@ -673,23 +727,28 @@ export function renderReport(
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Canary report — ${escapeHtml(manifest.name ?? manifest.id)}</title>
-<style>${STYLE}</style>
+<style>${STYLE}${LAYOUT_STYLE}</style>
 </head>
 <body>
 <div class="page">
 ${renderHeader(manifest)}
+<div class="layout">
+<aside class="leftcol">${renderVideoColumn(manifest)}</aside>
+<div class="rightcol">
 ${renderTabs()}
 <main>
 ${renderSummary(manifest)}
 ${renderSteps(manifest, ctx.screenshots)}
 ${renderScreenshots(manifest, ctx.screenshots)}
-${renderVideos(manifest)}
 ${renderConsole(ctx.consoleEntries)}
 ${renderNetwork(ctx.parsedHar)}
 ${renderArtifacts(manifest)}
 </main>
 </div>
+</div>
+</div>
 <script>${TAB_SCRIPT}</script>
+<script>${SYNC_SCRIPT}</script>
 </body>
 </html>
 `;
