@@ -2,9 +2,12 @@
 //
 // Playwright drives the page through CDP, so the OS cursor never appears in
 // video or screenshots — a recording shows elements reacting to invisible
-// input. This context init script renders a synthetic cursor that follows the
-// trusted mouse events Playwright dispatches, plus a ripple animation on every
-// mousedown, making recorded interactions legible to a human reviewer.
+// input. This context init script renders a synthetic cursor that the agent
+// positions explicitly via state.glide() (from the humanClick/humanFill
+// helpers), with a ripple animation on the click that follows, making recorded
+// interactions legible to a human reviewer. It deliberately does NOT track
+// mouse events — those are indistinguishable from the user's real pointer, so
+// tracking them would make it chase a stray move between actions.
 //
 // Design constraints:
 // - Runs in EVERY frame (mouse events fire only in the frame under the
@@ -42,14 +45,13 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
   } catch {
     // storage unavailable — default visible
   }
-  // \`driving\`: the cursor only tracks input while an agent helper is driving it
-  // (set around humanClick/humanFill). Real user mouse moves — which are trusted
-  // DOM events indistinguishable from Playwright's — are ignored otherwise, so
-  // the cursor never chases the user's pointer outside a deliberate action.
-  // \`hidden\`: suppressed entirely during a manual takeover.
+  // The cursor is positioned explicitly by the agent via state.glide() (called
+  // from the humanClick/humanFill helpers), not by listening to mouse events —
+  // those are trusted DOM events indistinguishable from Playwright's, so tracking
+  // them would make the cursor chase the user's real pointer. \`hidden\`:
+  // suppressed entirely during a manual takeover.
   const state = {
     cursor: null,
-    driving: false,
     glyph: 'arrow',
     hidden: startHidden,
     pressed: false,
@@ -266,34 +268,34 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
     }
   }
 
-  const opts = { capture: true, passive: true };
-  // Only track input the agent is driving (driving === true, set around
-  // humanClick/humanFill). User mouse moves/clicks are trusted DOM events the
-  // page can't tell apart from Playwright's, so ignoring them when not driving
-  // keeps the cursor from chasing the user's real pointer.
-  const onMove = (e) => {
-    if (!state.driving) {
-      return;
-    }
-    setGlyph(glyphFor(e.target));
-    moveTo(e.clientX, e.clientY);
-  };
-  const onDown = (e) => {
-    if (!state.driving) {
-      return;
-    }
-    state.pressed = true;
-    setGlyph(glyphFor(e.target));
-    moveTo(e.clientX, e.clientY);
-    ripple(e.clientX, e.clientY);
-  };
-  const onUp = (e) => {
-    if (!state.driving) {
-      return;
-    }
-    state.pressed = false;
-    moveTo(e.clientX, e.clientY);
-  };
+  // Arm a one-shot press for the click that's about to happen: the next trusted
+  // mousedown (the helper's real click, landing where we just glided) shows the
+  // ripple and press-scale, then disarms. Because it's one-shot it can't react
+  // to a later stray user click.
+  function armPress() {
+    const onDown = (e) => {
+      state.pressed = true;
+      moveTo(e.clientX, e.clientY);
+      ripple(e.clientX, e.clientY);
+    };
+    const onUp = (e) => {
+      state.pressed = false;
+      moveTo(e.clientX, e.clientY);
+    };
+    window.addEventListener('mousedown', onDown, { capture: true, once: true });
+    window.addEventListener('mouseup', onUp, { capture: true, once: true });
+  }
+
+  // Glide the cursor onto (x, y), pick the glyph from the target element, and
+  // arm the click ripple. The CSS transform transition animates the move. This
+  // is the only way the cursor moves — the agent calls it through humanClick /
+  // humanFill; nothing tracks raw mouse events.
+  function glide(x, y, el) {
+    setGlyph(glyphFor(el));
+    moveTo(x, y);
+    armPress();
+  }
+  state.glide = glide;
 
   const isTopFrame = (() => {
     try {
@@ -304,11 +306,9 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
   })();
 
   function arm() {
-    window.addEventListener('mousemove', onMove, opts);
-    window.addEventListener('mousedown', onDown, opts);
-    window.addEventListener('mouseup', onUp, opts);
-    // Keep the cursor on screen at all times in the top frame, including
-    // before any input and after a SPA wipes the DOM. Subframes stay lazy.
+    // Keep the cursor on screen at all times in the top frame, including before
+    // any input and after a SPA / document.open() wipes the DOM. No input
+    // listeners to register — the cursor moves only via state.glide().
     if (isTopFrame) {
       ensureCursor();
       refreshGlyph();

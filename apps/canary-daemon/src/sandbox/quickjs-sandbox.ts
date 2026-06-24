@@ -498,18 +498,6 @@ export class QuickJSSandbox {
             const resolveLocator = (page, target) =>
               typeof target === "string" ? page.locator(target) : target;
 
-            // Tell the virtual cursor whether the agent is driving input. It
-            // only follows mouse events while driving, so it never chases the
-            // user's real pointer between actions.
-            const setDriving = (page, on) =>
-              page
-                .evaluate((v) => {
-                  if (window.__canaryCursor) {
-                    window.__canaryCursor.driving = v;
-                  }
-                }, on)
-                .catch(() => undefined);
-
             // Animate an off-screen target into view so the scroll is visible on
             // camera (Playwright's scrollIntoViewIfNeeded teleports). Resolves once
             // the element stops moving — tracked via its rect, which moves no matter
@@ -567,12 +555,28 @@ export class QuickJSSandbox {
               // element is actionable (a no-op snap once smoothReveal has landed it).
               await smoothReveal(target);
               await target.scrollIntoViewIfNeeded();
-              const box = await target.boundingBox();
-              if (!box) {
+              // Drive the virtual cursor explicitly: one in-page call glides it
+              // onto the target's centre and arms the click ripple. No "driving"
+              // flag and no extra mouse.move/boundingBox — so the cursor never
+              // chases the user's real pointer and the trace isn't cluttered with
+              // cursor bookkeeping. The CSS transform transition animates the move.
+              const glided = await target
+                .evaluate((el) => {
+                  const r = el.getBoundingClientRect();
+                  if (r.width === 0 && r.height === 0) {
+                    return false;
+                  }
+                  window.__canaryCursor?.glide(
+                    r.left + r.width / 2,
+                    r.top + r.height / 2,
+                    el,
+                  );
+                  return true;
+                })
+                .catch(() => false);
+              if (!glided) {
                 return false;
               }
-              await setDriving(page, true);
-              await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
               await page.waitForTimeout(${CURSOR_SETTLE_MS});
               return true;
             };
@@ -581,36 +585,34 @@ export class QuickJSSandbox {
             // custom CSS control drawn over a <label>; clicking the input itself
             // misses (it's zero-size/invisible). When the target resolves to such
             // a hidden input, retarget the click to its label — what a real user
-            // clicks. Returns a Locator or an ElementHandle (both support the
-            // scrollIntoViewIfNeeded / boundingBox / click that follow).
+            // clicks. One round-trip: evaluateHandle returns the label to click,
+            // or the element itself otherwise (an ElementHandle that supports the
+            // scrollIntoViewIfNeeded / evaluate / click that follow).
             const resolveClickTarget = async (page, target) => {
               const locator = resolveLocator(page, target);
-              const handle = await locator.elementHandle().catch(() => null);
-              if (!handle) {
-                return locator;
-              }
-              const labelHandle = await handle
+              const handle = await locator
                 .evaluateHandle((el) => {
                   if (
-                    !(el instanceof HTMLInputElement) ||
-                    (el.type !== "checkbox" && el.type !== "radio")
+                    el instanceof HTMLInputElement &&
+                    (el.type === "checkbox" || el.type === "radio")
                   ) {
-                    return null;
+                    const rect = el.getBoundingClientRect();
+                    const cs = getComputedStyle(el);
+                    const hidden =
+                      rect.width <= 1 ||
+                      rect.height <= 1 ||
+                      cs.visibility === "hidden" ||
+                      cs.display === "none" ||
+                      Number(cs.opacity) === 0;
+                    const label = el.labels && el.labels[0];
+                    if (hidden && label) {
+                      return label;
+                    }
                   }
-                  const rect = el.getBoundingClientRect();
-                  const cs = getComputedStyle(el);
-                  const hidden =
-                    rect.width <= 1 ||
-                    rect.height <= 1 ||
-                    cs.visibility === "hidden" ||
-                    cs.display === "none" ||
-                    Number(cs.opacity) === 0;
-                  const label = el.labels && el.labels[0];
-                  return hidden && label ? label : null;
+                  return el;
                 })
                 .catch(() => null);
-              const labelEl = labelHandle ? labelHandle.asElement() : null;
-              return labelEl || locator;
+              return (handle && handle.asElement()) || locator;
             };
 
             const augmentPage = (page) => {
@@ -621,22 +623,14 @@ export class QuickJSSandbox {
               page.humanClick = async (target, options) => {
                 const locator = await resolveClickTarget(page, target);
                 await revealAndGlide(page, locator);
-                try {
-                  await locator.click(options);
-                } finally {
-                  await setDriving(page, false);
-                }
+                await locator.click(options);
               };
               page.humanFill = async (target, text, options) => {
                 const locator = resolveLocator(page, target);
                 await revealAndGlide(page, locator);
-                try {
-                  await locator.click();
-                  await locator.fill("");
-                  await locator.pressSequentially(String(text), options);
-                } finally {
-                  await setDriving(page, false);
-                }
+                await locator.click();
+                await locator.fill("");
+                await locator.pressSequentially(String(text), options);
               };
               // Generic "let the page settle" wait — framework-agnostic. Waits
               // for the document load (a no-op once loaded) and then for the DOM

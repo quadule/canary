@@ -9,9 +9,10 @@
 - `page.inputValue(sel)` / `page.isChecked(sel)` / `page.isVisible(sel)` / `page.isHidden(sel)` —
   input and visibility state
 - `page.humanClick(target)` / `page.humanFill(target, text)` — Canary helpers that act like a
-  person for the recording: reveal the element (`scrollIntoViewIfNeeded`), glide the on-screen
-  cursor onto it and let it land, then click — or, for a fill, focus and type with real key
-  events. `target` is a selector string or a locator. Prefer these for recorded interactions.
+  person for the recording: smooth-scroll the element into view, glide the on-screen cursor onto
+  it and let it land, then click — or, for a fill, focus and type with real key events. `target` is
+  a selector string or a locator. Prefer these for recorded interactions — they reveal the target
+  for you, so you don't call `scrollIntoViewIfNeeded` first.
 - `page.fill(sel, value)` / `page.click(sel)` / `page.type(sel, text)` / `page.press(sel, key)` —
   lower-level acts on elements (`fill` sets the value atomically — no cursor travel or typing on
   camera; reach for `humanClick` / `humanFill` in recordings)
@@ -30,7 +31,8 @@
   JavaScript in the page context (real DOM; args/returns must be serializable)
 - `page.locator(sel)` — a Locator for chained actions (`.click()`, `.fill(value)`,
   `.pressSequentially(text)` to type with real key events, `.textContent()`, `.first()`, …);
-  `.scrollIntoViewIfNeeded()` brings an offscreen element into the viewport without clicking it
+  `.scrollIntoViewIfNeeded()` brings an offscreen element into the viewport without clicking it —
+  only needed when revealing without acting, since `humanClick` / `humanFill` already reveal first
 - `page.keyboard.press/type/down/up(...)` / `page.mouse.move/click/down/up(...)` — low-level input
 - `page.reload()` / `page.goBack()` / `page.goForward()` — history;
   `page.content()` / `page.setContent(html)` — full HTML
