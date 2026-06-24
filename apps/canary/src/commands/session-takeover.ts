@@ -52,11 +52,15 @@ export async function sessionTakeover(
   };
   const code = await sendRequest(request, undefined);
   if (code === 0 && !json) {
+    // Agent-facing: the agent runs start/stop, the user only drives the browser.
+    // Do NOT instruct the user to run a command — the agent runs --stop itself
+    // the moment the user says to continue.
     process.stdout.write(
-      `Recording your actions on session "${id}". Take over the headed browser now — ` +
-        `click, type, navigate as needed. When you're done, run:\n` +
-        `  canary session takeover ${id} --stop\n` +
-        "(or --cancel to discard).\n"
+      `Recorder started on session "${id}". Ask the user to take over the headed ` +
+        "browser (click, type, navigate); the virtual cursor hides while they drive. " +
+        `When they say they're done, run \`canary session takeover ${id} --stop\` ` +
+        "yourself to capture it as a step (or --cancel to discard) — don't ask the " +
+        "user to run anything.\n"
     );
   }
   return code;

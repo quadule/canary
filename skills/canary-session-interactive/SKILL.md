@@ -49,12 +49,13 @@ chat when they're done. To capture what they do as a clean, replayable step:
 
 1. **Start the takeover (you run this):** `npx @usecanary/cli session takeover "$id" --step
    <intent-name>`. This enables Playwright's recorder on the live context.
-2. **Ask the user to take over** and say when they're finished. They click / type / navigate in the
-   already-open browser window; the virtual cursor hides while they drive. Wait for their "done" —
-   don't run steps meanwhile (the session rejects them mid-takeover).
-3. **Stop and capture (you run this):** `npx @usecanary/cli session takeover "$id" --stop`. The
-   recorder turns the user's actions into generated Playwright source, prints it, and records it as
-   the step. (Use `--cancel` instead to discard.) Read the printed code, then carry on driving.
+2. **Ask the user to take over** and to just tell you when they're done ("continue" / "done"). They
+   click / type / navigate in the already-open browser window; the virtual cursor hides while they
+   drive. Wait — don't run steps meanwhile (the session rejects them mid-takeover).
+3. **The moment they say to continue, run the stop yourself:** `npx @usecanary/cli session takeover
+   "$id" --stop` (plain Bash). Their "continue" IS the signal — never ask the user to run a command.
+   The recorder turns their actions into generated Playwright source, prints it, and records it as
+   the step (`--cancel` instead to discard). Read the printed code, then carry on driving.
 
 The user's actions are in the video/trace either way; `--stop` additionally preserves the generated
 Playwright code as the step's source (a clean record, and what a later Playwright→RSpec step would
