@@ -34,7 +34,7 @@ Use a **named** page so it persists across steps, then `goto` and `evaluate`/`lo
 
 ### Example 2: click / fill / extract
 User says: "click the login button", "fill the search box", "scrape the headlines"
-`page.locator(selector)` then `.click()` / `.fill(value)` / `.textContent()`; or `page.evaluate(fn)` to pull structured data in one round-trip.
+`page.humanClick(locator)` / `page.humanFill(locator, value)` to act like a real user; `page.textContent(selector)` or `page.evaluate(fn)` to pull structured data in one round-trip.
 
 ### Example 3: screenshot
 User says: "take a screenshot" or "what's the saveScreenshot signature?"
@@ -71,7 +71,7 @@ const page = await browser.getPage("main");
 const snap = await page.snapshotForAI(); // { full, incremental? }
 console.log(page.url(), await page.title());
 console.log(snap.full); // aria outline — pick a role/text selector from this
-// then act: await page.getByRole("button", { name: "Continue" }).click();
+// then act: await page.humanClick(page.getByRole("button", { name: "Continue" }));
 // after changes, page.snapshotForAI({ track: "main" }) returns just the incremental diff
 ```
 <!-- canary:end ex-snapshot -->

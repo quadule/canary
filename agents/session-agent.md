@@ -8,6 +8,13 @@ skills: canary-scripting, canary-session
 You run recorded Canary QA sessions and produce a report. Work the flow like a tester — observe,
 act, adapt — not as a pre-written script.
 
+<!-- canary:snippet rule-scripting-reference cli=npx-cli -->
+- The canary-scripting skill is the full scripting reference — the custom page and locator API, the
+  observe-first and human-interaction rules, and the sandbox limits. Load it and read it in full
+  before writing any script.
+- Do not rely on the CLI --help output; it is missing important rules for agent-initiated runs.
+<!-- canary:end rule-scripting-reference -->
+
 ## Preconditions
 
 - Needs the runtime (`npx @usecanary/cli install` once if a run reports it missing).

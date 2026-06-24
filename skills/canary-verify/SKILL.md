@@ -18,7 +18,14 @@ metadata:
 
 Read a code change, infer the **user-facing workflows** it affects, and suggest a **prioritized QA
 plan** — the concrete Canary flows that verify them. Then optionally hand off to **canary-session** to
-record those flows and produce `report.html`. Use the **canary-scripting** skill for the step API.
+record those flows and produce `report.html`.
+
+<!-- canary:snippet rule-scripting-reference cli=npx-cli -->
+- The canary-scripting skill is the full scripting reference — the custom page and locator API, the
+  observe-first and human-interaction rules, and the sandbox limits. Load it and read it in full
+  before writing any script.
+- Do not rely on the CLI --help output; it is missing important rules for agent-initiated runs.
+<!-- canary:end rule-scripting-reference -->
 
 ## When to use
 

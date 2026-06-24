@@ -14,8 +14,14 @@ metadata:
 
 # Canary automate (one-off)
 
-Run a script against a real browser and return the result — ephemeral, nothing recorded. Use the
-**canary-scripting** skill for the API.
+Run a script against a real browser and return the result — ephemeral, nothing recorded.
+
+<!-- canary:snippet rule-scripting-reference cli=npx-cli -->
+- The canary-scripting skill is the full scripting reference — the custom page and locator API, the
+  observe-first and human-interaction rules, and the sandbox limits. Load it and read it in full
+  before writing any script.
+- Do not rely on the CLI --help output; it is missing important rules for agent-initiated runs.
+<!-- canary:end rule-scripting-reference -->
 
 ## When to use
 

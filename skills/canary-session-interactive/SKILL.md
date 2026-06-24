@@ -18,7 +18,14 @@ metadata:
 Same recorded QA session as **canary-session** — explore a flow step by step against one
 persistent headed browser; trace / video / HAR / console are captured and rendered into
 `report.html` — but run **in this conversation, not a subagent**, so you and the user collaborate
-as it records. Use the **canary-scripting** skill for the API.
+as it records.
+
+<!-- canary:snippet rule-scripting-reference cli=npx-cli -->
+- The canary-scripting skill is the full scripting reference — the custom page and locator API, the
+  observe-first and human-interaction rules, and the sandbox limits. Load it and read it in full
+  before writing any script.
+- Do not rely on the CLI --help output; it is missing important rules for agent-initiated runs.
+<!-- canary:end rule-scripting-reference -->
 
 The difference from the autonomous flow is just *who decides*:
 
