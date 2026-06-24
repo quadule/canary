@@ -48,10 +48,17 @@ async function condenseSessionVideos(result: SessionEndResult): Promise<void> {
       const to = formatDurationMs(Math.round((outcome.keptSec ?? 0) * 1000));
       process.stderr.write(`  ✓ ${from} → ${to}\n`);
       logger.info({ video: video.path }, `condensed video: ${from} → ${to}`);
-    } else {
+    } else if (outcome.reason === "nothing to trim") {
       logger.debug(
         { video: video.path, reason: outcome.reason },
         "video left unchanged"
+      );
+    } else {
+      // An actual failure (e.g. the encode threw) silently keeps the raw video,
+      // which reads as "condense didn't help". Surface it so a regression shows.
+      logger.warn(
+        { video: video.path, reason: outcome.reason },
+        "could not condense video; keeping the original"
       );
     }
   }

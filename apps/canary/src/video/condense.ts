@@ -16,7 +16,7 @@
 // alongside Chromium for screencasts). When unavailable — or when either pass
 // fails — the original video is kept untouched and the report still renders.
 import { execFile } from "node:child_process";
-import { access, readdir, rename, rm, stat } from "node:fs/promises";
+import { access, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -54,6 +54,15 @@ const FREEZE_MIN_SEC = 0.4;
 // Don't bother re-encoding to save less than this many seconds.
 const MIN_SAVINGS_SEC = 1;
 
+// Max `between(t,…)` terms in a single `select` expression. ffmpeg's expression
+// evaluator fails to parse/allocate past ~100 terms ("Error while parsing
+// expression" / "Cannot allocate memory"), which aborts the whole encode — so a
+// long session with many kept segments would silently keep its raw video. When
+// keeps exceed this, we encode in batches and concat them. Kept well under the
+// observed ~100 ceiling: it varies by ffmpeg build, and the extra decode pass is
+// cheap insurance.
+export const MAX_SELECT_TERMS = 50;
+
 const ANALYZE_TIMEOUT_MS = 60_000;
 const ENCODE_TIMEOUT_MS = 300_000;
 
@@ -72,7 +81,7 @@ export interface FreezeAnalysis {
 // never ends (still at EOF) is closed at the total duration.
 export function parseFreezeOutput(
   stderr: string,
-  progress: string,
+  progress: string
 ): FreezeAnalysis {
   let durationSec = 0;
   // -progress emits cumulative out_time_us (older builds: out_time_ms) lines;
@@ -89,7 +98,7 @@ export function parseFreezeOutput(
   const freezes: Segment[] = [];
   let open: number | undefined;
   const events = stderr.matchAll(
-    /lavfi\.freezedetect\.freeze_(start|end):\s*([\d.]+)/g,
+    /lavfi\.freezedetect\.freeze_(start|end):\s*([\d.]+)/g
   );
   for (const [, kind, value] of events) {
     const t = Number(value);
@@ -117,7 +126,7 @@ export function parseFreezeOutput(
 // pre-page-load white frames), which is dropped entirely.
 export function computeKeepSegments(
   analysis: FreezeAnalysis,
-  maxStillSec: number = MAX_STILL_SEC,
+  maxStillSec: number = MAX_STILL_SEC
 ): Segment[] {
   const { durationSec, freezes } = analysis;
   if (durationSec <= 0) {
@@ -164,6 +173,100 @@ function selectExpression(keeps: Segment[]): string {
     .join("+");
 }
 
+export function chunk<T>(items: T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+
+// Re-encode the kept segments to `output`. Decodes every frame and filters by
+// timestamp (a Playwright VP8 screencast has a single keyframe at t=0, so seek-
+// based trimming would drop keyframe-less segments) — frame-accurate.
+async function encodeKeeps(
+  ffmpeg: string,
+  input: string,
+  keeps: Segment[],
+  output: string
+): Promise<void> {
+  await runFfmpeg(
+    ffmpeg,
+    [
+      "-hide_banner",
+      "-nostats",
+      "-y",
+      "-i",
+      input,
+      "-vf",
+      `select='${selectExpression(keeps)}',setpts=N/FRAME_RATE/TB`,
+      "-an",
+      "-c:v",
+      "libvpx",
+      "-b:v",
+      "1M",
+      output,
+    ],
+    ENCODE_TIMEOUT_MS
+  );
+}
+
+// Produce the condensed video at `tmpPath`. Under MAX_SELECT_TERMS kept segments
+// it's a single `select` pass; beyond that the expression would overflow
+// ffmpeg's parser, so encode each batch to its own segment file and concat them.
+// Every temp it creates is pushed to `temps` so the caller can clean up even on
+// a partial failure. Each batch is a full decode of the source.
+async function buildCondensed(
+  ffmpeg: string,
+  videoPath: string,
+  keeps: Segment[],
+  tmpPath: string,
+  temps: string[]
+): Promise<void> {
+  if (keeps.length <= MAX_SELECT_TERMS) {
+    await encodeKeeps(ffmpeg, videoPath, keeps, tmpPath);
+    return;
+  }
+
+  const segmentPaths: string[] = [];
+  const batches = chunk(keeps, MAX_SELECT_TERMS);
+  for (let i = 0; i < batches.length; i++) {
+    const segmentPath = `${videoPath}.seg${i}.webm`;
+    temps.push(segmentPath);
+    segmentPaths.push(segmentPath);
+    await encodeKeeps(ffmpeg, videoPath, batches[i], segmentPath);
+  }
+
+  const listPath = `${videoPath}.concat.txt`;
+  temps.push(listPath);
+  // concat demuxer escapes a single quote as '\'' inside the quoted path.
+  const list = segmentPaths
+    .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
+    .join("\n");
+  await writeFile(listPath, `${list}\n`);
+
+  // The batches share identical codec/timebase, so the concat demuxer can copy
+  // streams without another decode/encode.
+  await runFfmpeg(
+    ffmpeg,
+    [
+      "-hide_banner",
+      "-nostats",
+      "-y",
+      "-f",
+      "concat",
+      "-safe",
+      "0",
+      "-i",
+      listPath,
+      "-c",
+      "copy",
+      tmpPath,
+    ],
+    ENCODE_TIMEOUT_MS
+  );
+}
+
 async function isExecutableFile(candidate: string): Promise<boolean> {
   try {
     const info = await stat(candidate);
@@ -182,7 +285,7 @@ async function listDir(dir: string): Promise<string[]> {
 }
 
 async function findFfmpegInCacheRoot(
-  root: string,
+  root: string
 ): Promise<string | undefined> {
   const entries = (await listDir(root))
     .filter((entry) => entry.startsWith("ffmpeg-"))
@@ -238,7 +341,7 @@ export async function findFfmpeg(): Promise<string | undefined> {
 async function runFfmpeg(
   ffmpeg: string,
   args: string[],
-  timeoutMs: number,
+  timeoutMs: number
 ): Promise<{ stderr: string; stdout: string }> {
   const { stdout, stderr } = await execFileAsync(ffmpeg, args, {
     timeout: timeoutMs,
@@ -259,9 +362,13 @@ export interface CondenseResult {
 export async function condenseVideo(
   videoPath: string,
   log: Logger,
-  ffmpegPath?: string,
+  ffmpegPath?: string
 ): Promise<CondenseResult> {
   const tmpPath = `${videoPath}.condensed.webm`;
+  // Every temp file created below (the output, plus per-batch segments and the
+  // concat list) so the finally block can remove them all, including on a
+  // partial failure — otherwise a long session leaks .webm files into its dir.
+  const temps: string[] = [tmpPath];
   try {
     const ffmpeg = ffmpegPath ?? (await findFfmpeg());
     if (!ffmpeg) {
@@ -287,7 +394,7 @@ export async function condenseVideo(
         "null",
         "-",
       ],
-      ANALYZE_TIMEOUT_MS,
+      ANALYZE_TIMEOUT_MS
     );
     const analysis = parseFreezeOutput(analyze.stderr, analyze.stdout);
     if (analysis.durationSec <= 0) {
@@ -304,25 +411,7 @@ export async function condenseVideo(
       };
     }
 
-    await runFfmpeg(
-      ffmpeg,
-      [
-        "-hide_banner",
-        "-nostats",
-        "-y",
-        "-i",
-        videoPath,
-        "-vf",
-        `select='${selectExpression(keeps)}',setpts=N/FRAME_RATE/TB`,
-        "-an",
-        "-c:v",
-        "libvpx",
-        "-b:v",
-        "1M",
-        tmpPath,
-      ],
-      ENCODE_TIMEOUT_MS,
-    );
+    await buildCondensed(ffmpeg, videoPath, keeps, tmpPath, temps);
     const produced = await stat(tmpPath);
     if (produced.size === 0) {
       return { condensed: false, reason: "encoder produced an empty file" };
@@ -336,6 +425,6 @@ export async function condenseVideo(
       reason: err instanceof Error ? err.message : String(err),
     };
   } finally {
-    await rm(tmpPath, { force: true });
+    await Promise.all(temps.map((t) => rm(t, { force: true })));
   }
 }

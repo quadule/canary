@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  chunk,
   computeKeepSegments,
   keptSeconds,
+  MAX_SELECT_TERMS,
   parseFreezeOutput,
 } from "./condense.js";
 
@@ -105,5 +107,36 @@ describe("computeKeepSegments", () => {
   it("returns the full video when nothing froze", () => {
     const keeps = computeKeepSegments({ durationSec: 15, freezes: [] });
     expect(keeps).toEqual([{ start: 0, end: 15 }]);
+  });
+});
+
+describe("chunk", () => {
+  // A long session can produce hundreds of kept segments; past ~100
+  // `between(t,…)` terms ffmpeg's expression parser aborts the encode, so the
+  // segments must be batched under MAX_SELECT_TERMS and concatenated.
+  it("keeps every batch within the select-expression ceiling", () => {
+    const keeps = Array.from({ length: 170 }, (_, i) => ({
+      start: i,
+      end: i + 0.5,
+    }));
+    const batches = chunk(keeps, MAX_SELECT_TERMS);
+    expect(batches.length).toBeGreaterThan(1);
+    for (const batch of batches) {
+      expect(batch.length).toBeLessThanOrEqual(MAX_SELECT_TERMS);
+    }
+    // No segment is lost or duplicated across batches.
+    expect(batches.flat()).toEqual(keeps);
+  });
+
+  it("returns a single batch when keeps fit", () => {
+    const keeps = [
+      { start: 0, end: 1 },
+      { start: 2, end: 3 },
+    ];
+    expect(chunk(keeps, MAX_SELECT_TERMS)).toEqual([keeps]);
+  });
+
+  it("handles an empty list", () => {
+    expect(chunk([], MAX_SELECT_TERMS)).toEqual([]);
   });
 });
