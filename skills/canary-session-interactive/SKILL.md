@@ -20,6 +20,25 @@ persistent headed browser; trace / video / HAR / console are captured and render
 `report.html` — but run **in this conversation, not a subagent**, so you and the user collaborate
 as it records.
 
+## Start here — read before your first command
+
+<!-- canary:snippet rule-start-here cli=npx-cli -->
+- STOP — before your FIRST `npx @usecanary/cli` command (not just before writing a script), read the
+  **canary-scripting** skill in full: invoke the canary-scripting skill (in this repo you can also
+  open `skills/canary-scripting/SKILL.md`). It holds the script API and the interaction rules the
+  rest of this skill relies on. Don't start a session without it.
+- Don't guess CLI flags — check `npx @usecanary/cli <command> --help` for exact syntax.
+- Drive every recorded click and text entry with `page.humanClick` / `page.humanFill`, never raw
+  `click` / `fill`. This is not optional.
+- Reach a page by clicking the control a real user sees (e.g. the login button on the main login
+  page), not by brute-forcing a hidden widget. If a step times out, STOP and take the obvious path
+  instead of retrying the same dead end — and use `--timeout 10` so a wrong turn fails fast instead
+  of burning 30s.
+- A click returning is NOT success. Before you submit, confirm the submit control is enabled and
+  every required field / checkbox is satisfied; afterward, verify the change actually persisted. A
+  disabled or validation-blocked submit saved nothing — never report that run as passed.
+<!-- canary:end rule-start-here -->
+
 <!-- canary:snippet rule-drive-with-canary cli=npx-cli -->
 - Drive the browser only through Canary — the `npx @usecanary/cli` CLI and the scripts it runs. Do NOT use
   Claude in Chrome, a computer-use / screenshot tool, or any other browser automation to navigate,
@@ -31,7 +50,7 @@ as it records.
 <!-- canary:snippet rule-scripting-reference cli=npx-cli -->
 - The canary-scripting skill is the full scripting reference — the custom page and locator API, the
   observe-first and human-interaction rules, and the sandbox limits. Load it and read it in full
-  before writing any script.
+  before your first command — not just before writing a script (a `session start` counts).
 - Use `npx @usecanary/cli --help` (and `npx @usecanary/cli <command> --help`) for exact command and flag syntax — check
   it rather than guessing a flag. But --help only covers syntax; it omits the agent rules
   (observe-first, the human-interaction helpers, pass/fail), so read the canary-scripting skill for
