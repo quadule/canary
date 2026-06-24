@@ -28,6 +28,12 @@ const CURSOR_SETTLE_MS = CURSOR_GLIDE_MS + 200;
 // an unusually long scroll can't stall the step.
 const SCROLL_REVEAL_CAP_MS = 1500;
 
+// Per-character delay for humanFill so typing is visible on camera rather than
+// appearing all at once. Kept well under the video condenser's freeze floor
+// (FREEZE_MIN_SEC, 0.4s) so the gaps between keystrokes never read as a still
+// stretch and get trimmed.
+const TYPE_DELAY_MS = 90;
+
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -629,8 +635,21 @@ export class QuickJSSandbox {
                 const locator = resolveLocator(page, target);
                 await revealAndGlide(page, locator);
                 await locator.click();
+                // Park the cursor just below the field so it doesn't sit on top
+                // of the text as it's typed.
+                await locator
+                  .evaluate((el) => {
+                    const r = el.getBoundingClientRect();
+                    window.__canaryCursor?.park(r.left + 12, r.bottom + 16);
+                  })
+                  .catch(() => undefined);
                 await locator.fill("");
-                await locator.pressSequentially(String(text), options);
+                // Type with a short per-character delay so the typing is visible
+                // on camera (caller can override via options.delay).
+                await locator.pressSequentially(String(text), {
+                  delay: ${TYPE_DELAY_MS},
+                  ...options,
+                });
               };
               // Generic "let the page settle" wait — framework-agnostic. Waits
               // for the document load (a no-op once loaded) and then for the DOM

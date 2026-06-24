@@ -297,6 +297,14 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
   }
   state.glide = glide;
 
+  // Move the cursor aside without arming a click (used by humanFill to clear the
+  // field so the text being typed isn't covered). The 250ms refreshGlyph tick
+  // re-picks the glyph for wherever it lands.
+  function park(x, y) {
+    moveTo(x, y);
+  }
+  state.park = park;
+
   const isTopFrame = (() => {
     try {
       return window === window.top;
