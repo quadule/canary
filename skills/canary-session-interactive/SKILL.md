@@ -32,7 +32,10 @@ as it records.
 - The canary-scripting skill is the full scripting reference — the custom page and locator API, the
   observe-first and human-interaction rules, and the sandbox limits. Load it and read it in full
   before writing any script.
-- Do not rely on the CLI --help output; it is missing important rules for agent-initiated runs.
+- Use `npx @usecanary/cli --help` (and `npx @usecanary/cli <command> --help`) for exact command and flag syntax — check
+  it rather than guessing a flag. But --help only covers syntax; it omits the agent rules
+  (observe-first, the human-interaction helpers, pass/fail), so read the canary-scripting skill for
+  those — don't infer the workflow from --help alone.
 <!-- canary:end rule-scripting-reference -->
 
 The difference from the autonomous flow is just *who decides*:
@@ -79,8 +82,9 @@ build on). Read the printed code, then continue driving the flow.
 ## Workflow
 
 1. Ensure the runtime: `npx @usecanary/cli install` (one-time).
-2. Start: `id=$(npx @usecanary/cli session start --name "<flow>")` (headed — needed so the user can
-   take over).
+2. Start: `id=$(npx @usecanary/cli session start --name "<flow>")`. The browser is headed by
+   default (no flag) — which is required here so the user can take over; never pass `--headed` (it
+   doesn't exist), and don't pass `--headless`.
 3. **LOOK** — observe before acting; an observe step records like any other (log `page.url()`,
    `page.title()`, `(await page.snapshotForAI()).full`).
 4. **DECIDE** the next small action. If it's ambiguous or not yours to do, ask the user / hand over.
