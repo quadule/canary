@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { formatDurationMs, requestId } from "@usecanary/cli-kit";
 import {
@@ -15,7 +16,34 @@ import { stopDaemonIfIdle } from "./daemon-stop.js";
 
 interface SessionEndOpts {
   condense?: boolean;
+  open?: boolean;
   stopDaemon?: boolean;
+}
+
+// Open a file/URL in the OS default app, detached and best-effort: opening the
+// report is a convenience, so a missing opener or headless host must never fail
+// `session end`.
+function openInOSDefault(target: string): void {
+  let command = "xdg-open";
+  let args = [target];
+  if (process.platform === "darwin") {
+    command = "open";
+  } else if (process.platform === "win32") {
+    command = "cmd";
+    args = ["/c", "start", "", target];
+  }
+  try {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.on("error", () => {
+      // no opener on this host — ignore
+    });
+    child.unref();
+  } catch {
+    // ignore — best effort
+  }
 }
 
 // Trim dead air from the recorded videos (pre-load white frames, long stills)
@@ -145,6 +173,16 @@ export async function sessionEnd(
     process.stdout.write(
       `Session ${id} ended.\nArtifacts: ${endResult.session.artifactsDir}\nReport:    ${sessionReportPath(id)}\n`
     );
+  }
+
+  // Open the rendered report in the OS default browser when asked (the
+  // interactive flow passes --open so the user sees it without an extra step).
+  if (opts.open) {
+    const reportPath = sessionReportPath(id);
+    if (!json) {
+      process.stdout.write(`Opening ${reportPath}…\n`);
+    }
+    openInOSDefault(reportPath);
   }
 
   if (opts.stopDaemon) {

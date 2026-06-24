@@ -117,10 +117,10 @@ build on). Read the printed code, then continue driving the flow.
    <name>`), or take over (above) when the user must do it.
 6. **READ** stdout + exit code; on failure observe and retry as a new step.
 7. Loop 3–6 until done; finish with explicit assertion step(s) logging `PASS`/`FAIL`.
-8. End + render: `npx @usecanary/cli session end "$id"` → `~/.canary/sessions/<id>/report.html`.
-9. ALWAYS open the report when finished — don't just offer. Open the self-contained
-   `~/.canary/sessions/<id>/report.html` with the OS opener (`open` on macOS, `xdg-open` on Linux,
-   `start` on Windows). Also mention **canary-review** / `npx @usecanary/ui` to browse all sessions.
+8. End, render, and open the report: `npx @usecanary/cli session end "$id" --open`. The `--open`
+   flag opens the self-contained `~/.canary/sessions/<id>/report.html` in the browser for you —
+   always pass it here. (If the host has no opener and nothing appears, open the printed path
+   yourself.) Then mention **canary-review** / `npx @usecanary/ui` to browse all sessions.
 
 ## Hard rules
 

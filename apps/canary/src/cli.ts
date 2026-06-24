@@ -106,6 +106,7 @@ interface RunOpts {
 
 interface SessionEndOpts {
   condense?: boolean;
+  open?: boolean;
   stopDaemon?: boolean;
 }
 
@@ -189,10 +190,12 @@ export function buildProgram(): CommandType {
       "--no-condense",
       "Keep raw videos (skip trimming pre-load frames and long stills)"
     )
+    .option("--open", "Open the rendered report.html in your default browser")
     .action(async (id: string, opts: SessionEndOpts) => {
       const code = await sessionEnd(id, isJson(program), {
         stopDaemon: opts.stopDaemon === true,
         condense: opts.condense,
+        open: opts.open === true,
       });
       throw new ExitCodeError(code);
     });
