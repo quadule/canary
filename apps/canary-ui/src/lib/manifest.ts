@@ -40,6 +40,9 @@ export interface ManifestStep {
   script?: string;
   startedAt: string;
   status: "pass" | "fail";
+  // Position of this step in the condensed video, in seconds (when known) — the
+  // timeline seeks the video to a step and highlights the step under the playhead.
+  videoTime?: number;
 }
 
 export interface ManifestEnvironment {

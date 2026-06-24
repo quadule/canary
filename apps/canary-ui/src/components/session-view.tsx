@@ -21,8 +21,11 @@ import {
   type CSSProperties,
   lazy,
   type ReactNode,
+  type Ref,
   Suspense,
+  useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -176,6 +179,32 @@ export default function SessionView({
   const splitRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
 
+  // Sync the steps timeline to the persistent left-column video. A callback ref
+  // captures the <video> element when the media panel shows it (React 19 ref
+  // cleanup removes the listener on unmount / source change).
+  const videoElRef = useRef<HTMLVideoElement | null>(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const attachVideo = useCallback((el: HTMLVideoElement | null) => {
+    videoElRef.current = el;
+    if (!el) {
+      return;
+    }
+    const onTime = () => setCurrentTime(el.currentTime);
+    el.addEventListener("timeupdate", onTime);
+    return () => el.removeEventListener("timeupdate", onTime);
+  }, []);
+  const seekVideo = useCallback((t: number) => {
+    const el = videoElRef.current;
+    if (!el) {
+      return;
+    }
+    el.currentTime = t;
+    const played = el.play?.();
+    played?.catch?.(() => {
+      // autoplay can reject; the seek still took effect
+    });
+  }, []);
+
   useEffect(() => {
     function onMove(e: PointerEvent) {
       if (!(draggingRef.current && splitRef.current)) {
@@ -292,7 +321,7 @@ export default function SessionView({
         style={{ "--left-w": `${leftPct}%` } as CSSProperties}
       >
         <div className="scrollbar-none overscroll-none border-border max-lg:border-b lg:w-[var(--left-w)] lg:shrink-0 lg:overflow-y-auto">
-          <MediaPanel m={m} rootId={rootId} />
+          <MediaPanel m={m} rootId={rootId} videoRef={attachVideo} />
         </div>
         <button
           aria-label="Resize panels"
@@ -335,7 +364,7 @@ export default function SessionView({
                 <Summary m={m} note={data.note} tags={data.tags} />
               </TabsContent>
               <TabsContent className="flex min-h-0 flex-col" value="steps">
-                <Steps m={m} />
+                <Steps currentTime={currentTime} m={m} onSeek={seekVideo} />
               </TabsContent>
               <TabsContent
                 className="scrollbar-none min-h-0 overflow-y-auto overscroll-none"
@@ -463,7 +492,31 @@ function Summary({
   );
 }
 
-function Steps({ m }: { m: SessionManifest }) {
+function Steps({
+  m,
+  currentTime,
+  onSeek,
+}: {
+  m: SessionManifest;
+  currentTime?: number;
+  onSeek?: (t: number) => void;
+}) {
+  // The step under the playhead: the last one whose videoTime has been reached.
+  const activeIdx = useMemo(() => {
+    if (currentTime == null) {
+      return -1;
+    }
+    let idx = -1;
+    m.steps.forEach((s, i) => {
+      if (
+        typeof s.videoTime === "number" &&
+        s.videoTime <= currentTime + 0.05
+      ) {
+        idx = i;
+      }
+    });
+    return idx;
+  }, [currentTime, m.steps]);
   return (
     <Panel
       count={`${m.summary.stepsPassed}/${m.summary.stepsTotal} passed`}
@@ -479,10 +532,21 @@ function Steps({ m }: { m: SessionManifest }) {
       ) : (
         m.steps.map((step, i) => {
           const n = step.actions.length;
+          const seekable = typeof step.videoTime === "number";
           return (
-            <div
-              className="flex items-center gap-3.5 border-border border-b px-6 py-4 last:border-0 hover:bg-primary/5"
+            <button
+              className={cn(
+                "flex w-full items-center gap-3.5 border-border border-b px-6 py-4 text-left last:border-0 hover:bg-primary/5",
+                i === activeIdx && "bg-primary/10",
+                !seekable && "cursor-default"
+              )}
               key={`${i}-${step.name}`}
+              onClick={() => {
+                if (seekable) {
+                  onSeek?.(step.videoTime as number);
+                }
+              }}
+              type="button"
             >
               <span
                 className={cn(
@@ -501,7 +565,7 @@ function Steps({ m }: { m: SessionManifest }) {
                 exit {step.exitCode} · {fmtMs(step.durationMs)}
                 {n > 0 ? ` · ${n} action${n === 1 ? "" : "s"}` : ""}
               </span>
-            </div>
+            </button>
           );
         })
       )}
@@ -830,7 +894,15 @@ function Videos({ m, rootId }: { m: SessionManifest; rootId: string }) {
 // The left half of the split detail view: one media stage that plays the
 // recording(s) and steps through every screenshot, with a thumbnail filmstrip
 // to jump between them. The right half keeps the full tab set.
-function MediaPanel({ m, rootId }: { m: SessionManifest; rootId: string }) {
+function MediaPanel({
+  m,
+  rootId,
+  videoRef,
+}: {
+  m: SessionManifest;
+  rootId: string;
+  videoRef?: Ref<HTMLVideoElement>;
+}) {
   const items = [
     ...m.artifacts.videos.map((v, i) => ({
       cap: m.artifacts.videos.length > 1 ? `Recording ${i + 1}` : "Recording",
@@ -867,7 +939,7 @@ function MediaPanel({ m, rootId }: { m: SessionManifest; rootId: string }) {
   return (
     <div className="flex flex-col gap-4 p-6">
       {cur.kind === "video" ? (
-        <VideoPlayer src={cur.src} type={cur.type} />
+        <VideoPlayer src={cur.src} type={cur.type} videoRef={videoRef} />
       ) : (
         <div className="flex items-center justify-center overflow-hidden rounded-lg border border-border bg-well">
           <img
