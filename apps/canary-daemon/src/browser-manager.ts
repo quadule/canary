@@ -40,6 +40,9 @@ interface LaunchBrowserOptions {
     har?: { content: "embed" | "attach" | "omit"; path: string };
     videoDir?: string;
   };
+  // Fixed page viewport. When set, video recording is sized to match so the
+  // capture isn't downscaled to Playwright's small default frame.
+  viewport?: { height: number; width: number };
 }
 
 export interface SessionLaunchOptions {
@@ -50,6 +53,7 @@ export interface SessionLaunchOptions {
     har?: { content: "embed" | "attach" | "omit"; path: string };
     videoDir?: string;
   };
+  viewport?: { height: number; width: number };
 }
 
 interface BrowserPageSummary {
@@ -481,13 +485,21 @@ export class BrowserManager {
       profileDir,
       {
         headless: options.headless,
-        viewport: options.headless ? undefined : null,
+        // A fixed viewport (sessions) keeps recordings deterministic; otherwise
+        // headed windows track the OS window size and headless gets the
+        // Playwright default.
+        viewport: options.viewport ?? (options.headless ? undefined : null),
         ignoreHTTPSErrors: options.ignoreHTTPSErrors,
         handleSIGINT: false,
         handleSIGTERM: false,
         handleSIGHUP: false,
         ...(options.record?.videoDir
-          ? { recordVideo: { dir: options.record.videoDir } }
+          ? {
+              recordVideo: {
+                dir: options.record.videoDir,
+                ...(options.viewport ? { size: options.viewport } : {}),
+              },
+            }
           : {}),
         ...(options.record?.har
           ? {

@@ -5,6 +5,7 @@ import type {
   SessionEndRequest,
   SessionStartRequest,
   SessionStartResult,
+  Viewport,
 } from "@usecanary/protocol";
 import { logger } from "../logger.js";
 import {
@@ -15,12 +16,36 @@ import { generateSessionId } from "../util/session-id.js";
 
 interface SessionStartArgs {
   capture: CaptureOptions;
+  cursor: boolean;
   headless: boolean;
   json: boolean;
   name?: string;
+  // Raw `--viewport WxH` value; the daemon applies its 1280x720 default when
+  // omitted.
+  viewport?: string;
+}
+
+// Parse a `WxH` viewport spec (e.g. "1280x720"). Throws on anything else so a
+// typo fails the command instead of silently recording at the default size.
+export function parseViewport(spec: string): Viewport {
+  const match = spec.trim().match(/^(\d{1,4})x(\d{1,4})$/i);
+  if (!match) {
+    throw new Error(
+      `Invalid --viewport "${spec}" (expected WIDTHxHEIGHT, e.g. 1280x720)`
+    );
+  }
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (width < 1 || height < 1) {
+    throw new Error(
+      `Invalid --viewport "${spec}" (width and height must be positive)`
+    );
+  }
+  return { width, height };
 }
 
 export async function sessionStart(args: SessionStartArgs): Promise<number> {
+  const viewport = args.viewport ? parseViewport(args.viewport) : undefined;
   await ensureDaemonRunning();
 
   const id = generateSessionId(args.name);
@@ -31,6 +56,8 @@ export async function sessionStart(args: SessionStartArgs): Promise<number> {
     name: args.name,
     headless: args.headless,
     capture: args.capture,
+    viewport,
+    cursor: args.cursor,
   };
 
   let result: SessionStartResult | undefined;

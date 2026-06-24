@@ -14,6 +14,10 @@ import { getSessionDir } from "./local-endpoint.js";
 import { SessionManager, sessionBrowserName } from "./session-manager.js";
 
 type Listener = (arg: unknown) => void;
+interface RecorderSink {
+  actionAdded?: (page: unknown, action: unknown, code: string) => void;
+  actionUpdated?: (page: unknown, action: unknown, code: string) => void;
+}
 
 const log = createLogger({ level: "silent" });
 
@@ -21,6 +25,7 @@ function makeSession(): {
   entry: BrowserEntry;
   calls: string[];
   emit: (event: string, arg: unknown) => void;
+  recorderSink: { current?: RecorderSink };
 } {
   const calls: string[] = [];
   const listeners = new Map<string, Listener[]>();
@@ -42,7 +47,19 @@ function makeSession(): {
       return Promise.resolve();
     },
   };
+  // Captures the recorder event sink so a takeover test can drive actions.
+  const recorderSink: { current?: RecorderSink } = {};
   const context = {
+    _disableRecorder: () => {
+      calls.push("disableRecorder");
+      recorderSink.current = undefined;
+      return Promise.resolve();
+    },
+    _enableRecorder: (_params: unknown, sink: RecorderSink) => {
+      calls.push("enableRecorder");
+      recorderSink.current = sink;
+      return Promise.resolve();
+    },
     close: () => {
       calls.push("context.close");
       return Promise.resolve();
@@ -73,15 +90,21 @@ function makeSession(): {
       fn(arg);
     }
   };
-  return { calls, emit, entry };
+  return { calls, emit, entry, recorderSink };
 }
 
 function makeManager(
   entry: BrowserEntry,
   calls: string[],
-  launched: Array<{ name: string; options: SessionLaunchOptions }>
+  launched: Array<{ name: string; options: SessionLaunchOptions }>,
+  initScripts: string[] = []
 ): BrowserManager {
   return {
+    applyInitScripts: (_name: string, scripts: readonly string[]) => {
+      calls.push("applyInitScripts");
+      initScripts.push(...scripts);
+      return Promise.resolve();
+    },
     launchSessionBrowser: (name: string, options: SessionLaunchOptions) => {
       launched.push({ name, options });
       return Promise.resolve(entry);
@@ -152,6 +175,65 @@ describe("SessionManager", () => {
     expect(calls).toContain("tracing.start");
   });
 
+  it("defaults the recording viewport to 1280x720 (Playwright default)", async () => {
+    const { entry, calls } = makeSession();
+    const launched: Array<{ name: string; options: SessionLaunchOptions }> = [];
+    const sessions = new SessionManager(
+      makeManager(entry, calls, launched),
+      log
+    );
+
+    await sessions.start(startReq());
+
+    expect(launched[0]?.options.viewport).toEqual({
+      width: 1280,
+      height: 720,
+    });
+  });
+
+  it("applies the virtual-cursor init script by default", async () => {
+    const { entry, calls } = makeSession();
+    const initScripts: string[] = [];
+    const sessions = new SessionManager(
+      makeManager(entry, calls, [], initScripts),
+      log
+    );
+
+    await sessions.start(startReq());
+
+    expect(initScripts).toHaveLength(1);
+    expect(initScripts[0]).toContain("canary-virtual-cursor");
+  });
+
+  it("skips the virtual cursor when the request disables it", async () => {
+    const { entry, calls } = makeSession();
+    const initScripts: string[] = [];
+    const sessions = new SessionManager(
+      makeManager(entry, calls, [], initScripts),
+      log
+    );
+
+    await sessions.start(startReq({ cursor: false }));
+
+    expect(initScripts).toHaveLength(0);
+  });
+
+  it("honors an explicit viewport from the request", async () => {
+    const { entry, calls } = makeSession();
+    const launched: Array<{ name: string; options: SessionLaunchOptions }> = [];
+    const sessions = new SessionManager(
+      makeManager(entry, calls, launched),
+      log
+    );
+
+    await sessions.start(startReq({ viewport: { width: 1440, height: 900 } }));
+
+    expect(launched[0]?.options.viewport).toEqual({
+      width: 1440,
+      height: 900,
+    });
+  });
+
   it("rejects a duplicate session id", async () => {
     const { entry, calls } = makeSession();
     const sessions = new SessionManager(makeManager(entry, calls, []), log);
@@ -163,6 +245,7 @@ describe("SessionManager", () => {
     const { entry, calls } = makeSession();
     let onDisconnect: ((name: string) => void) | undefined;
     const manager = {
+      applyInitScripts: () => Promise.resolve(),
       launchSessionBrowser: () => Promise.resolve(entry),
       onBrowserDisconnect: (fn: (name: string) => void) => {
         onDisconnect = fn;
@@ -264,5 +347,61 @@ describe("SessionManager", () => {
     const result = await sessions.end("s1", "end");
     expect(calls).not.toContain("tracing.stop");
     expect(result.artifacts).toHaveLength(0);
+  });
+
+  it("captures a takeover's actions as generated code", async () => {
+    const { entry, calls, recorderSink } = makeSession();
+    const sessions = new SessionManager(makeManager(entry, calls, []), log);
+    await sessions.start(startReq());
+
+    await sessions.takeoverStart("s1", {
+      language: "javascript",
+      step: "manual-takeover",
+    });
+    expect(calls).toContain("enableRecorder");
+    expect(sessions.isRecording("s1")).toBe(true);
+
+    // Drive recorder events: an action, then an update that revises the last
+    // one (e.g. accumulating keystrokes), then a second distinct action.
+    recorderSink.current?.actionAdded?.(null, null, "await page.click('#a');");
+    recorderSink.current?.actionUpdated?.(
+      null,
+      null,
+      "await page.fill('#a', 'hi');"
+    );
+    recorderSink.current?.actionAdded?.(null, null, "await page.click('#go');");
+
+    const out = await sessions.takeoverStop("s1");
+    expect(calls).toContain("disableRecorder");
+    expect(sessions.isRecording("s1")).toBe(false);
+    expect(out.step).toBe("manual-takeover");
+    expect(out.actionCount).toBe(2);
+    expect(out.code).toBe(
+      "await page.fill('#a', 'hi');\nawait page.click('#go');"
+    );
+  });
+
+  it("rejects a second takeover and a headless takeover", async () => {
+    const { entry, calls } = makeSession();
+    const sessions = new SessionManager(makeManager(entry, calls, []), log);
+    await sessions.start(startReq());
+    await sessions.takeoverStart("s1", {
+      language: "javascript",
+      step: "one",
+    });
+    await expect(
+      sessions.takeoverStart("s1", { language: "javascript", step: "two" })
+    ).rejects.toThrow(/already in an interactive takeover/);
+    await sessions.takeoverStop("s1");
+
+    const second = makeSession();
+    const headless = new SessionManager(
+      makeManager(second.entry, second.calls, []),
+      log
+    );
+    await headless.start(startReq({ headless: true }));
+    await expect(
+      headless.takeoverStart("s1", { language: "javascript", step: "x" })
+    ).rejects.toThrow(/headed/);
   });
 });

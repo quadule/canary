@@ -78,9 +78,13 @@ export const SESSION_START_LONG_ABOUT = `Start a capture-enabled session and pri
 
 Capture is on by default — disable per stream with --no-trace / --no-video / --no-har / --no-console.
 Use --headless for unattended runs; omit it to watch the browser window.
+The page records at a fixed 1280x720 desktop viewport — override with --viewport WxH.
+A virtual cursor + click animation is drawn into the recording so interactions are visible
+in video and screenshots; disable it with --no-cursor.
 
   id=$(canary session start --name "checkout")
-  id=$(canary session start --name "smoke" --headless --no-video)`;
+  id=$(canary session start --name "smoke" --headless --no-video)
+  id=$(canary session start --name "laptop" --viewport 1440x900)`;
 
 export const RUN_LONG_ABOUT = `Run a script as one step inside a session.
 
@@ -101,6 +105,11 @@ export const SESSION_END_LONG_ABOUT = `Stop recording, collect artifacts, and re
 
 Writes ~/.canary/sessions/<id>/report.html (self-contained) plus results.json. Pass --stop-daemon to
 shut the daemon down afterward if no other sessions or browsers remain.
+
+Videos are condensed when ffmpeg is available (PATH, $CANARY_FFMPEG, or Playwright's bundled
+copy): the pre-page-load segment is dropped and motionless stretches are trimmed out with a
+frame-accurate re-encode that keeps real motion (cursor, typing, captions). Pass --no-condense
+to keep the raw recordings.
 
   canary session end "$id"`;
 

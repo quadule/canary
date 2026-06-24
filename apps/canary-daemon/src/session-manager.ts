@@ -5,6 +5,7 @@ import type { Logger } from "@usecanary/logger";
 import {
   type ArtifactInfo,
   type CaptureOptions,
+  DEFAULT_SESSION_VIEWPORT,
   SESSION_CONSOLE_FILE,
   SESSION_HAR_FILE,
   SESSION_SCREENSHOT_EXT,
@@ -20,6 +21,7 @@ import {
 import type { ConsoleMessage, Page, WebError } from "playwright";
 import type { BrowserEntry, BrowserManager } from "./browser-manager.js";
 import { getSessionDir } from "./local-endpoint.js";
+import { SESSION_CURSOR_SCRIPT } from "./session-cursor.js";
 
 // Reserved browser-name prefix. A session is a dedicated capture-enabled
 // persistent context registered under this name so the existing `execute`
@@ -50,10 +52,50 @@ interface SessionState {
   // can't read pages() once the browser disconnects).
   pageCount: number;
   phase: SessionPhase;
+  // Set while an interactive takeover is recording the user's manual actions
+  // on this context (between takeover-start and takeover-stop).
+  recorder?: RecorderCapture;
   runCount: number;
   sessionId: string;
   startedAt: number;
   videoDir: string;
+}
+
+// Buffers the Playwright code the recorder generates for each manual action.
+// actionUpdated revises the most recent action (e.g. coalesced keystrokes), so
+// it replaces the last entry rather than appending.
+interface RecorderCapture {
+  actions: Array<{ code: string }>;
+  name: string;
+  startedAt: number;
+}
+
+// Playwright's recorder is reachable on a real client BrowserContext via the
+// internal `_enableRecorder(params, eventSink)` / `_disableRecorder()` pair
+// (not on the public type). `recorderMode: "api"` streams generated code back
+// through the sink with no inspector window.
+interface RecorderSink {
+  actionAdded?: (page: unknown, action: unknown, code: string) => void;
+  actionUpdated?: (page: unknown, action: unknown, code: string) => void;
+}
+interface RecorderCapableContext {
+  _disableRecorder(): Promise<void>;
+  _enableRecorder(
+    params: {
+      language: string;
+      mode: "recording";
+      recorderMode: "api";
+    },
+    sink?: RecorderSink
+  ): Promise<void>;
+}
+
+export interface TakeoverStopResult {
+  actionCount: number;
+  code: string;
+  durationMs: number;
+  startedAt: number;
+  step: string;
 }
 
 // Owns the daemon-side session registry and all capture wiring (tracing, video,
@@ -163,6 +205,9 @@ export class SessionManager {
             ? { path: harPath, content: "embed" }
             : undefined,
         },
+        // Recordings always get a fixed, realistic desktop viewport so video
+        // and screenshots are deterministic regardless of headed window size.
+        viewport: req.viewport ?? DEFAULT_SESSION_VIEWPORT,
       }
     );
 
@@ -188,6 +233,25 @@ export class SessionManager {
     // untracked recording browser that SessionManager can never reach (it would
     // otherwise survive until daemon shutdown).
     try {
+      if (req.cursor !== false) {
+        // Virtual cursor + click ripple so recorded video/screenshots show
+        // where input happened. Applied via the manager so it shares the
+        // content-hash dedupe with user init scripts.
+        await this.manager.applyInitScripts(entry.name, [
+          SESSION_CURSOR_SCRIPT,
+        ]);
+        // addInitScript only reaches documents created AFTER registration, and
+        // the persistent context comes up with an about:blank page that steps
+        // may adopt without ever navigating (e.g. setContent-only flows) —
+        // seed the script into already-open pages directly.
+        await Promise.all(
+          entry.context
+            .pages()
+            .map((page) =>
+              page.evaluate(SESSION_CURSOR_SCRIPT).catch(() => undefined)
+            )
+        );
+      }
       if (req.capture.trace) {
         await entry.context.tracing.start({
           screenshots: true,
@@ -224,6 +288,120 @@ export class SessionManager {
     if (state?.capture.trace) {
       await state.entry.context.tracing.groupEnd().catch(() => undefined);
     }
+  }
+
+  isRecording(sessionId: string): boolean {
+    return this.sessions.get(sessionId)?.recorder !== undefined;
+  }
+
+  // Enable Playwright's recorder (api mode) on the live session context so a
+  // human can drive the headed browser; each manual action's generated code is
+  // buffered. Opens a trace group so the takeover reads as one step. Paired
+  // with takeoverStop.
+  async takeoverStart(
+    sessionId: string,
+    opts: { language: string; step: string }
+  ): Promise<void> {
+    const state = this.sessions.get(sessionId);
+    if (state?.phase !== "active") {
+      throw new Error(`Session "${sessionId}" is not active`);
+    }
+    if (state.recorder) {
+      throw new Error(
+        `Session "${sessionId}" is already in an interactive takeover`
+      );
+    }
+    if (state.headless) {
+      throw new Error(
+        "Interactive takeover needs a headed session — start it without --headless"
+      );
+    }
+
+    const capture: RecorderCapture = {
+      actions: [],
+      name: opts.step,
+      startedAt: Date.now(),
+    };
+    const sink: RecorderSink = {
+      actionAdded: (_page, _action, code) => {
+        capture.actions.push({ code: code ?? "" });
+      },
+      // A revision of the latest action (e.g. accumulating keystrokes) replaces
+      // the last buffered entry rather than adding a new one.
+      actionUpdated: (_page, _action, code) => {
+        if (capture.actions.length > 0) {
+          capture.actions[capture.actions.length - 1] = { code: code ?? "" };
+        } else {
+          capture.actions.push({ code: code ?? "" });
+        }
+      },
+    };
+
+    await this.beginStep(sessionId, opts.step);
+    try {
+      const context = state.entry.context as unknown as RecorderCapableContext;
+      await context._enableRecorder(
+        { language: opts.language, mode: "recording", recorderMode: "api" },
+        sink
+      );
+    } catch (err) {
+      await this.endStep(sessionId);
+      throw err;
+    }
+    state.recorder = capture;
+    // The user drives with their own pointer during a takeover, so hide the
+    // virtual cursor (it would otherwise sit frozen, since it ignores user
+    // input). Restored on stop.
+    await this.#setCursorHidden(state, true);
+  }
+
+  #setCursorHidden(state: SessionState, hidden: boolean): Promise<unknown> {
+    return Promise.all(
+      state.entry.context.pages().map((page) =>
+        page
+          .evaluate((h) => {
+            const c = (
+              window as unknown as {
+                __canaryCursor?: { setHidden?: (v: boolean) => void };
+              }
+            ).__canaryCursor;
+            c?.setHidden?.(h);
+          }, hidden)
+          .catch(() => undefined)
+      )
+    );
+  }
+
+  // Disable the recorder and return the captured Playwright source. `cancel`
+  // still tears the recorder down (and closes the trace group) but signals the
+  // caller to discard the capture rather than record a step.
+  async takeoverStop(sessionId: string): Promise<TakeoverStopResult> {
+    const state = this.sessions.get(sessionId);
+    if (!state) {
+      throw new Error(`Session "${sessionId}" not found`);
+    }
+    const capture = state.recorder;
+    if (!capture) {
+      throw new Error(`Session "${sessionId}" has no active takeover`);
+    }
+
+    const context = state.entry.context as unknown as RecorderCapableContext;
+    await context._disableRecorder().catch(() => undefined);
+    state.recorder = undefined;
+    await this.#setCursorHidden(state, false);
+    await this.endStep(sessionId);
+
+    const code = capture.actions
+      .map((a) => a.code.trim())
+      .filter((line) => line.length > 0)
+      .join("\n");
+    return {
+      actionCount: capture.actions.length,
+      code,
+      durationMs: Date.now() - capture.startedAt,
+      startedAt: capture.startedAt,
+      step: capture.name,
+    };
   }
 
   // Strict teardown ordering: stop tracing (writes trace.zip) -> close context
