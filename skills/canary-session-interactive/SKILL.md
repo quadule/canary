@@ -73,7 +73,9 @@ build on). Read the printed code, then continue driving the flow.
 6. **READ** stdout + exit code; on failure observe and retry as a new step.
 7. Loop 3–6 until done; finish with explicit assertion step(s) logging `PASS`/`FAIL`.
 8. End + render: `npx @usecanary/cli session end "$id"` → `~/.canary/sessions/<id>/report.html`.
-9. Offer **canary-review** (or `npx @usecanary/ui`) to browse it.
+9. ALWAYS open the report when finished — don't just offer. Open the self-contained
+   `~/.canary/sessions/<id>/report.html` with the OS opener (`open` on macOS, `xdg-open` on Linux,
+   `start` on Windows). Also mention **canary-review** / `npx @usecanary/ui` to browse all sessions.
 
 ## Hard rules
 
@@ -89,6 +91,11 @@ build on). Read the printed code, then continue driving the flow.
   content. When you must observe an unknown post-navigation page, `await page.waitForSettled()`
   first — it waits (bounded) for the DOM to stop changing, framework-agnostically. Avoid fixed
   `waitForTimeout`, and `waitForLoadState("networkidle")` (it can hang on apps with live connections).
+- `page.url()` is a cached value updated by an async event, so right after a client-side navigation
+  it can still read the OLD url — especially a Turbo/SPA visit, whose URL only changes once its
+  fetch lands. To read or assert the post-navigation URL, `await page.waitForURL(<url|regex|fn>)`,
+  or `await page.waitForSettled()` then read `page.url()`, or read the live value with
+  `await page.evaluate(() => location.href)`.
 <!-- canary:end rule-observe-first -->
 
 <!-- canary:snippet rule-visible-interaction -->

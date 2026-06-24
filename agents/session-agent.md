@@ -48,6 +48,11 @@ into a few intent-named steps.
   content. When you must observe an unknown post-navigation page, `await page.waitForSettled()`
   first — it waits (bounded) for the DOM to stop changing, framework-agnostically. Avoid fixed
   `waitForTimeout`, and `waitForLoadState("networkidle")` (it can hang on apps with live connections).
+- `page.url()` is a cached value updated by an async event, so right after a client-side navigation
+  it can still read the OLD url — especially a Turbo/SPA visit, whose URL only changes once its
+  fetch lands. To read or assert the post-navigation URL, `await page.waitForURL(<url|regex|fn>)`,
+  or `await page.waitForSettled()` then read `page.url()`, or read the live value with
+  `await page.evaluate(() => location.href)`.
 <!-- canary:end rule-observe-first -->
 
 <!-- canary:snippet rule-visible-interaction -->
