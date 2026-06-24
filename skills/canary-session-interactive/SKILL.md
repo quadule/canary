@@ -100,7 +100,8 @@ build on). Read the printed code, then continue driving the flow.
 
 ## Workflow
 
-1. Ensure the runtime: `npx @usecanary/cli install` (one-time).
+1. Runtime: if `canary` (or `npx @usecanary/cli`) already runs, it's installed — don't reinstall.
+   Only run `npx @usecanary/cli install` if a command reports the runtime/browser is missing.
 2. Start: `id=$(npx @usecanary/cli session start --name "<flow>")`. The browser is headed by
    default (no flag) — which is required here so the user can take over; never pass `--headed` (it
    doesn't exist), and don't pass `--headless`.

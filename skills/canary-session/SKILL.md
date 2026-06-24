@@ -74,7 +74,8 @@ One session, small steps that reproduce it, `session end` — the report bundles
 
 ## Workflow (the explore-and-record loop)
 
-1. Ensure the runtime: `npx @usecanary/cli install` (one-time).
+1. Runtime: if `canary` (or `npx @usecanary/cli`) already runs, it's installed — don't reinstall.
+   Only run `npx @usecanary/cli install` if a command reports the runtime/browser is missing.
 2. Start: `id=$(npx @usecanary/cli session start --name "<flow>")`
 3. **LOOK** — observe before acting; an observe step records like any other:
    ```sh
