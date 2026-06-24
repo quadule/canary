@@ -1,0 +1,109 @@
+import { describe, expect, it } from "vitest";
+import {
+  computeKeepSegments,
+  keptSeconds,
+  parseFreezeOutput,
+} from "./condense.js";
+
+const freezeLine = (kind: "start" | "end", t: number) =>
+  `[freezedetect @ 0x600] lavfi.freezedetect.freeze_${kind}: ${t}\n`;
+
+describe("parseFreezeOutput", () => {
+  it("pairs freeze_start/freeze_end events and reads the duration", () => {
+    const stderr =
+      freezeLine("start", 0.04) +
+      freezeLine("end", 5.2) +
+      freezeLine("start", 10) +
+      freezeLine("end", 14.5);
+    const progress = "out_time_us=20000000\nprogress=end\n";
+    expect(parseFreezeOutput(stderr, progress)).toEqual({
+      durationSec: 20,
+      freezes: [
+        { start: 0.04, end: 5.2 },
+        { start: 10, end: 14.5 },
+      ],
+    });
+  });
+
+  it("closes a freeze still open at EOF using the total duration", () => {
+    const stderr = freezeLine("start", 8);
+    const progress = "out_time_us=12000000\n";
+    expect(parseFreezeOutput(stderr, progress).freezes).toEqual([
+      { start: 8, end: 12 },
+    ]);
+  });
+
+  it("falls back to out_time_ms and tolerates no freezes", () => {
+    const parsed = parseFreezeOutput("", "out_time_ms=7000000\n");
+    expect(parsed).toEqual({ durationSec: 7, freezes: [] });
+  });
+});
+
+describe("computeKeepSegments", () => {
+  it("drops a leading freeze entirely (pre-page-load frames)", () => {
+    const keeps = computeKeepSegments({
+      durationSec: 20,
+      freezes: [{ start: 0, end: 5 }],
+    });
+    expect(keeps).toEqual([{ start: 5, end: 20 }]);
+  });
+
+  it("caps a mid-video freeze at the max still length", () => {
+    const keeps = computeKeepSegments(
+      {
+        durationSec: 30,
+        freezes: [{ start: 10, end: 20 }],
+      },
+      2
+    );
+    expect(keeps).toEqual([
+      { start: 0, end: 12 },
+      { start: 20, end: 30 },
+    ]);
+    expect(keptSeconds(keeps)).toBe(22);
+  });
+
+  it("caps a trailing freeze that runs to EOF", () => {
+    const keeps = computeKeepSegments(
+      {
+        durationSec: 30,
+        freezes: [{ start: 25, end: 30 }],
+      },
+      2
+    );
+    expect(keeps).toEqual([{ start: 0, end: 27 }]);
+  });
+
+  it("handles leading + mid freezes together", () => {
+    const keeps = computeKeepSegments(
+      {
+        durationSec: 40,
+        freezes: [
+          { start: 0.1, end: 4 },
+          { start: 12, end: 20 },
+        ],
+      },
+      2
+    );
+    expect(keeps).toEqual([
+      { start: 4, end: 14 },
+      { start: 20, end: 40 },
+    ]);
+  });
+
+  it("keeps the first seconds when the whole video is one leading freeze", () => {
+    const keeps = computeKeepSegments(
+      {
+        durationSec: 9,
+        freezes: [{ start: 0, end: 9 }],
+      },
+      2
+    );
+    expect(keeps).toEqual([{ start: 0, end: 2 }]);
+  });
+
+  it("returns the full video when nothing froze", () => {
+    const keeps = computeKeepSegments({ durationSec: 15, freezes: [] });
+    expect(keeps).toEqual([{ start: 0, end: 15 }]);
+  });
+});

@@ -1,4 +1,5 @@
-import { requestId } from "@usecanary/cli-kit";
+import { stat } from "node:fs/promises";
+import { formatDurationMs, requestId } from "@usecanary/cli-kit";
 import {
   sendRequest,
   sessionReportPath,
@@ -9,10 +10,51 @@ import { logger } from "../logger.js";
 import { writeSessionReport } from "../report/load-and-render.js";
 import { endResultFromDisk } from "../session/artifacts.js";
 import { readSessionRecord, updateSessionRecord } from "../session/registry.js";
+import { condenseVideo, findFfmpeg } from "../video/condense.js";
 import { stopDaemonIfIdle } from "./daemon-stop.js";
 
 interface SessionEndOpts {
+  condense?: boolean;
   stopDaemon?: boolean;
+}
+
+// Trim dead air from the recorded videos (pre-load white frames, long stills)
+// before the report is rendered, refreshing each artifact's byte size so the
+// manifest reflects the condensed file. Purely best-effort: without ffmpeg or
+// on any failure, originals are kept and the report renders unchanged.
+async function condenseSessionVideos(result: SessionEndResult): Promise<void> {
+  const videos = result.artifacts.filter((a) => a.kind === "video");
+  if (videos.length === 0) {
+    return;
+  }
+  const ffmpeg = await findFfmpeg();
+  if (!ffmpeg) {
+    logger.info("ffmpeg not found; keeping raw session videos");
+    return;
+  }
+  // Re-encoding can take a few seconds per video; without feedback the command
+  // looks hung. Progress goes to stderr (stdout stays machine-readable).
+  const label = videos.length === 1 ? "recording" : "recordings";
+  process.stderr.write(`Condensing ${videos.length} ${label}…\n`);
+  for (const video of videos) {
+    const outcome = await condenseVideo(video.path, logger, ffmpeg);
+    if (outcome.condensed) {
+      video.bytes = await stat(video.path)
+        .then((s) => s.size)
+        .catch(() => video.bytes);
+      const from = formatDurationMs(
+        Math.round((outcome.durationSec ?? 0) * 1000)
+      );
+      const to = formatDurationMs(Math.round((outcome.keptSec ?? 0) * 1000));
+      process.stderr.write(`  ✓ ${from} → ${to}\n`);
+      logger.info({ video: video.path }, `condensed video: ${from} → ${to}`);
+    } else {
+      logger.debug(
+        { video: video.path, reason: outcome.reason },
+        "video left unchanged"
+      );
+    }
+  }
 }
 
 export async function sessionEnd(
@@ -64,6 +106,10 @@ export async function sessionEnd(
   }
   const endResult =
     code === 0 && result ? result : await endResultFromDisk(record);
+
+  if (opts.condense !== false) {
+    await condenseSessionVideos(endResult);
+  }
 
   // Resilient like `session abort`: a report-write failure must not crash the
   // command after the record was already flipped to "ended" (it can be rebuilt
