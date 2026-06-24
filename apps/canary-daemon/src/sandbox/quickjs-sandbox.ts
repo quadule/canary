@@ -21,6 +21,13 @@ const WAIT_FOR_OBJECT_ATTEMPTS = 1000;
 // teleporting. The cursor's glide duration plus a 200ms post-arrival pause.
 const CURSOR_SETTLE_MS = CURSOR_GLIDE_MS + 200;
 
+// Upper bound on the animated scroll that reveals an off-screen target. Playwright's
+// scrollIntoViewIfNeeded jumps instantly (invisible on camera), so before it we
+// smooth-scroll the element into view and wait for that to settle — capped here so
+// a page that ignores `behavior:smooth` (CSS scroll-behavior / reduced motion) or
+// an unusually long scroll can't stall the step.
+const SCROLL_REVEAL_CAP_MS = 1500;
+
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
@@ -503,7 +510,62 @@ export class QuickJSSandbox {
                 }, on)
                 .catch(() => undefined);
 
+            // Animate an off-screen target into view so the scroll is visible on
+            // camera (Playwright's scrollIntoViewIfNeeded teleports). Resolves once
+            // the element stops moving — tracked via its rect, which moves no matter
+            // which ancestor scrolls (an inner panel won't change window.scrollY) —
+            // or when the cap elapses. A no-op when the element is already in view.
+            const smoothReveal = (target) =>
+              target
+                .evaluate(
+                  (el, capMs) =>
+                    new Promise((resolve) => {
+                      const inView = () => {
+                        const r = el.getBoundingClientRect();
+                        const m = 8;
+                        return (
+                          r.top >= m &&
+                          r.left >= m &&
+                          r.bottom <= window.innerHeight - m &&
+                          r.right <= window.innerWidth - m
+                        );
+                      };
+                      if (inView()) {
+                        resolve();
+                        return;
+                      }
+                      el.scrollIntoView({
+                        behavior: "smooth",
+                        block: "center",
+                        inline: "center",
+                      });
+                      const start = performance.now();
+                      let last = Number.NaN;
+                      let stable = 0;
+                      const tick = () => {
+                        const top = Math.round(el.getBoundingClientRect().top);
+                        if (top === last) {
+                          stable += 1;
+                        } else {
+                          stable = 0;
+                          last = top;
+                        }
+                        if (stable >= 4 || performance.now() - start > capMs) {
+                          resolve();
+                          return;
+                        }
+                        requestAnimationFrame(tick);
+                      };
+                      requestAnimationFrame(tick);
+                    }),
+                  ${SCROLL_REVEAL_CAP_MS},
+                )
+                .catch(() => undefined);
+
             const revealAndGlide = async (page, target) => {
+              // Smooth-scroll for the camera, then let Playwright guarantee the
+              // element is actionable (a no-op snap once smoothReveal has landed it).
+              await smoothReveal(target);
               await target.scrollIntoViewIfNeeded();
               const box = await target.boundingBox();
               if (!box) {
