@@ -36,8 +36,8 @@ WHAT IS CAPTURED (per session; toggle on \`session start\`):
   screenshots  one per step, auto-captured from the step's last-opened page
 
 Artifacts live under ~/.canary/sessions/<id>/ (session.json, results.json, report.html, trace.zip, …).
-Scripts run in a QuickJS sandbox (not Node.js) with a pre-connected \`browser\` global — the full
-reference follows; the SCRIPTING GUIDE after the command list has worked examples.
+Scripts run in a QuickJS sandbox (not Node.js) with a pre-connected \`browser\` global — the API
+reference follows; \`canary run --help\` has the scripting guide and worked examples.
 
 ${sandboxReference()}`;
 
@@ -67,11 +67,7 @@ ${indent(RULE_FAIL_FAST, "    ")}
     - \`--json\` (global) emits machine-readable JSON on stdout; \`-v\`/\`--verbose\` raises stderr logging.
     - \`canary session end --stop-daemon\` shuts the daemon down if nothing else is using it.
     - Need a quick one-off with NO recording? Use \`canary-browser run\` instead of a session.
-
-${buildScriptingGuide({
-  example: sessionExample,
-  heading: "SCRIPTING GUIDE:",
-})}`;
+    - Writing step scripts? \`canary run --help\` has the full SCRIPTING GUIDE — snapshotForAI, humanClick/humanFill, waiting patterns, and worked examples.`;
 
 // Per-command long help (shown before that command's own --help body).
 export const SESSION_START_LONG_ABOUT = `Start a capture-enabled session and print its id.
@@ -100,6 +96,15 @@ Examples:
   canary run open.js --session "$id" --step open
   echo 'const p = await browser.getPage("home"); await p.goto("https://example.com");' \\
     | canary run --session "$id" --step home --timeout 30`;
+
+// The scripting guide — best practices + worked examples in canary's own
+// invocation style — shown after `canary run --help`, where step scripts are
+// actually written. Kept off the top-level `canary --help` to keep it scannable;
+// the top level points here instead.
+export const RUN_SCRIPTING_GUIDE = buildScriptingGuide({
+  example: sessionExample,
+  heading: "SCRIPTING GUIDE:",
+});
 
 export const SESSION_END_LONG_ABOUT = `Stop recording, collect artifacts, and render the report.
 

@@ -13,6 +13,7 @@ import {
   INIT_LONG_ABOUT,
   INSTALL_LONG_ABOUT,
   RUN_LONG_ABOUT,
+  RUN_SCRIPTING_GUIDE,
   SESSION_END_LONG_ABOUT,
   SESSION_START_LONG_ABOUT,
   STOP_LONG_ABOUT,
@@ -241,6 +242,7 @@ export function buildProgram(): CommandType {
     .command("run")
     .description("Run a script as a step inside a session")
     .addHelpText("before", `${RUN_LONG_ABOUT}\n`)
+    .addHelpText("after", `\n${RUN_SCRIPTING_GUIDE}`)
     .argument("[FILE]", "Path to a JavaScript file (reads stdin if omitted)")
     .requiredOption("--session <id>", "Target session id")
     .option("--step <name>", "Step label (defaults to step-N)")

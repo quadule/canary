@@ -10,13 +10,14 @@ beforeAll(() => {
   }
 });
 
-// `canary --help` and `canary run --help` must be fully self-contained for an
-// AI agent writing step scripts: the sandbox rules, the `browser.*` script
-// API, and the scripting guide all render inline (composed from
-// @usecanary/cli-kit), with no dead-end pointer to the separately-installed
-// `canary-browser` binary and no engine-only flags leaking in.
+// `canary --help` stays scannable: lifecycle, the compact sandbox + `browser.*`
+// API quick-reference, and the session workflow guide render at the top level,
+// but the long scripting guide (observe-first/interaction rules, worked
+// examples, Playwright methods) lives on `canary run --help` — at the point of
+// need — reached via a same-CLI pointer (never the separately-installed
+// `canary-browser` binary, and no engine-only flags leaking in).
 describe("--help content", () => {
-  it("root --help is self-contained: lifecycle, sandbox, API, both guides", async () => {
+  it("root --help: lifecycle, compact API, workflow guide, pointer to run", async () => {
     const out = await runCli(["--help"]);
     expect(out.code).toBe(0);
 
@@ -24,25 +25,19 @@ describe("--help content", () => {
     expect(out.stdout).toContain("THE SESSION LIFECYCLE:");
     expect(out.stdout).toContain("WHAT IS CAPTURED");
 
-    // The shared scripting reference renders inline.
+    // The compact sandbox + script API quick-reference stays inline.
     expect(out.stdout).toContain("SANDBOX ENVIRONMENT:");
     expect(out.stdout).toContain("This is NOT Node.js");
     expect(out.stdout).toContain("Script API available inside every script:");
     expect(out.stdout).toContain("browser.getPage(nameOrId)");
     expect(out.stdout).toContain("https://playwright.dev/docs/api/class-page");
 
-    // Both after-help guides, workflow first.
+    // The session workflow guide stays; the long scripting guide does not —
+    // it moved to `canary run --help`, reached via a pointer.
     expect(out.stdout).toContain("SESSION WORKFLOW GUIDE:");
-    expect(out.stdout).toContain("SCRIPTING GUIDE:");
-    expect(out.stdout.indexOf("SESSION WORKFLOW GUIDE:")).toBeLessThan(
-      out.stdout.indexOf("SCRIPTING GUIDE:")
-    );
-
-    // Guide content an agent needs: discovery, methods table, examples in
-    // canary's own invocation style.
-    expect(out.stdout).toContain("snapshotForAI");
-    expect(out.stdout).toContain("Common Playwright Page methods:");
-    expect(out.stdout).toContain('canary run --session "$id" --step');
+    expect(out.stdout).toContain("canary run --help");
+    expect(out.stdout).not.toContain("SCRIPTING GUIDE:");
+    expect(out.stdout).not.toContain("Common Playwright Page methods:");
 
     for (const sub of [
       "session",
@@ -93,6 +88,13 @@ describe("--help content", () => {
     expect(out.stdout).toContain("writeFile");
     expect(out.stdout).toContain("readFile");
     expect(out.stdout).toContain("https://playwright.dev/docs/api/class-page");
+
+    // The full scripting guide now lives here (moved off the top-level help):
+    // discovery, methods table, and examples in canary's own invocation style.
+    expect(out.stdout).toContain("SCRIPTING GUIDE:");
+    expect(out.stdout).toContain("snapshotForAI");
+    expect(out.stdout).toContain("Common Playwright Page methods:");
+    expect(out.stdout).toContain('canary run --session "$id" --step');
 
     // Own options documented.
     expect(out.stdout).toContain("--session");
