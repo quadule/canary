@@ -24,6 +24,13 @@ import { promisify } from "node:util";
 import type { Logger } from "@usecanary/logger";
 import { branchContributors, buildCreditsRoll } from "./credits.js";
 import {
+  type MediaProviders,
+  type MusicProvider,
+  resolveMediaProviders,
+  type TitleBackgroundProvider,
+  type TtsProvider,
+} from "./providers.js";
+import {
   type StyleId,
   selectStyle,
   selectThemes,
@@ -63,6 +70,22 @@ const DEFAULT_SAY_RATE = 175;
 // explicit font file rather than a font name.
 const TITLE_FONT_FILE = "/System/Library/Fonts/Helvetica.ttc";
 
+// Default font candidates, in order, across platforms — so the title card works
+// on a Linux CI runner (with fonts-dejavu/liberation installed), not just macOS.
+const DEFAULT_FONTS = [
+  TITLE_FONT_FILE,
+  "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+  "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+  "/usr/share/fonts/TTF/DejaVuSans.ttf",
+];
+
+// First existing font among the preferred one then the cross-platform defaults,
+// or undefined when nothing is installed (caller then skips the styled text).
+function resolveFont(preferred?: string): string | undefined {
+  const candidates = preferred ? [preferred, ...DEFAULT_FONTS] : DEFAULT_FONTS;
+  return candidates.find((f) => existsSync(f));
+}
+
 // A small, curated title-card look per theme category: a font that fits the genre
 // and a high-contrast color (always rendered over a dark scrim, so brights read).
 // Not a font-discovery engine — just enough to make the card feel intentional.
@@ -101,15 +124,15 @@ const TITLE_STYLES: Record<ThemeCategory, { font: string; color: string }> = {
 
 const DEFAULT_TITLE_STYLE = { font: TITLE_FONT_FILE, color: "white" };
 
-// Resolve the title-card font+color for a category, falling back to
-// Helvetica/white when the category is unknown or its font isn't installed.
+// Resolve the title-card font+color for a category. The font is the category's
+// preferred face if installed, else the first available cross-platform default,
+// else undefined (no usable font on this host → the caller skips the title card).
 export function titleStyle(category: ThemeCategory | undefined): {
-  font: string;
+  font: string | undefined;
   color: string;
 } {
   const pref = (category && TITLE_STYLES[category]) || DEFAULT_TITLE_STYLE;
-  const font = existsSync(pref.font) ? pref.font : TITLE_FONT_FILE;
-  return { font, color: pref.color };
+  return { font: resolveFont(pref.font), color: pref.color };
 }
 
 // Timeouts (ms). The LLM call is generous; `say` and the encodes are bounded
@@ -233,19 +256,32 @@ export function buildSrt(
     .join("\n");
 }
 
-// Build the ffmpeg `filter_complex` that delays each narration clip to its
-// position on the timeline and mixes them into one stereo track [aout].
-// Audio inputs are ffmpeg indices 1..N (input 0 is the video). Returns "" when
-// there are no audio inputs (caller should then skip the mix entirely).
-export function buildAdelayMix(offsetsMs: number[]): string {
-  if (offsetsMs.length === 0) {
+// One audio input to the mix: where it starts (ms) and an optional volume scale
+// (narration plays at 1.0; a music bed sits low, e.g. 0.18).
+export interface AudioTrack {
+  delayMs: number;
+  volume?: number;
+}
+
+// Build the ffmpeg `filter_complex` that delays each audio input to its place on
+// the timeline (and scales its volume) and mixes them into one stereo track
+// [aout]. Inputs are ffmpeg indices 1..N (input 0 is the video), in the SAME
+// order as `tracks`. Returns "" for no tracks (caller then skips the mix).
+export function buildAudioMix(tracks: AudioTrack[]): string {
+  if (tracks.length === 0) {
     return "";
   }
-  const delays = offsetsMs
-    .map((ms, i) => `[${i + 1}:a]adelay=${ms}|${ms}[a${i}]`)
+  const chains = tracks
+    .map((t, i) => {
+      const vol =
+        t.volume === undefined ? "" : `,volume=${t.volume.toFixed(3)}`;
+      return `[${i + 1}:a]adelay=${t.delayMs}|${t.delayMs}${vol}[a${i}]`;
+    })
     .join(";");
-  const labels = offsetsMs.map((_, i) => `[a${i}]`).join("");
-  return `${delays};${labels}amix=inputs=${offsetsMs.length}:normalize=0[aout]`;
+  const labels = tracks.map((_, i) => `[a${i}]`).join("");
+  // normalize=0 keeps each track at its set level; dropout_transition=0 stops
+  // amix from ducking when a track ends (so the bed doesn't swell between lines).
+  return `${chains};${labels}amix=inputs=${tracks.length}:normalize=0:dropout_transition=0[aout]`;
 }
 
 // Wrap a title into lines of at most `maxChars`, honoring any explicit newlines
@@ -890,9 +926,104 @@ async function appendCredits(args: {
   }
 }
 
+// Generate a themed title-card background image, or undefined if unavailable.
+// Best-effort: a provider failure falls back to the solid-color card + a note.
+async function renderTitleBackground(args: {
+  provider: TitleBackgroundProvider | undefined;
+  directionText: string;
+  geometry: ProbedVideo;
+  videoPath: string;
+  temps: string[];
+  notes: string[];
+  log: Logger;
+  progress: (message: string) => void;
+}): Promise<string | undefined> {
+  const { provider, directionText, geometry, videoPath, temps, notes, log } =
+    args;
+  if (!provider) {
+    return;
+  }
+  args.progress("generating a title background…");
+  const bgPath = `${videoPath}.titlebg.png`;
+  temps.push(bgPath);
+  try {
+    await provider.render(
+      directionText,
+      geometry.width,
+      geometry.height,
+      bgPath
+    );
+    return bgPath;
+  } catch (err) {
+    log.debug({ err }, "cinematic: title background failed; using solid card");
+    notes.push("title background unavailable — used a solid card");
+    return;
+  }
+}
+
+// Generate music tracks for the mix: a low instrumental bed under the whole
+// video, and a fuller song over the credits region. Best-effort per track; a
+// failure (e.g. Lyria unavailable on this API) just drops that track + notes it.
+async function generateMusic(args: {
+  ffmpeg: string;
+  provider: MusicProvider | undefined;
+  directionText: string;
+  bodyPath: string;
+  finalBodyPath: string;
+  videoPath: string;
+  temps: string[];
+  notes: string[];
+  log: Logger;
+  progress: (message: string) => void;
+}): Promise<MusicTrack[]> {
+  const {
+    ffmpeg,
+    provider,
+    directionText,
+    bodyPath,
+    finalBodyPath,
+    videoPath,
+    temps,
+    notes,
+    log,
+  } = args;
+  if (!provider) {
+    return [];
+  }
+  const total = await audioDurationSec(ffmpeg, finalBodyPath);
+  if (!total) {
+    return [];
+  }
+  args.progress("composing the score…");
+  const tracks: MusicTrack[] = [];
+  try {
+    const bedPath = `${videoPath}.bed.wav`;
+    temps.push(bedPath);
+    await provider.bed(directionText, total, bedPath);
+    tracks.push({ path: bedPath, delaySec: 0, volume: 0.16 });
+  } catch (err) {
+    log.debug({ err }, "cinematic: instrumental bed unavailable");
+    notes.push("instrumental score unavailable");
+  }
+  const creditsStart = await audioDurationSec(ffmpeg, bodyPath);
+  if (creditsStart && total - creditsStart > 1) {
+    try {
+      const songPath = `${videoPath}.song.wav`;
+      temps.push(songPath);
+      await provider.song(directionText, total - creditsStart, songPath);
+      tracks.push({ path: songPath, delaySec: creditsStart, volume: 0.5 });
+    } catch (err) {
+      log.debug({ err }, "cinematic: credits song unavailable");
+      notes.push("credits song unavailable");
+    }
+  }
+  return tracks;
+}
+
 // Turn the condensed body + narration clips into the final cinematic video:
-// re-time so each step holds for its line, prepend the title card, append the
-// credits. Returns the final body path and where each step/clip lands in it, or
+// re-time so each step holds for its line, prepend the title card (optionally
+// over a generated background), append the credits, and generate any music.
+// Returns the final body, where each step/clip lands, and the music tracks — or
 // null if the source duration can't be probed for re-timing.
 async function assembleVideo(args: {
   ffmpeg: string;
@@ -901,6 +1032,8 @@ async function assembleVideo(args: {
   clips: RenderedClip[];
   title: string;
   category: ThemeCategory | undefined;
+  directionText: string;
+  providers: MediaProviders;
   hasDrawtext: boolean;
   repoDir: string;
   base: string;
@@ -913,6 +1046,7 @@ async function assembleVideo(args: {
   stepTimes: number[];
   clipOffsetsSec: number[];
   titleOffsetSec: number;
+  music: MusicTrack[];
 } | null> {
   const {
     ffmpeg,
@@ -921,6 +1055,8 @@ async function assembleVideo(args: {
     clips,
     title,
     category,
+    directionText,
+    providers,
     hasDrawtext,
     repoDir,
     base,
@@ -953,12 +1089,27 @@ async function assembleVideo(args: {
     return null;
   }
 
+  const background =
+    hasDrawtext && geometry
+      ? await renderTitleBackground({
+          provider: providers.titleBackground,
+          directionText,
+          geometry,
+          videoPath,
+          temps,
+          notes,
+          log,
+          progress,
+        })
+      : undefined;
+
   progress("painting the title card…");
   const { body, titleOffsetSec } = await applyTitleCard({
     ffmpeg,
     retimedPath: retimed.path,
     title,
     style: titleStyle(category),
+    background,
     hasDrawtext,
     geometry,
     temps,
@@ -988,7 +1139,20 @@ async function assembleVideo(args: {
     });
   }
 
-  return { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec };
+  const music = await generateMusic({
+    ffmpeg,
+    provider: providers.music,
+    directionText,
+    bodyPath: body,
+    finalBodyPath: finalBody,
+    videoPath,
+    temps,
+    notes,
+    log,
+    progress,
+  });
+
+  return { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec, music };
 }
 
 interface RenderedClip {
@@ -998,30 +1162,77 @@ interface RenderedClip {
   step: CinematicStep;
 }
 
-// Synthesize one narration clip with `say`, transcode to AAC/m4a, and probe its
+// A generated music input for the final mix: an audio file, when it starts, and
+// its (low) gain under the narration.
+interface MusicTrack {
+  delaySec: number;
+  path: string;
+  volume: number;
+}
+
+// How to turn narration text into a raw audio file: `ext` is that file's
+// extension, `run` writes it. A say-backed synth writes .aiff; a TTS provider
+// writes .wav. renderClip is otherwise provider-agnostic.
+interface SpeechSynth {
+  ext: string;
+  run: (text: string, outPath: string) => Promise<void>;
+}
+
+function saySynth(voice: string, rate: number): SpeechSynth {
+  return {
+    ext: "aiff",
+    run: (text, outPath) =>
+      run(
+        "say",
+        ["-v", voice, "-r", String(rate), text, "-o", outPath],
+        SAY_TIMEOUT_MS
+      ).then(() => undefined),
+  };
+}
+
+// Decide how narration gets voiced: a TTS provider when present, with macOS `say`
+// as the (mac-only) fallback. Returns the say synth (if usable here), the rate,
+// and a reproducibility voice label — or null when there's NO way to voice it
+// (non-macOS host with no provider), so cinematic can run anywhere a key is set.
+async function resolveSpeech(
+  providers: MediaProviders
+): Promise<{ say?: SpeechSynth; rate: number; label: string } | null> {
+  const rate = pickRate();
+  let say: SpeechSynth | undefined;
+  let sayLabel = "";
+  if (process.platform === "darwin") {
+    const installed = await listSayVoices();
+    if (installed) {
+      const voice = pickVoice(installed);
+      say = saySynth(voice, rate);
+      sayLabel = voice;
+    }
+  }
+  if (!(providers.tts || say)) {
+    return null;
+  }
+  return { say, rate, label: providers.tts?.label ?? sayLabel };
+}
+
+// Synthesize one narration clip with `synth`, transcode to AAC/m4a, and probe its
 // duration (for caption end-times). Pushes its temps for cleanup. Returns null
-// if the clip can't be produced.
+// if the clip can't be produced. Throws if `synth.run` throws (caller may retry
+// with a fallback synth).
 async function renderClip(args: {
   ffmpeg: string;
-  voice: string;
-  rate: number;
+  synth: SpeechSynth;
   step: CinematicStep;
   narration: string;
   videoPath: string;
   index: number;
   temps: string[];
 }): Promise<RenderedClip | null> {
-  const { ffmpeg, voice, rate, step, narration, videoPath, index, temps } =
-    args;
-  const aiffPath = `${videoPath}.step${index}.aiff`;
+  const { ffmpeg, synth, step, narration, videoPath, index, temps } = args;
+  const rawPath = `${videoPath}.step${index}.${synth.ext}`;
   const m4aPath = `${videoPath}.step${index}.m4a`;
-  temps.push(aiffPath, m4aPath);
+  temps.push(rawPath, m4aPath);
 
-  await run(
-    "say",
-    ["-v", voice, "-r", String(rate), narration, "-o", aiffPath],
-    SAY_TIMEOUT_MS
-  );
+  await synth.run(narration, rawPath);
   await run(
     ffmpeg,
     [
@@ -1029,7 +1240,7 @@ async function renderClip(args: {
       "-nostats",
       "-y",
       "-i",
-      aiffPath,
+      rawPath,
       "-ac",
       "2",
       "-ar",
@@ -1047,35 +1258,55 @@ async function renderClip(args: {
   return { step, narration, m4aPath, durationSec };
 }
 
-// Synthesize a clip for every step that the LLM gave narration text. The step's
-// enumerated index keys the narration map (same indexing the prompt used). A
-// step the LLM skipped, or one whose audio can't be produced, is just omitted.
+// Synthesize a clip for every step that the LLM gave narration text. Prefers the
+// TTS provider (when present); on its FIRST failure, notes it once and falls back
+// to `say` for the rest (a consistent voice beats a half-provider mix). The step's
+// enumerated index keys the narration map (same indexing the prompt used).
 async function synthesizeClips(args: {
   ffmpeg: string;
-  voice: string;
-  rate: number;
+  say?: SpeechSynth;
+  tts?: TtsProvider;
   steps: CinematicStep[];
   byIndex: Map<number, string>;
   videoPath: string;
   temps: string[];
+  notes: string[];
+  log: Logger;
 }): Promise<RenderedClip[]> {
-  const { ffmpeg, voice, rate, steps, byIndex, videoPath, temps } = args;
+  const { ffmpeg, say, tts, steps, byIndex, videoPath, temps, notes, log } =
+    args;
+  let provider: SpeechSynth | undefined = tts
+    ? { ext: "wav", run: (t, o) => tts.synthesize(t, o) }
+    : undefined;
   const clips: RenderedClip[] = [];
   for (const [i, step] of steps.entries()) {
     const text = byIndex.get(i)?.trim();
     if (!text) {
       continue;
     }
-    const clip = await renderClip({
+    const base = {
       ffmpeg,
-      voice,
-      rate,
       step,
       narration: text,
       videoPath,
       index: i,
       temps,
-    });
+    };
+    let clip: RenderedClip | null = null;
+    if (provider) {
+      try {
+        clip = await renderClip({ ...base, synth: provider });
+      } catch (err) {
+        log.debug({ err }, "cinematic: TTS provider failed; using `say`");
+        notes.push(
+          `narration voiced by macOS \`say\` — the TTS provider (${tts?.id}) failed`
+        );
+        provider = undefined;
+      }
+    }
+    if (clip === null && provider === undefined && say) {
+      clip = await renderClip({ ...base, synth: say });
+    }
     if (clip) {
       clips.push(clip);
     }
@@ -1115,9 +1346,8 @@ async function buildTitleCard(args: {
   temps.push(textFile);
   await writeFile(textFile, lines.join("\n"));
 
-  const font = existsSync(style.font) ? style.font : TITLE_FONT_FILE;
   const drawtext = [
-    `fontfile=${font}`,
+    `fontfile=${style.font}`,
     `textfile=${textFile}`,
     "expansion=none",
     `fontcolor=${style.color}`,
@@ -1419,7 +1649,7 @@ async function applyTitleCard(args: {
   ffmpeg: string;
   retimedPath: string;
   title: string;
-  style: { font: string; color: string };
+  style: { font: string | undefined; color: string };
   background?: string;
   hasDrawtext: boolean;
   geometry: ProbedVideo | undefined;
@@ -1439,21 +1669,25 @@ async function applyTitleCard(args: {
     notes,
     log,
   } = args;
-  if (hasDrawtext && geometry) {
+  if (hasDrawtext && geometry && style.font) {
     const body = await prependTitleCard({
       ffmpeg,
       videoPath: retimedPath,
       title,
-      style,
+      style: { font: style.font, color: style.color },
       background,
       geometry,
       temps,
     });
     return { body, titleOffsetSec: TITLE_SEC };
   }
-  const note = hasDrawtext
-    ? "title card skipped — couldn't probe the video geometry (no ffprobe?)"
-    : "title card skipped — this ffmpeg has no `drawtext` filter";
+  let note = "title card skipped — this ffmpeg has no `drawtext` filter";
+  if (hasDrawtext && !geometry) {
+    note =
+      "title card skipped — couldn't probe the video geometry (no ffprobe?)";
+  } else if (hasDrawtext && !style.font) {
+    note = "title card skipped — no usable font installed";
+  }
   notes.push(note);
   log.warn({ ffmpeg }, `cinematic: ${note}`);
   return { body: retimedPath, titleOffsetSec: 0 };
@@ -1467,6 +1701,7 @@ async function mixAudioAndCaptions(args: {
   videoPath: string;
   clips: RenderedClip[];
   offsetsSec: number[];
+  music: MusicTrack[];
   srtPath: string;
   burnCaptions: boolean;
   outPath: string;
@@ -1476,16 +1711,28 @@ async function mixAudioAndCaptions(args: {
     videoPath,
     clips,
     offsetsSec,
+    music,
     srtPath,
     burnCaptions,
     outPath,
   } = args;
-  const offsetsMs = offsetsSec.map((s) => Math.round(s * 1000));
-  const filter = buildAdelayMix(offsetsMs);
+  // Audio inputs (and their mix tracks) in lockstep: narration clips at full
+  // volume first, then any music underneath at its set gain.
+  const tracks: AudioTrack[] = [
+    ...offsetsSec.map((s) => ({ delayMs: Math.round(s * 1000) })),
+    ...music.map((m) => ({
+      delayMs: Math.round(m.delaySec * 1000),
+      volume: m.volume,
+    })),
+  ];
+  const filter = buildAudioMix(tracks);
 
   const inputs = ["-i", videoPath];
   for (const clip of clips) {
     inputs.push("-i", clip.m4aPath);
+  }
+  for (const track of music) {
+    inputs.push("-i", track.path);
   }
 
   const filterComplex = burnCaptions
@@ -1568,9 +1815,6 @@ export async function cinematicProcess(
 
   try {
     // 1. Preconditions.
-    if (process.platform !== "darwin") {
-      return notApplied("cinematic narration needs macOS `say`");
-    }
     const narratableSteps = steps.filter((step) =>
       Number.isFinite(step.videoTime)
     );
@@ -1580,10 +1824,6 @@ export async function cinematicProcess(
     await access(videoPath);
     if (!(await isOnPath("claude", ["--version"]))) {
       return notApplied("`claude` CLI not found on PATH");
-    }
-    const installedVoices = await listSayVoices();
-    if (!installedVoices) {
-      return notApplied("`say` not found on PATH");
     }
     // Narration mixing is the irreducible core; the title card and burned
     // captions degrade gracefully when this build lacks their filters.
@@ -1595,6 +1835,20 @@ export async function cinematicProcess(
     const hasSubtitles = filters.has("subtitles");
     const notes: string[] = [];
     const progress = options.onProgress ?? (() => undefined);
+
+    // Optional Gemini-backed providers (TTS / title image / music). Absent
+    // unless GEMINI_API_KEY is set; each is best-effort and falls back locally.
+    const providers = resolveMediaProviders({ env: process.env, log });
+    notes.push(...providers.notes);
+
+    // Voicing: a TTS provider, or macOS `say`. With a provider this runs on any
+    // platform; without one it needs macOS.
+    const speech = await resolveSpeech(providers);
+    if (!speech) {
+      return notApplied(
+        "cinematic narration needs macOS `say` or a TTS provider (set GEMINI_API_KEY)"
+      );
+    }
 
     // 2 + 3. Resolve the creative direction (+ change scale) and get narration.
     progress("writing narration…");
@@ -1608,29 +1862,35 @@ export async function cinematicProcess(
     }
     const { direction, narration, repoDir, base } = planned;
 
-    // 4. Voice + TTS: one clip per step that got narration text. Surface the
-    // chosen direction/voice/rate so a delightful run can be reproduced (pin via
-    // --prompt and $CANARY_SAY_VOICE/$CANARY_SAY_RATE).
-    const voice = pickVoice(installedVoices);
-    const rate = pickRate();
-    const meta: CinematicMeta = { direction: direction.label, voice, rate };
+    // 4. Voice + TTS: one clip per step that got narration text. The provider
+    // voices it when available (else macOS `say`). Surface the chosen
+    // direction/voice/rate so a delightful run can be reproduced (pin via
+    // --prompt and $CANARY_SAY_VOICE / $CANARY_SAY_RATE).
+    const meta: CinematicMeta = {
+      direction: direction.label,
+      voice: speech.label,
+      rate: speech.rate,
+    };
     log.info(meta, "cinematic: narration parameters");
-    progress(`voicing ${narration.steps.length} lines (${voice})…`);
+    progress(`voicing ${narration.steps.length} lines (${meta.voice})…`);
     const clips = await synthesizeClips({
       ffmpeg: ffmpegPath,
-      voice,
-      rate,
+      say: speech.say,
+      tts: providers.tts,
       steps: narratableSteps,
       byIndex: new Map(narration.steps.map((s) => [s.index, s.narration])),
       videoPath,
       temps,
+      notes,
+      log,
     });
     if (clips.length === 0) {
       return notApplied("no narration audio could be synthesized");
     }
 
-    // 5–6. Re-time the video, prepend the title card, and append the credits —
-    // producing the final body plus each step's/clip's position in it.
+    // 5–6. Re-time the video, prepend the title card (optionally over a generated
+    // background), append the credits, and generate any music bed — producing the
+    // final body, each step's/clip's position, and the music tracks for the mix.
     const assembled = await assembleVideo({
       ffmpeg: ffmpegPath,
       videoPath,
@@ -1638,6 +1898,8 @@ export async function cinematicProcess(
       clips,
       title: narration.title,
       category: direction.category,
+      directionText: direction.text,
+      providers,
       hasDrawtext,
       repoDir,
       base,
@@ -1649,7 +1911,8 @@ export async function cinematicProcess(
     if (!assembled) {
       return notApplied("could not probe the video to re-time it");
     }
-    const { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec } = assembled;
+    const { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec, music } =
+      assembled;
 
     // 7. Write the SRT (needed on disk before the burn pass reads it). Track it
     // as a temp so a later failure cleans it up — a stale .srt with cinematic
@@ -1685,6 +1948,7 @@ export async function cinematicProcess(
       videoPath: finalBody,
       clips,
       offsetsSec: clipOffsetsSec,
+      music,
       srtPath,
       burnCaptions,
       outPath: finalPath,

@@ -1,6 +1,7 @@
+import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  buildAdelayMix,
+  buildAudioMix,
   buildNarrationPrompt,
   buildSrt,
   changeScaleHint,
@@ -55,23 +56,29 @@ describe("buildSrt", () => {
   });
 });
 
-describe("buildAdelayMix", () => {
-  it("returns an empty string for zero inputs", () => {
-    expect(buildAdelayMix([])).toBe("");
+describe("buildAudioMix", () => {
+  it("returns an empty string for zero tracks", () => {
+    expect(buildAudioMix([])).toBe("");
   });
 
-  it("wires a single input at index 1 into amix", () => {
-    expect(buildAdelayMix([2500])).toBe(
-      "[1:a]adelay=2500|2500[a0];[a0]amix=inputs=1:normalize=0[aout]"
+  it("wires a single full-volume track at index 1 into amix", () => {
+    expect(buildAudioMix([{ delayMs: 2500 }])).toBe(
+      "[1:a]adelay=2500|2500[a0];[a0]amix=inputs=1:normalize=0:dropout_transition=0[aout]"
     );
   });
 
-  it("delays each input to its offset and mixes all three", () => {
-    expect(buildAdelayMix([0, 3500, 7200])).toBe(
+  it("delays narration tracks and scales a music bed's volume", () => {
+    expect(
+      buildAudioMix([
+        { delayMs: 0 },
+        { delayMs: 3500 },
+        { delayMs: 0, volume: 0.16 },
+      ])
+    ).toBe(
       "[1:a]adelay=0|0[a0];" +
         "[2:a]adelay=3500|3500[a1];" +
-        "[3:a]adelay=7200|7200[a2];" +
-        "[a0][a1][a2]amix=inputs=3:normalize=0[aout]"
+        "[3:a]adelay=0|0,volume=0.160[a2];" +
+        "[a0][a1][a2]amix=inputs=3:normalize=0:dropout_transition=0[aout]"
     );
   });
 });
@@ -234,16 +241,14 @@ describe("changeScaleHint", () => {
 });
 
 describe("titleStyle", () => {
-  it("falls back to Helvetica/white for an unknown category", () => {
-    const style = titleStyle(undefined);
-    expect(style.font).toContain("Helvetica");
-    expect(style.color).toBe("white");
+  it("maps categories to accent colors (white default)", () => {
+    expect(titleStyle(undefined).color).toBe("white");
+    expect(titleStyle("commercial").color).toBe("0xFFD400");
   });
 
-  it("returns a defined font + color for a known category", () => {
-    const style = titleStyle("commercial");
-    expect(style.font.length).toBeGreaterThan(0);
-    expect(style.color).toBe("0xFFD400");
+  it("resolves font to an installed file or undefined (cross-platform)", () => {
+    const font = titleStyle("movie").font;
+    expect(font === undefined || existsSync(font)).toBe(true);
   });
 });
 
