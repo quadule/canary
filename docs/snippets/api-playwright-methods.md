@@ -3,9 +3,9 @@
 - `page.title()` / `page.url()` — current title / URL
 - `page.snapshotForAI(options)` — AI-optimized page outline (whole page, any scroll position);
   returns `{ full, incremental? }`; options `{ selector?, track?, timeout? }` — `selector` scopes to
-  an element (e.g. `"main"`, to drop nav chrome), `track` returns just the diff since the last
-  same-key snapshot (the two are mutually exclusive); omit `depth` — a shallow tree forces
-  expensive fallbacks
+  an element (e.g. `"main"`, to drop nav chrome after a full first look proves it is noise),
+  `track` returns just the diff since the last same-key snapshot (the two are mutually exclusive);
+  omit `depth` — a shallow tree forces expensive fallbacks and hides late-page fields
 - `page.getByRole(role, { name })` / `page.getByText(text)` — semantic locators (survive re-renders)
 - `page.textContent(sel)` / `page.innerText(sel)` / `page.innerHTML(sel)` /
   `page.getAttribute(sel, name)` — read by selector

@@ -75,14 +75,16 @@ User says: "is the pricing page up and what's the headline?" or "screenshot the 
 ## Hard rules
 
 <!-- canary:snippet rule-observe-first -->
-- Unknown page? Snapshot first, then act: read `(await page.snapshotForAI()).full` to see what
-  is there, pick a semantic selector from it (`getByRole`, `getByText`), then interact. Never
-  guess selectors blind.
+- Unknown page? Snapshot first, then act: read `(await page.snapshotForAI()).full` to see the full
+  page, including content below the fold and near the end. Pick a semantic selector from it
+  (`getByRole`, `getByText`), then interact. Never guess selectors blind, and don't start with a
+  shallow or truncated observation.
 - Known page or selectors? Skip the snapshot and use direct selectors — faster and more reliable.
 - The snapshot covers the whole page no matter where it's scrolled — never add a scroll step just to
-  observe. To cut the repeated nav/sidebar chrome, scope it with `{ selector: "main" }`; after an
-  interaction, pass `{ track: "main" }` to get just what changed instead of re-reading (and
-  re-slicing) the full outline.
+  observe. If the full snapshot is overwhelmingly large or mostly repeated nav/sidebar chrome,
+  re-observe with a deliberate scope such as `{ selector: "main" }`, an active dialog, or the
+  relevant form. After an interaction, pass `{ track: "main" }` to get just what changed instead of
+  re-reading the full outline.
 - After a navigation the new page often renders asynchronously (client-side routing / SPAs swap
   content without a full document load). Don't snapshot or assert the instant a click returns.
   Prefer acting on or waiting for a KNOWN element on the destination (`getByRole`/`getByText`) —
