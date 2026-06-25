@@ -192,10 +192,10 @@ async function cinematizeSessionVideo(
     return;
   }
   // Keep references to the record steps we pass through, so the re-timed
-  // positions can be written straight back onto them in order.
-  const timedSteps = record.steps.filter(
-    (s) => typeof s.videoTime === "number"
-  );
+  // positions can be written straight back onto them in order. Use the SAME
+  // finiteness predicate cinematicProcess uses internally, so the returned
+  // stepTimes line up index-for-index with timedSteps (no off-by-one).
+  const timedSteps = record.steps.filter((s) => Number.isFinite(s.videoTime));
   const steps: CinematicStep[] = timedSteps.map((s) => ({
     name: s.name,
     script: s.script,
@@ -203,7 +203,12 @@ async function cinematizeSessionVideo(
     videoTime: s.videoTime as number,
   }));
   if (steps.length === 0) {
-    logger.info("no timed steps; skipping cinematic pass");
+    // Steps are only timed when the video was condensed; --no-condense leaves
+    // them untimed. Tell the user why their requested cinematic pass did nothing.
+    process.stderr.write(
+      "  ⚠ cinematic pass skipped: no timed steps (did you pass --no-condense?)\n"
+    );
+    logger.warn("no timed steps; skipping cinematic pass");
     return;
   }
   process.stderr.write("Adding cinematic narration…\n");
@@ -231,6 +236,14 @@ async function cinematizeSessionVideo(
     .then((s) => s.size)
     .catch(() => video.bytes);
   process.stderr.write("  ✓ narration added\n");
+  // Surface the chosen parameters so a delightful random run can be reproduced
+  // (pin via --theme and $CANARY_SAY_VOICE / $CANARY_SAY_RATE).
+  if (outcome.meta) {
+    const { themes, style, voice, rate } = outcome.meta;
+    process.stderr.write(
+      `  🎬 theme: ${themes.join(" + ")} · style: ${style} · voice: ${voice} @ ${rate} wpm\n`
+    );
+  }
   // Surface any degradation (e.g. this ffmpeg lacks drawtext/subtitles) so the
   // user isn't left wondering where the title card or burned captions went.
   for (const note of outcome.notes ?? []) {
