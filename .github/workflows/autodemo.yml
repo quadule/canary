@@ -1,0 +1,198 @@
+# Autodemo — when the `autodemo` label is applied to a PR, a canary-verify agent
+# records a browser demo of the change, the workflow finalizes it as a cinematic
+# video, and posts the report + video back to the PR as downloadable artifacts.
+#
+# STATUS: unverified until the first real `autodemo` run — a GitHub Actions
+# workflow can't be smoke-tested locally. The PR-body parsing it relies on IS
+# unit-tested (apps/canary/src/ci/autodemo.test.ts).
+#
+# REQUIRED REPO SECRETS:
+#   ANTHROPIC_API_KEY  — auth for the Claude Code agent + the `claude -p` narration
+#   GEMINI_API_KEY     — (optional) richer TTS / title image / music; without it
+#                        the demo still works via macOS-less local fallbacks
+#                        (drawtext title, no music) — but note narration TTS needs
+#                        EITHER macOS `say` OR GEMINI_API_KEY, and CI is Linux, so
+#                        on CI GEMINI_API_KEY is effectively required for narration.
+#
+# PR-BODY CONVENTIONS (see apps/canary/src/ci/autodemo.ts):
+#   autodemo-url: https://staging.example.com/flow   ← REQUIRED target (no URL → no-op)
+#   autodemo-theme: 1970s heist film, as a limerick  ← optional cinematic direction
+#   "plain demo" / "no narration"                    ← opt out of the cinematic cut
+#
+# NOTE: GitHub has no public API to embed an inline/autoplaying video in a PR
+# comment (that path is a browser-only user-attachments upload). So the video is
+# attached as a downloadable run artifact and linked from a PR comment.
+
+name: Autodemo
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: autodemo-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    # Only on the `autodemo` label, and only for same-repo PRs — fork PRs get a
+    # read-only token and no secrets, so they can neither run the agent nor comment.
+    if: >-
+      github.event.label.name == 'autodemo' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.cfg.outputs.run }}
+      target: ${{ steps.cfg.outputs.target }}
+      cinematic: ${{ steps.cfg.outputs.cinematic }}
+      prompt: ${{ steps.cfg.outputs.prompt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Parse the demo request from the PR body
+        id: cfg
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          CFG=$(pnpm --filter @usecanary/cli exec tsx src/ci/autodemo.ts "${PR_BODY:-}")
+          echo "Parsed autodemo config: $CFG"
+          TARGET=$(echo "$CFG" | jq -r '.target // empty')
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "cinematic=$(echo "$CFG" | jq -r '.cinematic')" >> "$GITHUB_OUTPUT"
+          echo "prompt=$(echo "$CFG" | jq -r '.prompt // empty')" >> "$GITHUB_OUTPUT"
+          if [ -n "$TARGET" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+      - name: Ask for a target when none was found
+        if: steps.cfg.outputs.run != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" --body \
+            "🎬 **autodemo**: I couldn't find a demo target. Add a URL to the PR description (e.g. \`autodemo-url: https://staging.example.com/flow\`), optionally \`autodemo-theme: <theme>\` or \`plain demo\`, then re-apply the **autodemo** label."
+
+  demo:
+    needs: prepare
+    if: needs.prepare.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Install ffmpeg and a font (title card / credits need drawtext + a font)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - name: Install Playwright chromium
+        run: pnpm --filter @usecanary/daemon exec playwright install --with-deps chromium
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Put the canary CLI on PATH
+        run: echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
+
+      - name: Record the demo with the canary-verify agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          TARGET: ${{ needs.prepare.outputs.target }}
+        run: |
+          set -euo pipefail
+          # Resolve the target: remote/file URLs pass through; a repo-relative or
+          # absolute path (e.g. a static demo.html checked into the PR) becomes a
+          # file:// URL the browser can open. This is how a static local HTML demo
+          # works — no server needed.
+          case "$TARGET" in
+            http://*|https://*|file://*) RESOLVED="$TARGET" ;;
+            /*) RESOLVED="file://$TARGET" ;;
+            *) RESOLVED="file://$GITHUB_WORKSPACE/$TARGET" ;;
+          esac
+          echo "Driving: $RESOLVED"
+          # Build the agent prompt with printf (no heredoc — a heredoc's closing
+          # delimiter can't be de-indented inside a YAML `run:` block). $PR_BODY is
+          # interpolated as DATA: bash does not re-evaluate command substitutions
+          # that live inside a variable's value, so a crafted PR body can't inject.
+          PROMPT=$(printf '%s\n' \
+            "Use the canary-verify agent and skills in this repo to record a short browser demo of the change in this pull request." \
+            "Drive the app at: $RESOLVED" \
+            "" \
+            "PR description (use it to choose which user-facing flow to demonstrate):" \
+            "$PR_BODY" \
+            "" \
+            "Steps:" \
+            "1. Read the canary-scripting reference, then start a Canary session and drive the single most important user-facing flow this PR affects, using humanClick/humanFill." \
+            "2. Do NOT run 'session end' — leave the session recorded." \
+            "3. Print the session id on its own line as: SESSION_ID=<id>")
+          # The agent records the flow but does NOT end the session — the workflow
+          # finalizes it below so the cinematic/theme decision stays in tested code.
+          claude -p "$PROMPT" --permission-mode acceptEdits 2>&1 | tee agent.log
+
+      - name: Finalize the cinematic cut
+        id: finalize
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          CINEMATIC: ${{ needs.prepare.outputs.cinematic }}
+          PROMPT: ${{ needs.prepare.outputs.prompt }}
+        run: |
+          set -euo pipefail
+          # Prefer the id the agent printed; fall back to the newest session.
+          SID=$(grep -oE 'SESSION_ID=[A-Za-z0-9._-]+' agent.log | tail -1 | cut -d= -f2 || true)
+          if [ -z "${SID:-}" ]; then
+            SID=$(canary session list --json | jq -r '.[0].id // .sessions[0].id // empty')
+          fi
+          if [ -z "${SID:-}" ]; then echo "No recorded session found"; exit 1; fi
+          echo "Finalizing session $SID"
+          FLAGS=()
+          if [ "$CINEMATIC" = "true" ]; then
+            FLAGS+=(--cinematic)
+            if [ -n "${PROMPT:-}" ]; then FLAGS+=(--prompt "$PROMPT"); fi
+          fi
+          OUT=$(canary session end "$SID" "${FLAGS[@]}" --json)
+          echo "$OUT"
+          ARTIFACT_DIR=$(echo "$OUT" | jq -r '.artifactsDir')
+          REPORT=$(echo "$OUT" | jq -r '.reportPath')
+          echo "artifact_dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
+          echo "report=$REPORT" >> "$GITHUB_OUTPUT"
+          # The cinematic cut is the (single) video in the session's video dir.
+          VIDEO=$(find "$ARTIFACT_DIR" -name '*.webm' | head -1)
+          echo "video=$VIDEO" >> "$GITHUB_OUTPUT"
+          ( cd "$(dirname "$ARTIFACT_DIR")" && zip -r "$GITHUB_WORKSPACE/canary-report.zip" "$(basename "$ARTIFACT_DIR")" >/dev/null )
+          cp "$VIDEO" "$GITHUB_WORKSPACE/canary-demo.webm" || true
+
+      - name: Upload the report bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-report
+          path: canary-report.zip
+          if-no-files-found: error
+
+      - name: Upload the cinematic video
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-demo-video
+          path: canary-demo.webm
+          if-no-files-found: warn
+
+      - name: Comment the demo on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh pr comment "${{ github.event.pull_request.number }}" --body \
+            "🎬 **autodemo** is ready. The cinematic video and the full HTML report are attached to [this run]($RUN_URL#artifacts) — download **canary-demo-video** for the .webm, or **canary-report** for the trace/video/HAR/report bundle. (GitHub has no API to embed video inline; drag the .webm into a comment to play it here.)"
