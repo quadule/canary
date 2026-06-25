@@ -18,10 +18,10 @@
 //   selectors don't match, `pointer-events: none`, `position: fixed`, and
 //   `aria-hidden` so the overlay is invisible to snapshotForAI / ARIA
 //   snapshots and assistive queries.
-// - Always visible and animated: the cursor glides between positions on a CSS
-//   transform transition (retargeting mid-flight stays smooth), starts at the
-//   position persisted in sessionStorage (continuity across navigations) or
-//   the viewport center, and re-creates itself if a SPA wipes the DOM.
+// - Always visible and animated: the cursor glides between positions via a
+//   rAF Bezier animation loop, starts at the position persisted in
+//   sessionStorage (continuity across navigations) or the viewport center,
+//   and re-creates itself if a SPA wipes the DOM.
 // - document.open() (setContent) removes window listeners but keeps window
 //   properties, so installation re-arms on an interval instead of trusting
 //   the install guard.
@@ -61,7 +61,165 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
   window.__canaryCursor = state;
 
   const SIZE = 28;
-  const GLIDE = 'transform ${CURSOR_GLIDE_MS}ms cubic-bezier(0.22, 0.61, 0.36, 1)';
+  let animRaf = null;
+  let vignetteEl = null;
+  let vignetteHalfW = 0;
+  let vignetteHalfH = 0;
+  let vignetteTimer = null;
+  let spotlightRaf = null;
+  let spotlightLocked = false;
+
+  function cancelAnim() {
+    if (animRaf !== null) {
+      cancelAnimationFrame(animRaf);
+      animRaf = null;
+    }
+  }
+
+  function setTransform(x, y) {
+    const el = state.cursor;
+    if (el && el.isConnected) {
+      el.style.transform = transformFor(x, y);
+    }
+  }
+
+  function updateVignette(x, y) {
+    if (spotlightLocked) return;
+    if (vignetteEl && vignetteEl.isConnected) {
+      vignetteEl.style.transform =
+        'translate(' + (x - vignetteHalfW) + 'px,' + (y - vignetteHalfH) + 'px)';
+    }
+  }
+
+  function ensureVignette() {
+    if (vignetteEl && vignetteEl.isConnected) {
+      return vignetteEl;
+    }
+    const host = document.documentElement;
+    if (!host) {
+      return null;
+    }
+    const W = window.innerWidth * 2;
+    const H = window.innerHeight * 2;
+    vignetteHalfW = W / 2;
+    vignetteHalfH = H / 2;
+    const v = document.createElement('canary-vignette');
+    v.setAttribute('aria-hidden', 'true');
+    v.style.cssText =
+      'position:fixed;left:0;top:0;width:' + W + 'px;height:' + H + 'px;' +
+      'pointer-events:none;z-index:2147483645;' +
+      'background:radial-gradient(circle 160px at 50% 50%,transparent 35%,rgba(0,0,0,0.4) 100%);' +
+      'opacity:0;transition:opacity 0.4s;';
+    if (state.x !== null) {
+      v.style.transform =
+        'translate(' + (state.x - vignetteHalfW) + 'px,' + (state.y - vignetteHalfH) + 'px)';
+    }
+    host.insertBefore(v, host.firstChild);
+    vignetteEl = v;
+    return v;
+  }
+
+  function showVignette(targetEl) {
+    if (spotlightRaf !== null) {
+      cancelAnimationFrame(spotlightRaf);
+      spotlightRaf = null;
+    }
+    if (vignetteTimer !== null) {
+      clearTimeout(vignetteTimer);
+      vignetteTimer = null;
+    }
+    spotlightLocked = false;
+    const v = ensureVignette();
+    if (!v) return;
+    // Compute target center and circumscribed radius from the element's rect.
+    var cx, cy, targetR;
+    if (targetEl && typeof targetEl.getBoundingClientRect === 'function') {
+      var rect = targetEl.getBoundingClientRect();
+      cx = rect.left + rect.width / 2;
+      cy = rect.top + rect.height / 2;
+      var hw = rect.width / 2;
+      var hh = rect.height / 2;
+      targetR = Math.max(Math.sqrt(hw * hw + hh * hh) + 40, 60);
+    } else {
+      cx = state.x !== null ? state.x : window.innerWidth / 2;
+      cy = state.y !== null ? state.y : window.innerHeight / 2;
+      targetR = 120;
+    }
+    // Lock cursor-follow and position vignette on target immediately.
+    spotlightLocked = true;
+    v.style.transform = 'translate(' + (cx - vignetteHalfW) + 'px,' + (cy - vignetteHalfH) + 'px)';
+    v.style.opacity = '1';
+    // Animate radius: wide open → tight around the element (focus-in).
+    var startR = 380;
+    var duration = 650;
+    var t0 = performance.now();
+    function frame(now) {
+      var t = Math.min((now - t0) / duration, 1);
+      var et = t * t * (3 - 2 * t); // smooth-step ease-in-out
+      var r = startR + (targetR - startR) * et;
+      v.style.background =
+        'radial-gradient(circle ' + r.toFixed(0) + 'px at 50% 50%,' +
+        'transparent 35%,rgba(0,0,0,0.4) 100%)';
+      if (t < 1) {
+        spotlightRaf = requestAnimationFrame(frame);
+      } else {
+        spotlightRaf = null;
+        vignetteTimer = setTimeout(function() {
+          if (vignetteEl && vignetteEl.isConnected) {
+            vignetteEl.style.opacity = '0';
+          }
+          // After opacity transition completes, reset gradient and unlock.
+          vignetteTimer = setTimeout(function() {
+            if (vignetteEl && vignetteEl.isConnected) {
+              vignetteEl.style.background =
+                'radial-gradient(circle 160px at 50% 50%,transparent 35%,rgba(0,0,0,0.4) 100%)';
+            }
+            spotlightLocked = false;
+            vignetteTimer = null;
+          }, 450);
+        }, 1200);
+      }
+    }
+    spotlightRaf = requestAnimationFrame(frame);
+  }
+
+  function glideAnimated(x, y, duration) {
+    const fromX = state.x !== null ? state.x : x;
+    const fromY = state.y !== null ? state.y : y;
+    cancelAnim();
+    state.x = x;
+    state.y = y;
+    savePos(x, y);
+    ensureCursor();
+    ensureVignette();
+    const dx = x - fromX;
+    const dy = y - fromY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 8) {
+      setTransform(x, y);
+      updateVignette(x, y);
+      return;
+    }
+    const arc = Math.min(dist * 0.15, 60);
+    const side = Math.random() < 0.5 ? 1 : -1;
+    const cx = (fromX + x) / 2 + (-dy / dist) * arc * side;
+    const cy = (fromY + y) / 2 + (dx / dist) * arc * side;
+    const t0 = performance.now();
+    function step(now) {
+      const t = Math.min((now - t0) / duration, 1);
+      const et = 1 - (1 - t) * (1 - t);
+      const bx = (1 - et) * (1 - et) * fromX + 2 * (1 - et) * et * cx + et * et * x;
+      const by = (1 - et) * (1 - et) * fromY + 2 * (1 - et) * et * cy + et * et * y;
+      setTransform(bx, by);
+      updateVignette(bx, by);
+      if (t < 1) {
+        animRaf = requestAnimationFrame(step);
+      } else {
+        animRaf = null;
+      }
+    }
+    animRaf = requestAnimationFrame(step);
+  }
 
   const ARROW_SVG =
     '<svg width="100%" height="100%" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">' +
@@ -131,9 +289,6 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
     el = document.createElement('canary-virtual-cursor');
     el.setAttribute('aria-hidden', 'true');
     el.dataset.turboPermanent = true;
-    // Created at its resting position with NO transition so a (re)install
-    // never shows a fly-in from the corner; the glide is enabled on the next
-    // frame, once the initial transform has painted.
     el.style.cssText =
       'position:fixed;left:0;top:0;width:' + SIZE + 'px;height:' + SIZE + 'px;' +
       'display:' + (state.hidden ? 'none' : 'block') + ';' +
@@ -142,20 +297,17 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
     el.innerHTML = svgFor(state.glyph);
     host.appendChild(el);
     state.cursor = el;
-    requestAnimationFrame(() => {
-      el.style.transition = GLIDE;
-    });
     return el;
   }
 
   function moveTo(x, y) {
+    cancelAnim();
     state.x = x;
     state.y = y;
     savePos(x, y);
-    const el = ensureCursor();
-    if (el) {
-      el.style.transform = transformFor(x, y);
-    }
+    ensureCursor();
+    setTransform(x, y);
+    updateVignette(x, y);
   }
 
   // Hide/show the cursor (used to suppress it during a manual takeover, where
@@ -171,6 +323,16 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
     const el = state.cursor;
     if (el && el.isConnected) {
       el.style.display = value ? 'none' : 'block';
+    }
+    if (value) {
+      if (vignetteTimer !== null) {
+        clearTimeout(vignetteTimer);
+        vignetteTimer = null;
+      }
+      const v = vignetteEl;
+      if (v && v.isConnected) {
+        v.style.opacity = '0';
+      }
     }
   }
   state.setHidden = setHidden;
@@ -286,22 +448,16 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
     window.addEventListener('mouseup', onUp, { capture: true, once: true });
   }
 
-  // Glide the cursor onto (x, y), pick the glyph from the target element, and
-  // arm the click ripple. The CSS transform transition animates the move. This
-  // is the only way the cursor moves — the agent calls it through humanClick /
-  // humanFill; nothing tracks raw mouse events.
   function glide(x, y, el) {
     setGlyph(glyphFor(el));
-    moveTo(x, y);
+    glideAnimated(x, y, ${CURSOR_GLIDE_MS});
     armPress();
   }
   state.glide = glide;
+  state.showVignette = showVignette;
 
-  // Move the cursor aside without arming a click (used by humanFill to clear the
-  // field so the text being typed isn't covered). The 250ms refreshGlyph tick
-  // re-picks the glyph for wherever it lands.
   function park(x, y) {
-    moveTo(x, y);
+    glideAnimated(x, y, 250);
   }
   state.park = park;
 
@@ -314,9 +470,6 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
   })();
 
   function arm() {
-    // Keep the cursor on screen at all times in the top frame, including before
-    // any input and after a SPA / document.open() wipes the DOM. No input
-    // listeners to register — the cursor moves only via state.glide().
     if (isTopFrame) {
       ensureCursor();
       refreshGlyph();
