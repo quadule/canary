@@ -266,3 +266,9 @@ last-opened tab and binds it to that step in the report. So:
 - Stay in this conversation — don't delegate the flow to a subagent; the point is to collaborate.
 - Name steps by intent (`observe-cart`, `enable-feature-flag`, `submit-login-form`).
 - Never skip `session end` — without it there is no report.
+- **File uploads:** write the file into the sandbox temp dir first (`writeFile(name, data)`), then
+  `await page.setInputFiles(inputSelector, name)`. Only hand off to takeover when the file can't be
+  produced in-script (the user needs to pick a real local file in the live browser); after they
+  attach it, continue recording.
+- **Split / dropdown button submenus:** after clicking a button that reveals a submenu, snapshot
+  immediately — before any `waitForSettled` or other call — to capture the menu while it's open.
