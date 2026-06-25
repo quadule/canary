@@ -881,14 +881,20 @@ export class QuickJSSandbox {
                       const el = document.createElement("canary-caption");
                       el.setAttribute("aria-hidden", "true");
                       el.textContent = arg.text;
+                      // Clamp to two lines so an over-long caption can't grow
+                      // into a wall of text over the page: -webkit-line-clamp
+                      // truncates with an ellipsis past line two. A narrower
+                      // max-width keeps a normal one-liner on one or two lines.
                       el.style.cssText =
                         "position:fixed;left:50%;bottom:36px;" +
                         "transform:translateX(-50%) translateY(8px);" +
-                        "max-width:80vw;padding:12px 20px;border-radius:10px;" +
+                        "max-width:min(72vw,720px);padding:12px 20px;border-radius:10px;" +
                         "background:rgba(17,17,17,0.86);color:#fff;" +
                         "font:500 18px/1.45 system-ui,-apple-system,sans-serif;" +
                         "z-index:2147483646;pointer-events:none;white-space:pre-wrap;" +
-                        "text-align:center;box-shadow:0 4px 18px rgba(0,0,0,0.35);opacity:0;";
+                        "text-align:center;box-shadow:0 4px 18px rgba(0,0,0,0.35);opacity:0;" +
+                        "display:-webkit-box;-webkit-box-orient:vertical;" +
+                        "-webkit-line-clamp:2;line-clamp:2;overflow:hidden;";
                       host.appendChild(el);
                       const FADE = 250;
                       const hold = Math.max(0, arg.ms - FADE * 2);
@@ -978,6 +984,46 @@ export class QuickJSSandbox {
                   if (waited >= timeout) {
                     throw new Error(
                       \`page.waitForURL: timed out after \${timeout}ms waiting for \${String(url)} (current: \${href || "unknown"})\`,
+                    );
+                  }
+                  await page.waitForTimeout(intervalMs);
+                  waited += intervalMs;
+                }
+              };
+              // Wait until the live URL CHANGES, without knowing the
+              // destination ahead of time — for confirming a click navigated
+              // somewhere new during exploratory QA. The common
+              // humanClick → waitForSettled → location.href pattern is racy:
+              // waitForSettled watches the DOM, which can go quiet before
+              // Turbo/Hotwire (or an SPA router) runs its pushState, so the URL
+              // read back is stale. This waits on the URL specifically. Capture
+              // the starting URL BEFORE the click (pass { from }), or start the
+              // wait before the click — otherwise the navigation can finish
+              // first and "from" is already the new URL. Reads location.href
+              // (NOT page.url(), which the client caches and never refreshes on
+              // a pushState nav). Returns the new href.
+              page.waitForURLChange = async (options) => {
+                const opts = options || {};
+                const timeout =
+                  typeof opts.timeout === "number" ? opts.timeout : 30000;
+                const from =
+                  typeof opts.from === "string"
+                    ? opts.from
+                    : await page
+                        .evaluate(() => location.href)
+                        .catch(() => null);
+                const intervalMs = 150;
+                let waited = 0;
+                for (;;) {
+                  const href = await page
+                    .evaluate(() => location.href)
+                    .catch(() => null);
+                  if (href && href !== from) {
+                    return href;
+                  }
+                  if (waited >= timeout) {
+                    throw new Error(
+                      \`page.waitForURLChange: URL did not change from \${from || "unknown"} within \${timeout}ms\`,
                     );
                   }
                   await page.waitForTimeout(intervalMs);

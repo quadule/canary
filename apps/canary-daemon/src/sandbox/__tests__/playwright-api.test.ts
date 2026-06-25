@@ -474,6 +474,51 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       expect(result.threw).toBe(true);
       expect(result.message).toContain("timed out");
     }, 15_000);
+
+    it("waitForURLChange resolves on a pushState nav without a known target", async () => {
+      const firstUrl = `${navigationServer.baseUrl}/nav/first`;
+      const result = await harness.runJson<{
+        startHref: string;
+        changedHref: string;
+      }>(`
+        const page = await browser.getPage("navigation-url-change");
+        await page.goto(${JSON.stringify(firstUrl)}, { waitUntil: "domcontentloaded" });
+        const startHref = await page.evaluate(() => location.href);
+        // Don't pass a destination — just "wait until it changes". Capture
+        // before the nav and run both so "from" can't be the post-nav URL.
+        const [changedHref] = await Promise.all([
+          page.waitForURLChange({ from: startHref }),
+          page.evaluate(() => history.pushState({}, "", "/nav/pushed")),
+        ]);
+        console.log(JSON.stringify({ startHref, changedHref }));
+      `);
+
+      expect(result.startHref).toBe(firstUrl);
+      expect(result.changedHref).toBe(`${navigationServer.baseUrl}/nav/pushed`);
+    }, 15_000);
+
+    it("waitForURLChange throws when the URL never changes", async () => {
+      const firstUrl = `${navigationServer.baseUrl}/nav/first`;
+      const result = await harness.runJson<{
+        threw: boolean;
+        message: string;
+      }>(`
+        const page = await browser.getPage("navigation-url-change-timeout");
+        await page.goto(${JSON.stringify(firstUrl)}, { waitUntil: "domcontentloaded" });
+        let threw = false;
+        let message = "";
+        try {
+          await page.waitForURLChange({ timeout: 600 });
+        } catch (error) {
+          threw = true;
+          message = String(error && error.message ? error.message : error);
+        }
+        console.log(JSON.stringify({ threw, message }));
+      `);
+
+      expect(result.threw).toBe(true);
+      expect(result.message).toContain("did not change");
+    }, 15_000);
   });
 
   describe.sequential("content and evaluation", () => {
@@ -1043,6 +1088,40 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       await harness.dispose();
       await manager.stopBrowser(browserName);
     }, 180_000);
+
+    it("showCaption clamps an over-long caption to two lines", async () => {
+      const result = await harness.runJson<{
+        lineHeight: number;
+        renderedHeight: number;
+        clamped: boolean;
+      }>(
+        withTestPage(
+          "caption-clamp",
+          `
+          const longText = "This is a deliberately long caption that runs well past two lines so we can prove the overflow is clamped rather than growing into a wall of text across the whole page.";
+          await page.showCaption(longText, { durationMs: 5000 });
+          const metrics = await page.evaluate(() => {
+            const el = document.querySelector("canary-caption");
+            const lh = parseFloat(getComputedStyle(el).lineHeight);
+            return {
+              lineHeight: lh,
+              renderedHeight: el.getBoundingClientRect().height,
+              // scrollHeight exceeds clientHeight only when content is clipped.
+              clamped: el.scrollHeight > el.clientHeight + 1,
+            };
+          });
+          console.log(JSON.stringify(metrics));
+        `
+        )
+      );
+
+      // Rendered box holds at most two text lines plus the 12px*2 vertical
+      // padding — far short of the ~10 lines the untruncated text would need.
+      expect(result.clamped).toBe(true);
+      expect(result.renderedHeight).toBeLessThanOrEqual(
+        result.lineHeight * 2 + 24 + 2
+      );
+    }, 15_000);
 
     it("humanClick glides the pointer onto the target before pressing", async () => {
       // Record every pointer event the page sees so we can prove a mousemove

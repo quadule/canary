@@ -99,6 +99,15 @@ https://playwright.dev/docs/api/class-page
   `"hidden"` / `"detached"`) / `page.waitForURL(pattern)` (polls the live URL, so it resolves on
   History API / Turbo / SPA navigations too; `pattern` is a glob, RegExp, or predicate) /
   `page.waitForLoadState(state)` / `page.waitForFunction(fn)` / `page.waitForTimeout(ms)` — waiting
+- `page.waitForURLChange(opts?)` — Canary helper: wait until the live URL changes (returns the new
+  href) when you DON'T know the destination — e.g. confirming a click navigated. Don't use
+  `humanClick` then `waitForSettled` then read `location.href`: `waitForSettled` watches the DOM,
+  which can go quiet before Turbo/Hotwire runs its `pushState`, so you read a stale URL. Capture the
+  start URL before the click and pass it: `const from = await page.evaluate(() => location.href);
+  await page.humanClick(link); await page.waitForURLChange({ from });` — or run both at once:
+  `await Promise.all([page.waitForURLChange(), page.humanClick(link)])`. (`page.url()` is client-
+  cached and won't reflect a Turbo nav; the helper reads `location.href`.) Then act on a known
+  destination element or `waitForSettled()` before observing
 - `page.setInputFiles(target, files, opts?)` — Canary helper: attach files to a file `<input>`.
   `files` is one filename or an array; each must already live in the sandbox temp dir (write it
   with `writeFile(name, data)` first, or have the user drop it in via takeover). The bytes are read
