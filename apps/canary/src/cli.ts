@@ -105,9 +105,12 @@ interface RunOpts {
 }
 
 interface SessionEndOpts {
+  captions?: boolean;
+  cinematic?: boolean;
   condense?: boolean;
   open?: boolean;
   stopDaemon?: boolean;
+  theme?: string;
 }
 
 interface UiOpts {
@@ -190,11 +193,23 @@ export function buildProgram(): CommandType {
       "--no-condense",
       "Keep raw videos (skip trimming pre-load frames and long stills)"
     )
+    .option(
+      "--cinematic",
+      "Add LLM narration, a macOS voice-over, captions, and a title card (macOS only; needs `claude` and `say`)"
+    )
+    .option(
+      "--theme <description>",
+      'Override the random cinematic theme, e.g. "1970s heist film" (implies --cinematic)'
+    )
+    .option("--no-captions", "With --cinematic, skip burning in subtitles")
     .option("--open", "Open the rendered report.html in your default browser")
     .action(async (id: string, opts: SessionEndOpts) => {
       const code = await sessionEnd(id, isJson(program), {
         stopDaemon: opts.stopDaemon === true,
         condense: opts.condense,
+        cinematic: opts.cinematic === true || typeof opts.theme === "string",
+        theme: opts.theme,
+        captions: opts.captions,
         open: opts.open === true,
       });
       throw new ExitCodeError(code);

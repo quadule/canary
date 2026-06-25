@@ -21,12 +21,16 @@ import {
   remapToCondensed,
   type Segment,
 } from "../video/condense.js";
+import { type CinematicStep, cinematicProcess } from "../video/narrate.js";
 import { stopDaemonIfIdle } from "./daemon-stop.js";
 
 interface SessionEndOpts {
+  captions?: boolean;
+  cinematic?: boolean;
   condense?: boolean;
   open?: boolean;
   stopDaemon?: boolean;
+  theme?: string;
 }
 
 // Open a file/URL in the OS default app, detached and best-effort: opening the
@@ -160,6 +164,81 @@ async function condenseSessionVideos(
   }
 }
 
+interface CinematicOpts {
+  captions: boolean;
+  theme?: string;
+}
+
+// Apply the opt-in cinematic pass (LLM narration + macOS TTS + burned captions +
+// an opening title card) to the primary recording, AFTER condensing has stamped
+// each step's position in the trimmed video. The pass re-times the video (it
+// freezes each step's frame so its narration fits, then prepends a title card),
+// which MOVES every step — so we replace each step.videoTime with the returned
+// cinematic positions to keep the report/viewer timeline synced. Best-effort: on
+// a non-macOS host, a missing `claude`/`say`, or any failure, the video is left
+// as the plain condensed cut and the timeline is unchanged.
+async function cinematizeSessionVideo(
+  result: SessionEndResult,
+  record: SessionRecord,
+  opts: CinematicOpts
+): Promise<void> {
+  const video = result.artifacts.find((a) => a.kind === "video");
+  if (!video) {
+    return;
+  }
+  const ffmpeg = await findFfmpeg();
+  if (!ffmpeg) {
+    logger.info("ffmpeg not found; skipping cinematic pass");
+    return;
+  }
+  // Keep references to the record steps we pass through, so the re-timed
+  // positions can be written straight back onto them in order.
+  const timedSteps = record.steps.filter(
+    (s) => typeof s.videoTime === "number"
+  );
+  const steps: CinematicStep[] = timedSteps.map((s) => ({
+    name: s.name,
+    script: s.script,
+    durationMs: s.durationMs,
+    videoTime: s.videoTime as number,
+  }));
+  if (steps.length === 0) {
+    logger.info("no timed steps; skipping cinematic pass");
+    return;
+  }
+  process.stderr.write("Adding cinematic narration…\n");
+  const outcome = await cinematicProcess(video.path, steps, {
+    ffmpegPath: ffmpeg,
+    theme: opts.theme,
+    captions: opts.captions,
+    log: logger,
+  });
+  if (!outcome.applied) {
+    process.stderr.write(`  ⚠ cinematic pass skipped: ${outcome.reason}\n`);
+    logger.warn({ reason: outcome.reason }, "cinematic pass not applied");
+    return;
+  }
+  // Re-timing moved every step (per-step freezes + the title card), so REPLACE
+  // each step's position with the cinematic one — keeping click-to-seek and the
+  // playhead highlight aligned to the narrated cut.
+  outcome.stepTimes?.forEach((t, i) => {
+    const step = timedSteps[i];
+    if (step) {
+      step.videoTime = t;
+    }
+  });
+  video.bytes = await stat(video.path)
+    .then((s) => s.size)
+    .catch(() => video.bytes);
+  process.stderr.write("  ✓ narration added\n");
+  // Surface any degradation (e.g. this ffmpeg lacks drawtext/subtitles) so the
+  // user isn't left wondering where the title card or burned captions went.
+  for (const note of outcome.notes ?? []) {
+    process.stderr.write(`  ⚠ ${note}\n`);
+  }
+  logger.info({ video: video.path }, "cinematic pass applied");
+}
+
 export async function sessionEnd(
   id: string,
   json: boolean,
@@ -212,6 +291,15 @@ export async function sessionEnd(
 
   if (opts.condense !== false) {
     await condenseSessionVideos(endResult, record);
+  }
+
+  // Cinematic narration is opt-in and runs after condensing (it keys off the
+  // stamped step.videoTime and the trimmed video). Default output is unchanged.
+  if (opts.cinematic) {
+    await cinematizeSessionVideo(endResult, record, {
+      theme: opts.theme,
+      captions: opts.captions !== false,
+    });
   }
 
   // Resilient like `session abort`: a report-write failure must not crash the
