@@ -44,23 +44,30 @@ const execFileAsync = promisify(execFile);
 // up with its audio. The caller adds it to each step's report timeline too.
 export const TITLE_SEC = 2.5;
 
-// macOS Premium English voices. One is picked per session (consistency) via
-// Math.random or $CANARY_SAY_VOICE.
-const PREMIUM_VOICES = [
-  "Ava",
-  "Evan",
-  "Karen",
-  "Moira",
-  "Nathan",
-  "Nicky",
-  "Noelle",
-  "Samantha",
-  "Serena",
-  "Susan",
-  "Tom",
-  "Victoria",
-  "Zoe",
-] as const;
+// A parsed `say -v '?'` entry. `full` is the exact string to pass to `say -v`,
+// INCLUDING any "(Premium)"/"(Enhanced)" suffix — passing the bare name selects
+// the low-quality compact variant even when a premium one is installed, which is
+// why local narration used to sound robotic. `quality` lets us prefer the
+// higher-fidelity downloads; `locale` lets us prefer US English.
+interface InstalledVoice {
+  full: string;
+  locale: string;
+  name: string;
+  quality: "Premium" | "Enhanced" | "Default";
+}
+
+// Last-resort voice that ships on every Mac, used only when no installed voice
+// can be parsed. One voice is picked per session (consistency) — an explicit
+// premium/enhanced English voice when available, else $CANARY_SAY_VOICE.
+const FALLBACK_VOICE = "Samantha";
+
+// Burned-caption layout. The on-screen caption holds at most two lines; each is
+// kept short enough (~48 chars) that, at the libass FontSize below, a line fits
+// the frame width without libass re-wrapping it onto a third line. Narration
+// longer than two lines is truncated with an ellipsis in the caption (the audio
+// still speaks it in full); the prompt asks for short lines so that's rare.
+const CAPTION_LINE_MAX = 48;
+const CAPTION_MAX_LINES = 2;
 
 // `say` speaking rate (words per minute). Default tuned for intelligibility;
 // overridable via $CANARY_SAY_RATE.
@@ -245,15 +252,78 @@ export function secToSrtTimestamp(sec: number): string {
 // Build a valid multi-cue SRT document from timed cues. Cue numbers are
 // 1-based; each cue is "<n>\n<start> --> <end>\n<text>\n\n".
 export function buildSrt(
-  cues: { start: number; end: number; text: string }[]
+  cues: { start: number; end: number; text: string }[],
+  maxCharsPerLine = CAPTION_LINE_MAX
 ): string {
   return cues
     .map((cue, i) => {
       const start = secToSrtTimestamp(cue.start);
       const end = secToSrtTimestamp(cue.end);
-      return `${i + 1}\n${start} --> ${end}\n${cue.text}\n`;
+      const text = wrapCaption(cue.text, maxCharsPerLine);
+      return `${i + 1}\n${start} --> ${end}\n${text}\n`;
     })
     .join("\n");
+}
+
+// Caption chars-per-line scaled to the video width. The libass caption font
+// doesn't shrink as fast as the frame, so a fixed budget that fits the 1280px
+// default viewport overflows a narrow one. Calibrated against burned frames:
+// 48 chars = two lines at 1280px, and a narrower frame needs proportionally
+// fewer (~30 at 800px). Capped at CAPTION_LINE_MAX so a very wide video still
+// keeps captions to a readable ~two short lines, and floored so a tiny viewport
+// doesn't truncate to nothing.
+export function captionLineMax(width: number | undefined): number {
+  if (!width || width <= 0) {
+    return CAPTION_LINE_MAX;
+  }
+  return Math.max(24, Math.min(CAPTION_LINE_MAX, Math.floor(width * 0.0375)));
+}
+
+function truncateWithEllipsis(line: string, limit: number): string {
+  if (line.length + 1 <= limit) {
+    return `${line}…`;
+  }
+  return `${line.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+// Wrap caption text for burn-in so it never shows more than `maxLines` lines.
+// Greedy word wrap at `maxCharsPerLine`; if the text needs more lines than that,
+// the last line is truncated with an ellipsis. The explicit line breaks become
+// libass `\N`, and because each line stays well within the frame width libass's
+// own (smart) wrapping won't add a surprise extra line on top.
+export function wrapCaption(
+  text: string,
+  maxCharsPerLine = CAPTION_LINE_MAX,
+  maxLines = CAPTION_MAX_LINES
+): string {
+  const limit = Math.max(1, maxCharsPerLine);
+  const words = text.replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+  if (words.length === 0) {
+    return "";
+  }
+  const lines: string[] = [];
+  let current = "";
+  let truncated = false;
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word;
+    if (candidate.length <= limit) {
+      current = candidate;
+      continue;
+    }
+    // `word` won't fit on the current line. If a new line would exceed the
+    // budget, stop here — the leftover words get folded into an ellipsis.
+    if (lines.length + 1 >= maxLines) {
+      truncated = true;
+      break;
+    }
+    lines.push(current);
+    current = word;
+  }
+  lines.push(current);
+  if (truncated) {
+    lines[lines.length - 1] = truncateWithEllipsis(lines.at(-1) ?? "", limit);
+  }
+  return lines.join("\n");
 }
 
 // One audio input to the mix: where it starts (ms) and an optional volume scale
@@ -347,7 +417,7 @@ export function buildNarrationPrompt(args: {
     stepLines,
     "",
     "Rules:",
-    "- Write one narration entry per step: SHORT and PUNCHY, 1-2 sentences max, tight enough to be read aloud within the step's brief on-screen window. Favor brevity over flourish.",
+    "- Write one narration entry per step: SHORT and PUNCHY — ideally ONE sentence, never more than two, and at most ~18 words / ~95 characters so it fits two on-screen caption lines and reads aloud within the step's brief window. A longer line is truncated on screen. Favor brevity over flourish.",
     "- Stay in character for the creative direction throughout; commit to the bit.",
     "- Never repeat the literal step name; describe what is happening in that voice.",
     "- If the direction calls for a verse form (poem/limerick/haiku/song), write the narration in that form.",
@@ -400,18 +470,38 @@ export function parseNarrationJson(raw: string): Narration | null {
   return { title: record.title, steps };
 }
 
-// Parse the voice names from `say -v '?'` output. Each line is
-// "<Name> (Quality)?   <locale>   # sample"; the usable `-v` name is the first
-// whitespace-delimited token (e.g. "Ava" from "Ava (Premium)").
-export function parseInstalledVoiceNames(stdout: string): Set<string> {
-  const names = new Set<string>();
+// Parse `say -v '?'` output into structured voices. Each line is
+// "<Name>[ (Quality)]   <locale>   # sample" — columns separated by runs of
+// spaces. macOS lists only the highest-quality installed build of each voice
+// but keeps a hidden compact build reachable by identifier (verified:
+// `say -v com.apple.voice.compact.en-US.Ava` succeeds with audible-quality
+// audio distinct from "Ava (Premium)"). Passing the full listed token,
+// INCLUDING its "(Premium)"/"(Enhanced)" suffix, pins the listed (high-quality)
+// variant; we keep the quality tag and locale so the picker can prefer the
+// premium/enhanced US-English downloads over a plain compact voice.
+export function parseInstalledVoices(stdout: string): InstalledVoice[] {
+  const voices: InstalledVoice[] = [];
   for (const line of stdout.split("\n")) {
-    const name = line.trim().split(/\s+/)[0];
-    if (name) {
-      names.add(name);
+    // Name column ends at the first run of 2+ spaces, before the BCP-47-ish
+    // locale (en_US / en-US / en_GB). Intra-name spaces are single, so a
+    // multi-word voice name ("Bad News") stays intact.
+    const match = line.match(/^(.+?)\s{2,}([A-Za-z]{2}[-_][A-Za-z]{2})\b/);
+    if (!(match?.[1] && match[2])) {
+      continue;
     }
+    const full = match[1].trim();
+    if (!full) {
+      continue;
+    }
+    // The capture group is exactly "Premium" or "Enhanced" when present.
+    const qualityMatch = /\((Premium|Enhanced)\)\s*$/.exec(full);
+    const quality: InstalledVoice["quality"] = qualityMatch
+      ? (qualityMatch[1] as "Premium" | "Enhanced")
+      : "Default";
+    const name = full.replace(/\s*\((?:Premium|Enhanced)\)\s*$/, "").trim();
+    voices.push({ full, name, quality, locale: match[2].replace("-", "_") });
   }
-  return names;
+  return voices;
 }
 
 // Remove ASS/SSA override tags (and stray braces) so narration burned into the
@@ -656,35 +746,51 @@ function parseFrameRate(fraction: string | undefined): number {
 // missing/unusable. Used both as the precondition probe and to constrain the
 // voice pick to installed voices (premium voices need a manual download, so a
 // hardcoded name may not be present).
-async function listSayVoices(): Promise<Set<string> | null> {
+async function listSayVoices(): Promise<InstalledVoice[] | null> {
   try {
     const { stdout } = await run("say", ["-v", "?"], VERSION_PROBE_TIMEOUT_MS);
-    return parseInstalledVoiceNames(stdout);
+    return parseInstalledVoices(stdout);
   } catch {
     return null;
   }
 }
 
-// Pick the session voice. An explicit $CANARY_SAY_VOICE always wins (the user
-// asked for it; let `say` error loudly if it's wrong). Otherwise choose randomly
-// from the premium voices that are actually installed, falling back to any
-// installed English voice, then to "Samantha" (ships by default) — so a fresh
-// Mac without the premium downloads still narrates instead of silently skipping.
-function pickVoice(installed: Set<string>): string {
+// Pick the session voice and return the exact `-v` string. An explicit
+// $CANARY_SAY_VOICE always wins (the user asked for it; let `say` error loudly
+// if it's wrong). Otherwise prefer the highest-fidelity US-English download
+// actually installed — Premium over Enhanced, US English over other English,
+// English over anything — because a bare/compact voice (e.g. the default
+// Samantha) is what made earlier narration sound robotic. Falls back to
+// "Samantha" so a fresh Mac without premium downloads still narrates.
+export function pickVoice(voices: InstalledVoice[]): string {
   const override = process.env.CANARY_SAY_VOICE;
   if (override) {
     return override;
   }
-  const candidates = PREMIUM_VOICES.filter((v) => installed.has(v));
-  if (candidates.length > 0) {
-    const index = Math.floor(Math.random() * candidates.length);
-    return candidates[index] ?? candidates[0] ?? "Samantha";
+  const isEnglish = (v: InstalledVoice) => /^en[-_]/i.test(v.locale);
+  const isUsEnglish = (v: InstalledVoice) => /^en[-_]us$/i.test(v.locale);
+  const premium = voices.filter((v) => v.quality === "Premium");
+  const enhanced = voices.filter((v) => v.quality === "Enhanced");
+  // Tiers from most to least preferred; first non-empty tier wins.
+  const tiers: InstalledVoice[][] = [
+    premium.filter(isUsEnglish),
+    premium.filter(isEnglish),
+    premium,
+    enhanced.filter(isUsEnglish),
+    enhanced.filter(isEnglish),
+    enhanced,
+    voices.filter((v) => isEnglish(v) && v.name === FALLBACK_VOICE),
+    voices.filter(isEnglish),
+  ];
+  for (const tier of tiers) {
+    if (tier.length > 0) {
+      const pick = tier[Math.floor(Math.random() * tier.length)];
+      if (pick) {
+        return pick.full;
+      }
+    }
   }
-  if (installed.has("Samantha")) {
-    return "Samantha";
-  }
-  const first = [...installed][0];
-  return first ?? "Samantha";
+  return FALLBACK_VOICE;
 }
 
 function pickRate(): number {
@@ -1195,7 +1301,8 @@ function saySynth(voice: string, rate: number): SpeechSynth {
 // and a reproducibility voice label — or null when there's NO way to voice it
 // (non-macOS host with no provider), so cinematic can run anywhere a key is set.
 async function resolveSpeech(
-  providers: MediaProviders
+  providers: MediaProviders,
+  notes: string[]
 ): Promise<{ say?: SpeechSynth; rate: number; label: string } | null> {
   const rate = pickRate();
   let say: SpeechSynth | undefined;
@@ -1205,7 +1312,25 @@ async function resolveSpeech(
     if (installed) {
       const voice = pickVoice(installed);
       say = saySynth(voice, rate);
+      // sayLabel is the full `-v` identifier (e.g. "Ava (Premium)"), surfaced
+      // in meta so a good run can be reproduced via $CANARY_SAY_VOICE.
       sayLabel = voice;
+      // The compact voices are the ones that sound robotic. macOS hides a
+      // compact build behind every premium/enhanced voice, so a name like
+      // "Ava (Premium)" DOES reach the premium asset — but if no premium or
+      // enhanced English voice is installed at all, the pick falls through to a
+      // compact voice. When that happens and no higher-quality TTS provider is
+      // configured, say so, since it's the usual cause of robotic narration.
+      const chosen = installed.find((v) => v.full === voice);
+      const fellBackToCompact = !chosen || chosen.quality === "Default";
+      if (
+        !(providers.tts || process.env.CANARY_SAY_VOICE) &&
+        fellBackToCompact
+      ) {
+        notes.push(
+          "no premium/enhanced English voice installed — narration uses the compact (robotic-sounding) voice; download one in System Settings › Accessibility › Spoken Content › System Voice (e.g. Ava, Zoe), or set GEMINI_API_KEY for higher-quality TTS"
+        );
+      }
     }
   }
   if (!(providers.tts || say)) {
@@ -1843,7 +1968,7 @@ export async function cinematicProcess(
 
     // Voicing: a TTS provider, or macOS `say`. With a provider this runs on any
     // platform; without one it needs macOS.
-    const speech = await resolveSpeech(providers);
+    const speech = await resolveSpeech(providers, notes);
     if (!speech) {
       return notApplied(
         "cinematic narration needs macOS `say` or a TTS provider (set GEMINI_API_KEY)"
@@ -1924,7 +2049,13 @@ export async function cinematicProcess(
       const start = clipOffsetsSec[k] ?? 0;
       return { start, end: start + clip.durationSec, text: clip.narration };
     });
-    await writeFile(srtPath, buildSrt(cues));
+    // Size each caption line to the actual video width so it holds to two lines
+    // on a narrow custom --viewport, not just the 1280px default.
+    const srtGeometry = await probeVideo(ffmpegPath, videoPath);
+    await writeFile(
+      srtPath,
+      buildSrt(cues, captionLineMax(srtGeometry?.width))
+    );
 
     // Burn captions only when asked AND supported; otherwise the .srt sidecar is
     // the caption track (soft subs).

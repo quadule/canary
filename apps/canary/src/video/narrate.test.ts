@@ -1,16 +1,19 @@
 import { existsSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   buildAudioMix,
   buildNarrationPrompt,
   buildSrt,
+  captionLineMax,
   changeScaleHint,
   parseFilterNames,
-  parseInstalledVoiceNames,
+  parseInstalledVoices,
   parseNarrationJson,
+  pickVoice,
   planRetime,
   secToSrtTimestamp,
   titleStyle,
+  wrapCaption,
   wrapTitle,
 } from "./narrate.js";
 
@@ -226,6 +229,62 @@ describe("wrapTitle", () => {
   });
 });
 
+describe("wrapCaption", () => {
+  it("leaves a short caption on a single line", () => {
+    expect(wrapCaption("Our operative approaches.", 48)).toBe(
+      "Our operative approaches."
+    );
+  });
+
+  it("wraps a longer caption onto two lines", () => {
+    const out = wrapCaption(
+      "The operative enters the stolen credentials and waits for the redirect.",
+      30,
+      2
+    );
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(2);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(31); // 30 + room for the ellipsis
+    }
+  });
+
+  it("truncates with an ellipsis when it would exceed two lines", () => {
+    const out = wrapCaption(
+      "This narration is far too long to ever fit within a mere two short caption lines on screen.",
+      20,
+      2
+    );
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(2);
+    expect(out.endsWith("…")).toBe(true);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(20);
+    }
+  });
+
+  it("returns an empty string for blank input", () => {
+    expect(wrapCaption("   ", 48)).toBe("");
+  });
+});
+
+describe("captionLineMax", () => {
+  it("gives the full budget at the 1280px default and scales down when narrow", () => {
+    expect(captionLineMax(1280)).toBe(48);
+    expect(captionLineMax(800)).toBe(30);
+  });
+
+  it("caps wide videos and floors tiny ones", () => {
+    expect(captionLineMax(1920)).toBe(48); // capped at CAPTION_LINE_MAX
+    expect(captionLineMax(320)).toBe(24); // floored
+  });
+
+  it("falls back to the default budget when width is unknown", () => {
+    expect(captionLineMax(undefined)).toBe(48);
+    expect(captionLineMax(0)).toBe(48);
+  });
+});
+
 describe("changeScaleHint", () => {
   it("sizes by length/energy without imposing a format", () => {
     expect(changeScaleHint(1, 10)).toContain("very small");
@@ -252,24 +311,93 @@ describe("titleStyle", () => {
   });
 });
 
-describe("parseInstalledVoiceNames", () => {
-  it("extracts the leading voice name from each `say -v ?` line", () => {
+describe("parseInstalledVoices", () => {
+  it("keeps the full `-v` name, quality tag, and locale per line", () => {
     const stdout = [
       "Ava (Premium)       en_US    # Hello! My name is Ava.",
       "Samantha            en_US    # Hello! My name is Samantha.",
-      "Zoe (Premium)       en_US    # Hello! My name is Zoe.",
+      "Daniel (Enhanced)   en_GB    # Hello! My name is Daniel.",
     ].join("\n");
-    const names = parseInstalledVoiceNames(stdout);
-    expect(names.has("Ava")).toBe(true);
-    expect(names.has("Samantha")).toBe(true);
-    expect(names.has("Zoe")).toBe(true);
-    // The "(Premium)" annotation is not part of the usable -v name.
-    expect(names.has("(Premium)")).toBe(false);
+    const voices = parseInstalledVoices(stdout);
+
+    const ava = voices.find((v) => v.name === "Ava");
+    // The "(Premium)" suffix IS part of the usable -v name — passing the bare
+    // name selects the compact variant.
+    expect(ava?.full).toBe("Ava (Premium)");
+    expect(ava?.quality).toBe("Premium");
+    expect(ava?.locale).toBe("en_US");
+
+    const samantha = voices.find((v) => v.name === "Samantha");
+    expect(samantha?.full).toBe("Samantha");
+    expect(samantha?.quality).toBe("Default");
+
+    const daniel = voices.find((v) => v.name === "Daniel");
+    expect(daniel?.full).toBe("Daniel (Enhanced)");
+    expect(daniel?.quality).toBe("Enhanced");
+    expect(daniel?.locale).toBe("en_GB");
   });
 
-  it("ignores blank lines and returns an empty set for empty input", () => {
-    expect(parseInstalledVoiceNames("").size).toBe(0);
-    expect(parseInstalledVoiceNames("\n\n  \n").size).toBe(0);
+  it("ignores blank lines and returns an empty array for empty input", () => {
+    expect(parseInstalledVoices("")).toEqual([]);
+    expect(parseInstalledVoices("\n\n  \n")).toEqual([]);
+  });
+});
+
+describe("pickVoice", () => {
+  const original = process.env.CANARY_SAY_VOICE;
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env.CANARY_SAY_VOICE;
+    } else {
+      process.env.CANARY_SAY_VOICE = original;
+    }
+  });
+
+  const parse = (lines: string[]) => parseInstalledVoices(lines.join("\n"));
+
+  it("never picks a robotic base voice when a premium one is installed", () => {
+    delete process.env.CANARY_SAY_VOICE;
+    const voices = parse([
+      "Ava (Premium)       en_US    # Hello!",
+      "Samantha            en_US    # Hello!",
+    ]);
+    // Only one premium voice, so the pick is deterministic regardless of random.
+    for (let i = 0; i < 10; i++) {
+      expect(pickVoice(voices)).toBe("Ava (Premium)");
+    }
+  });
+
+  it("prefers Premium over Enhanced, US English over other English", () => {
+    delete process.env.CANARY_SAY_VOICE;
+    const voices = parse([
+      "Daniel (Enhanced)   en_GB    # Hello!",
+      "Serena (Premium)    en_GB    # Hello!",
+      "Ava (Premium)       en_US    # Hello!",
+    ]);
+    for (let i = 0; i < 10; i++) {
+      expect(pickVoice(voices)).toBe("Ava (Premium)");
+    }
+  });
+
+  it("falls through to an enhanced voice when no premium exists", () => {
+    delete process.env.CANARY_SAY_VOICE;
+    const voices = parse([
+      "Daniel (Enhanced)   en_US    # Hello!",
+      "Samantha            en_US    # Hello!",
+    ]);
+    expect(pickVoice(voices)).toBe("Daniel (Enhanced)");
+  });
+
+  it("honors an explicit $CANARY_SAY_VOICE override", () => {
+    process.env.CANARY_SAY_VOICE = "Karen (Premium)";
+    expect(pickVoice(parse(["Ava (Premium)  en_US  # Hi"]))).toBe(
+      "Karen (Premium)"
+    );
+  });
+
+  it("falls back to Samantha when nothing is installed", () => {
+    delete process.env.CANARY_SAY_VOICE;
+    expect(pickVoice([])).toBe("Samantha");
   });
 });
 
