@@ -1,8 +1,11 @@
 - `page.goto(url, { waitUntil: "domcontentloaded" })` — navigate; `waitUntil` is `"load"` /
   `"domcontentloaded"` / `"networkidle"` (prefer `"domcontentloaded"` on dev servers)
 - `page.title()` / `page.url()` — current title / URL
-- `page.snapshotForAI(options)` — AI-optimized page outline; returns `{ full, incremental? }`;
-  options `{ track?, timeout? }` (omit `depth` — a shallow tree forces expensive fallbacks)
+- `page.snapshotForAI(options)` — AI-optimized page outline (whole page, any scroll position);
+  returns `{ full, incremental? }`; options `{ selector?, track?, timeout? }` — `selector` scopes to
+  an element (e.g. `"main"`, to drop nav chrome), `track` returns just the diff since the last
+  same-key snapshot (the two are mutually exclusive); omit `depth` — a shallow tree forces
+  expensive fallbacks
 - `page.getByRole(role, { name })` / `page.getByText(text)` — semantic locators (survive re-renders)
 - `page.textContent(sel)` / `page.innerText(sel)` / `page.innerHTML(sel)` /
   `page.getAttribute(sel, name)` — read by selector
@@ -24,13 +27,18 @@
   circumscribe the element's bounding box, drawing the reviewer's eye before you interact.
   Omit `target` to spotlight the current cursor position. Use for subtle elements a viewer
   might miss — validation errors, small toggles, non-obvious fields
+- `page.reveal(target)` — Canary helper: smooth-scroll a region into view and glide the cursor onto
+  it WITHOUT clicking (the `humanClick` motion minus the press). Use to show something in the
+  recording; never `window.scrollTo` / `page.evaluate(() => scrollTo(...))` (invisible on camera).
+  You don't need it to observe — `snapshotForAI` sees the whole page regardless of scroll
 - `page.waitForSettled(opts?)` — Canary helper: wait (bounded) for the page to stop changing —
   document load then DOM-mutation quiescence (`opts.quietMs`, `opts.timeoutMs`). Framework-agnostic
   and won't hang on live connections (it watches the DOM, not the network). Use before observing an
   unknown page after a client-side navigation
 - `page.waitForSelector(sel, { state, timeout })` (`state`: `"attached"` / `"visible"` /
-  `"hidden"` / `"detached"`) / `page.waitForURL(pattern)` / `page.waitForLoadState(state)` /
-  `page.waitForFunction(fn)` / `page.waitForTimeout(ms)` — waiting
+  `"hidden"` / `"detached"`) / `page.waitForURL(pattern)` (polls the live URL, so it resolves on
+  History API / Turbo / SPA navigations too; `pattern` is a glob, RegExp, or predicate) /
+  `page.waitForLoadState(state)` / `page.waitForFunction(fn)` / `page.waitForTimeout(ms)` — waiting
 - `page.screenshot({ fullPage })` — capture a screenshot Buffer; save it with `saveScreenshot(...)`
 - `page.evaluate(fn[, arg])` / `page.$eval(sel, fn)` / `page.$$eval(sel, fn)` — run plain
   JavaScript in the page context (real DOM; args/returns must be serializable)

@@ -1136,16 +1136,36 @@ export class Page extends ChannelOwner<channels.PageChannel> implements api.Page
   }
 
   async snapshotForAI(
-    options: TimeoutOptions & { track?: string; depth?: number } = {}
+    options: TimeoutOptions & {
+      track?: string;
+      depth?: number;
+      selector?: string;
+    } = {}
   ): Promise<{ full: string; incremental?: string }> {
     // Page.snapshotForAI was merged into Frame.ariaSnapshot(mode:"ai") in Playwright 1.60.
+    // `selector` scopes the tree to one element (e.g. "main" to drop repeated
+    // nav/sidebar chrome); `track` returns only what changed since the last
+    // snapshot with the same key. The server rejects both at once, so guard
+    // here with a clearer, Canary-flavored message before the round-trip.
+    if (options.selector && options.track) {
+      throw new Error(
+        "snapshotForAI: pass either `selector` (scope to an element) or `track` (diff since the last tracked snapshot), not both."
+      );
+    }
     const { snapshot } = await this._mainFrame._channel.ariaSnapshot({
       mode: "ai",
       track: options.track,
       depth: options.depth,
+      selector: options.selector,
       timeout: this._timeoutSettings.timeout(options),
     });
-    return { full: snapshot };
+    // The server returns a single string: with `track` it folds in the diff
+    // once a baseline exists (the first tracked call returns the full tree to
+    // establish it). Surface that string under `incremental` too so both
+    // documented access patterns resolve to the server's chosen view.
+    return options.track
+      ? { full: snapshot, incremental: snapshot }
+      : { full: snapshot };
   }
 
   async _setDockTile(image: Buffer) {

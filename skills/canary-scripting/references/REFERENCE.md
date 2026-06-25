@@ -61,8 +61,11 @@ https://playwright.dev/docs/api/class-page
 - `page.goto(url, { waitUntil: "domcontentloaded" })` — navigate; `waitUntil` is `"load"` /
   `"domcontentloaded"` / `"networkidle"` (prefer `"domcontentloaded"` on dev servers)
 - `page.title()` / `page.url()` — current title / URL
-- `page.snapshotForAI(options)` — AI-optimized page outline; returns `{ full, incremental? }`;
-  options `{ track?, timeout? }` (omit `depth` — a shallow tree forces expensive fallbacks)
+- `page.snapshotForAI(options)` — AI-optimized page outline (whole page, any scroll position);
+  returns `{ full, incremental? }`; options `{ selector?, track?, timeout? }` — `selector` scopes to
+  an element (e.g. `"main"`, to drop nav chrome), `track` returns just the diff since the last
+  same-key snapshot (the two are mutually exclusive); omit `depth` — a shallow tree forces
+  expensive fallbacks
 - `page.getByRole(role, { name })` / `page.getByText(text)` — semantic locators (survive re-renders)
 - `page.textContent(sel)` / `page.innerText(sel)` / `page.innerHTML(sel)` /
   `page.getAttribute(sel, name)` — read by selector
@@ -84,13 +87,18 @@ https://playwright.dev/docs/api/class-page
   circumscribe the element's bounding box, drawing the reviewer's eye before you interact.
   Omit `target` to spotlight the current cursor position. Use for subtle elements a viewer
   might miss — validation errors, small toggles, non-obvious fields
+- `page.reveal(target)` — Canary helper: smooth-scroll a region into view and glide the cursor onto
+  it WITHOUT clicking (the `humanClick` motion minus the press). Use to show something in the
+  recording; never `window.scrollTo` / `page.evaluate(() => scrollTo(...))` (invisible on camera).
+  You don't need it to observe — `snapshotForAI` sees the whole page regardless of scroll
 - `page.waitForSettled(opts?)` — Canary helper: wait (bounded) for the page to stop changing —
   document load then DOM-mutation quiescence (`opts.quietMs`, `opts.timeoutMs`). Framework-agnostic
   and won't hang on live connections (it watches the DOM, not the network). Use before observing an
   unknown page after a client-side navigation
 - `page.waitForSelector(sel, { state, timeout })` (`state`: `"attached"` / `"visible"` /
-  `"hidden"` / `"detached"`) / `page.waitForURL(pattern)` / `page.waitForLoadState(state)` /
-  `page.waitForFunction(fn)` / `page.waitForTimeout(ms)` — waiting
+  `"hidden"` / `"detached"`) / `page.waitForURL(pattern)` (polls the live URL, so it resolves on
+  History API / Turbo / SPA navigations too; `pattern` is a glob, RegExp, or predicate) /
+  `page.waitForLoadState(state)` / `page.waitForFunction(fn)` / `page.waitForTimeout(ms)` — waiting
 - `page.screenshot({ fullPage })` — capture a screenshot Buffer; save it with `saveScreenshot(...)`
 - `page.evaluate(fn[, arg])` / `page.$eval(sel, fn)` / `page.$$eval(sel, fn)` — run plain
   JavaScript in the page context (real DOM; args/returns must be serializable)
@@ -118,11 +126,19 @@ Semantic factories (also `Locator`): `page.getByRole(role, { name })`, `page.get
 - `page.snapshotForAI()` returns `{ full, incremental? }` — `full` is an aria outline of the
   page: roles, accessible names, `[ref=eN]` markers on actionable nodes. Read it to pick a
   semantic selector — `page.getByRole("button", { name: "Continue" })`,
-  `page.getByText("Sign in")` — then act.
-- Options `{ track?, timeout? }`: re-run `page.snapshotForAI({ track: "main" })` after the page
-  changes to get just the `incremental` diff; `timeout` bounds the walk. Don't pass `depth` —
-  a shallow snapshot silently omits elements, causing avoidable fallback to screenshots or full
-  HTML.
+  `page.getByText("Sign in")` — then act. The outline always covers the WHOLE page regardless of
+  scroll position, so you never need to scroll to observe (and never hand-slice the string — scope
+  it instead).
+- Keep it small two ways — mutually exclusive, the call rejects if you pass both:
+  - `{ selector }` scopes the outline to one element — `page.snapshotForAI({ selector: "main" })`
+    drops the repeated nav/sidebar chrome. Best for the FIRST look at a page.
+  - `{ track }` returns only what CHANGED since your last snapshot with the same key —
+    `page.snapshotForAI({ track: "main" })` after an interaction. The first tracked call returns the
+    full tree to set the baseline; later calls (this step or a future one) return just the diff in
+    both `full` and `incremental`. Tracking resets on a full page load. Best AFTER an interaction, to
+    see what it did.
+- `timeout` bounds the walk. Don't pass `depth` — a shallow snapshot silently omits elements,
+  causing avoidable fallback to screenshots or full HTML.
 - `page.locator("aria-ref=e12")` works for an immediate action in the same script only — refs go
   stale across steps and after navigations. Prefer re-deriving a semantic selector.
 <!-- canary:end api-snapshot -->
@@ -132,6 +148,10 @@ Semantic factories (also `Locator`): `page.getByRole(role, { name })`, `page.get
   is there, pick a semantic selector from it (`getByRole`, `getByText`), then interact. Never
   guess selectors blind.
 - Known page or selectors? Skip the snapshot and use direct selectors — faster and more reliable.
+- The snapshot covers the whole page no matter where it's scrolled — never add a scroll step just to
+  observe. To cut the repeated nav/sidebar chrome, scope it with `{ selector: "main" }`; after an
+  interaction, pass `{ track: "main" }` to get just what changed instead of re-reading (and
+  re-slicing) the full outline.
 - After a navigation the new page often renders asynchronously (client-side routing / SPAs swap
   content without a full document load). Don't snapshot or assert the instant a click returns.
   Prefer acting on or waiting for a KNOWN element on the destination (`getByRole`/`getByText`) —
@@ -162,6 +182,9 @@ Semantic factories (also `Locator`): `page.getByRole(role, { name })`, `page.get
   it lives inside a closed menu, dropdown, accordion, tab, or unopened modal, open that container
   first (as its own action), then interact. Any `scrollIntoViewIfNeeded` / `page.isVisible(sel)`
   checks fold into the interaction's own script — keep them out of the step list as bookkeeping.
+- To bring something into view just to SHOW it (not act on it), use `page.reveal(target)` — never
+  `window.scrollTo` or `page.evaluate(() => scrollTo(...))`, which move nothing the camera can see.
+  Observing doesn't need scrolling at all: `snapshotForAI` reads the whole page regardless of scroll.
 - Toggle a checkbox or radio with `humanClick` — target it by role/name
   (`getByRole("checkbox", { name })`) or its label text. Apps routinely hide the real `<input>` and
   draw a custom control with CSS, so the input is zero-size and a direct click misses; `humanClick`

@@ -60,6 +60,9 @@ You automate one-off browser tasks with Canary and return concrete results. Noth
   it lives inside a closed menu, dropdown, accordion, tab, or unopened modal, open that container
   first (as its own action), then interact. Any `scrollIntoViewIfNeeded` / `page.isVisible(sel)`
   checks fold into the interaction's own script — keep them out of the step list as bookkeeping.
+- To bring something into view just to SHOW it (not act on it), use `page.reveal(target)` — never
+  `window.scrollTo` or `page.evaluate(() => scrollTo(...))`, which move nothing the camera can see.
+  Observing doesn't need scrolling at all: `snapshotForAI` reads the whole page regardless of scroll.
 - Toggle a checkbox or radio with `humanClick` — target it by role/name
   (`getByRole("checkbox", { name })`) or its label text. Apps routinely hide the real `<input>` and
   draw a custom control with CSS, so the input is zero-size and a direct click misses; `humanClick`

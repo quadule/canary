@@ -94,10 +94,19 @@ console.log(snap.full); // aria outline — pick a role/text selector from this
 - `page.snapshotForAI()` returns `{ full, incremental? }` — `full` is an aria outline of the
   page: roles, accessible names, `[ref=eN]` markers on actionable nodes. Read it to pick a
   semantic selector — `page.getByRole("button", { name: "Continue" })`,
-  `page.getByText("Sign in")` — then act.
-- Options `{ track?, depth?, timeout? }`: re-run `page.snapshotForAI({ track: "main" })` after
-  the page changes to get just the `incremental` diff; `{ depth: N }` caps the tree on huge
-  pages; `timeout` bounds the walk.
+  `page.getByText("Sign in")` — then act. The outline always covers the WHOLE page regardless of
+  scroll position, so you never need to scroll to observe (and never hand-slice the string — scope
+  it instead).
+- Keep it small two ways — mutually exclusive, the call rejects if you pass both:
+  - `{ selector }` scopes the outline to one element — `page.snapshotForAI({ selector: "main" })`
+    drops the repeated nav/sidebar chrome. Best for the FIRST look at a page.
+  - `{ track }` returns only what CHANGED since your last snapshot with the same key —
+    `page.snapshotForAI({ track: "main" })` after an interaction. The first tracked call returns the
+    full tree to set the baseline; later calls (this step or a future one) return just the diff in
+    both `full` and `incremental`. Tracking resets on a full page load. Best AFTER an interaction, to
+    see what it did.
+- `timeout` bounds the walk. Don't pass `depth` — a shallow snapshot silently omits elements,
+  causing avoidable fallback to screenshots or full HTML.
 - `page.locator("aria-ref=e12")` works for an immediate action in the same script only — refs go
   stale across steps and after navigations. Prefer re-deriving a semantic selector.
 <!-- canary:end api-snapshot -->
@@ -107,6 +116,10 @@ console.log(snap.full); // aria outline — pick a role/text selector from this
   is there, pick a semantic selector from it (`getByRole`, `getByText`), then interact. Never
   guess selectors blind.
 - Known page or selectors? Skip the snapshot and use direct selectors — faster and more reliable.
+- The snapshot covers the whole page no matter where it's scrolled — never add a scroll step just to
+  observe. To cut the repeated nav/sidebar chrome, scope it with `{ selector: "main" }`; after an
+  interaction, pass `{ track: "main" }` to get just what changed instead of re-reading (and
+  re-slicing) the full outline.
 - After a navigation the new page often renders asynchronously (client-side routing / SPAs swap
   content without a full document load). Don't snapshot or assert the instant a click returns.
   Prefer acting on or waiting for a KNOWN element on the destination (`getByRole`/`getByText`) —
@@ -137,6 +150,9 @@ console.log(snap.full); // aria outline — pick a role/text selector from this
   it lives inside a closed menu, dropdown, accordion, tab, or unopened modal, open that container
   first (as its own action), then interact. Any `scrollIntoViewIfNeeded` / `page.isVisible(sel)`
   checks fold into the interaction's own script — keep them out of the step list as bookkeeping.
+- To bring something into view just to SHOW it (not act on it), use `page.reveal(target)` — never
+  `window.scrollTo` or `page.evaluate(() => scrollTo(...))`, which move nothing the camera can see.
+  Observing doesn't need scrolling at all: `snapshotForAI` reads the whole page regardless of scroll.
 - Toggle a checkbox or radio with `humanClick` — target it by role/name
   (`getByRole("checkbox", { name })`) or its label text. Apps routinely hide the real `<input>` and
   draw a custom control with CSS, so the input is zero-size and a direct click misses; `humanClick`

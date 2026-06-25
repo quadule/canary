@@ -135,6 +135,10 @@ build on). Read the printed code, then continue driving the flow.
   is there, pick a semantic selector from it (`getByRole`, `getByText`), then interact. Never
   guess selectors blind.
 - Known page or selectors? Skip the snapshot and use direct selectors — faster and more reliable.
+- The snapshot covers the whole page no matter where it's scrolled — never add a scroll step just to
+  observe. To cut the repeated nav/sidebar chrome, scope it with `{ selector: "main" }`; after an
+  interaction, pass `{ track: "main" }` to get just what changed instead of re-reading (and
+  re-slicing) the full outline.
 - After a navigation the new page often renders asynchronously (client-side routing / SPAs swap
   content without a full document load). Don't snapshot or assert the instant a click returns.
   Prefer acting on or waiting for a KNOWN element on the destination (`getByRole`/`getByText`) —
@@ -165,6 +169,9 @@ build on). Read the printed code, then continue driving the flow.
   it lives inside a closed menu, dropdown, accordion, tab, or unopened modal, open that container
   first (as its own action), then interact. Any `scrollIntoViewIfNeeded` / `page.isVisible(sel)`
   checks fold into the interaction's own script — keep them out of the step list as bookkeeping.
+- To bring something into view just to SHOW it (not act on it), use `page.reveal(target)` — never
+  `window.scrollTo` or `page.evaluate(() => scrollTo(...))`, which move nothing the camera can see.
+  Observing doesn't need scrolling at all: `snapshotForAI` reads the whole page regardless of scroll.
 - Toggle a checkbox or radio with `humanClick` — target it by role/name
   (`getByRole("checkbox", { name })`) or its label text. Apps routinely hide the real `<input>` and
   draw a custom control with CSS, so the input is zero-size and a direct click misses; `humanClick`

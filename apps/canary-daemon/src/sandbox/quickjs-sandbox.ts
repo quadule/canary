@@ -498,6 +498,47 @@ export class QuickJSSandbox {
             const resolveLocator = (page, target) =>
               typeof target === "string" ? page.locator(target) : target;
 
+            // Match a URL the way page.waitForURL callers expect, without a
+            // baseURL (not available in the sandbox): a RegExp tests the href,
+            // a function is called with it, and a string is treated as a
+            // Playwright-style glob ("**" → anything, "*" → anything within a
+            // path segment), falling back to substring. Keeps client-side
+            // navigation waits generic.
+            const makeUrlMatcher = (pattern) => {
+              if (typeof pattern === "function") {
+                return (href) => Boolean(pattern(href));
+              }
+              if (pattern instanceof RegExp) {
+                return (href) => pattern.test(href);
+              }
+              const str = String(pattern);
+              if (str.indexOf("*") === -1) {
+                return (href) => href === str || href.indexOf(str) !== -1;
+              }
+              let src = "";
+              for (let i = 0; i < str.length; i += 1) {
+                const ch = str[i];
+                if (ch === "*") {
+                  if (str[i + 1] === "*") {
+                    src += ".*";
+                    i += 1;
+                  } else {
+                    src += "[^/]*";
+                  }
+                } else if ("\\\\^$.|?+()[]{}".indexOf(ch) !== -1) {
+                  src += "\\\\" + ch;
+                } else {
+                  src += ch;
+                }
+              }
+              try {
+                const rx = new RegExp("^" + src + "$");
+                return (href) => rx.test(href);
+              } catch {
+                return (href) => href.indexOf(str) !== -1;
+              }
+            };
+
             // Animate an off-screen target into view so the scroll is visible on
             // camera (Playwright's scrollIntoViewIfNeeded teleports). Resolves once
             // the element stops moving — tracked via its rect, which moves no matter
@@ -818,6 +859,69 @@ export class QuickJSSandbox {
                     { ms, text: String(text) }
                   )
                   .catch(() => undefined);
+              };
+              const nativeWaitForURL =
+                typeof page.waitForURL === "function"
+                  ? page.waitForURL.bind(page)
+                  : null;
+              // Wait for a client-side navigation by polling the live URL
+              // instead of relying only on Playwright's "navigated" channel
+              // event, which does not fire reliably for History API (pushState)
+              // navigations used by Turbo/Hotwire and SPA routers — so the stock
+              // waitForURL hangs until timeout even after the URL has changed.
+              // The native wait still runs in the background (authoritative for
+              // full-document navigations and exact glob/baseURL matching);
+              // polling location.href rescues same-document navigations. A URL
+              // match does NOT guarantee the new content has rendered — act on a
+              // destination element or call waitForSettled() afterward, as the
+              // observe-first rules advise.
+              page.waitForURL = async (url, options) => {
+                const opts = options || {};
+                const timeout =
+                  typeof opts.timeout === "number" ? opts.timeout : 30000;
+                const matches = makeUrlMatcher(url);
+                let nativeSettled = false;
+                if (nativeWaitForURL) {
+                  nativeWaitForURL(url, { ...opts, timeout }).then(
+                    () => {
+                      nativeSettled = true;
+                    },
+                    () => {
+                      // Native rejects/times out on History API navs — the poll
+                      // below is the source of truth in that case.
+                    },
+                  );
+                }
+                const intervalMs = 150;
+                let waited = 0;
+                for (;;) {
+                  if (nativeSettled) {
+                    return;
+                  }
+                  const href = await page
+                    .evaluate(() => location.href)
+                    .catch(() => null);
+                  if (href && matches(href)) {
+                    return;
+                  }
+                  if (waited >= timeout) {
+                    throw new Error(
+                      \`page.waitForURL: timed out after \${timeout}ms waiting for \${String(url)} (current: \${href || "unknown"})\`,
+                    );
+                  }
+                  await page.waitForTimeout(intervalMs);
+                  waited += intervalMs;
+                }
+              };
+              // Reveal a region for the camera without acting on it: smooth-
+              // scroll it into view and glide the virtual cursor onto it (the
+              // motion humanClick/humanFill use, minus the click). Use this to
+              // show something in the recording — never window.scrollTo or
+              // page.evaluate(scroll), which aren't visible on camera. Observing
+              // never needs it: snapshotForAI captures the whole page
+              // regardless of scroll position.
+              page.reveal = async (target) => {
+                await revealAndGlide(page, resolveLocator(page, target));
               };
               return page;
             };

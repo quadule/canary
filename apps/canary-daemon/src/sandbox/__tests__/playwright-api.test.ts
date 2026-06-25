@@ -427,6 +427,53 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       expect(result.forwardUrl).toBe(secondUrl);
       expect(result.reloadTitle).toBe("Second Page");
     });
+
+    it("waitForURL resolves on a History API (pushState) navigation", async () => {
+      const firstUrl = `${navigationServer.baseUrl}/nav/first`;
+      const result = await harness.runJson<{
+        startHref: string;
+        finalHref: string;
+      }>(`
+        const page = await browser.getPage("navigation-pushstate");
+        await page.goto(${JSON.stringify(firstUrl)}, { waitUntil: "domcontentloaded" });
+        const startHref = page.url();
+        // Same-document navigation: no full load and no reliable "navigated"
+        // event, so the stock waitForURL would hang until timeout.
+        const settled = page.waitForURL("**/nav/pushed");
+        await page.evaluate(() => history.pushState({}, "", "/nav/pushed"));
+        await settled;
+        console.log(JSON.stringify({
+          startHref,
+          finalHref: await page.evaluate(() => location.href),
+        }));
+      `);
+
+      expect(result.startHref).toBe(firstUrl);
+      expect(result.finalHref).toBe(`${navigationServer.baseUrl}/nav/pushed`);
+    }, 15_000);
+
+    it("waitForURL rejects when the URL never matches", async () => {
+      const firstUrl = `${navigationServer.baseUrl}/nav/first`;
+      const result = await harness.runJson<{
+        threw: boolean;
+        message: string;
+      }>(`
+        const page = await browser.getPage("navigation-pushstate");
+        await page.goto(${JSON.stringify(firstUrl)}, { waitUntil: "domcontentloaded" });
+        let threw = false;
+        let message = "";
+        try {
+          await page.waitForURL("**/never-arrives", { timeout: 600 });
+        } catch (error) {
+          threw = true;
+          message = String(error && error.message ? error.message : error);
+        }
+        console.log(JSON.stringify({ threw, message }));
+      `);
+
+      expect(result.threw).toBe(true);
+      expect(result.message).toContain("timed out");
+    }, 15_000);
   });
 
   describe.sequential("content and evaluation", () => {
@@ -754,6 +801,125 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       expect(result.full).toContain('heading "Hello World"');
       expect(result.full).toContain('button "Submit"');
     });
+
+    it("scopes the snapshot to a selector", async () => {
+      const result = await harness.runJson<{ full: string; scoped: string }>(`
+        const page = await browser.getPage("snapshot-selector");
+        await page.setContent(
+          "<nav><a href='#'>NAVLINK_UNIQUE</a></nav><main><h1>MAINHEADING_UNIQUE</h1><p>Body copy</p></main>",
+          { waitUntil: "load" }
+        );
+        const full = (await page.snapshotForAI()).full;
+        const scoped = (await page.snapshotForAI({ selector: "main" })).full;
+        console.log(JSON.stringify({ full, scoped }));
+      `);
+
+      expect(result.full).toContain("NAVLINK_UNIQUE");
+      expect(result.full).toContain("MAINHEADING_UNIQUE");
+      // Scoping to <main> drops the surrounding nav chrome.
+      expect(result.scoped).toContain("MAINHEADING_UNIQUE");
+      expect(result.scoped).not.toContain("NAVLINK_UNIQUE");
+    });
+
+    it("returns an incremental diff when tracking across snapshots", async () => {
+      const baselineHtml = `<main><h1>TrackHeading</h1><ul>${Array.from(
+        { length: 40 },
+        (_, i) => `<li>List entry number ${i}</li>`
+      ).join("")}</ul></main>`;
+
+      const result = await harness.runJson<{
+        baselineFull: string;
+        baselineIncremental?: string;
+        baselineLen: number;
+        unchangedLen: number;
+        changedFull: string;
+        changedIncremental?: string;
+      }>(`
+        const page = await browser.getPage("snapshot-track");
+        await page.setContent(${JSON.stringify(baselineHtml)}, { waitUntil: "load" });
+        const baseline = await page.snapshotForAI({ track: "t1" });
+        const unchanged = await page.snapshotForAI({ track: "t1" });
+        await page.evaluate(() => {
+          const button = document.createElement("button");
+          button.textContent = "DIFFBUTTON_UNIQUE";
+          document.querySelector("main").appendChild(button);
+        });
+        const changed = await page.snapshotForAI({ track: "t1" });
+        console.log(JSON.stringify({
+          baselineFull: baseline.full,
+          baselineIncremental: baseline.incremental,
+          baselineLen: baseline.full.length,
+          unchangedLen: unchanged.full.length,
+          changedFull: changed.full,
+          changedIncremental: changed.incremental,
+        }));
+      `);
+
+      // First tracked call has no baseline → full tree, mirrored to incremental.
+      expect(result.baselineIncremental).toBe(result.baselineFull);
+      expect(result.baselineFull).toContain('heading "TrackHeading"');
+      // A second snapshot with no DOM change diffs to (near) nothing.
+      expect(result.unchangedLen).toBeLessThan(result.baselineLen);
+      // After a mutation, the diff surfaces the new node under both keys.
+      expect(result.changedFull).toContain("DIFFBUTTON_UNIQUE");
+      expect(result.changedIncremental).toBe(result.changedFull);
+    });
+
+    it("tracks snapshot diffs across separate sandbox executions (steps)", async () => {
+      // Each session step runs in a FRESH sandbox/connection, but the page —
+      // and the server-side track baseline — persists in the daemon. Two
+      // sandboxes on the same browser + page name model two steps.
+      const stepBrowser = "playwright-track-cross-step";
+      const bigHtml = `<main><h1>CrossStepHeading</h1><ul>${Array.from(
+        { length: 40 },
+        (_, i) => `<li>List entry number ${i}</li>`
+      ).join("")}</ul></main>`;
+
+      const stepOne = await createSandboxHarness(manager, stepBrowser);
+      let baselineLen = 0;
+      try {
+        const first = await stepOne.runJson<{ full: string; len: number }>(`
+          const page = await browser.getPage("cross-step");
+          await page.setContent(${JSON.stringify(bigHtml)}, { waitUntil: "load" });
+          const snap = await page.snapshotForAI({ track: "step" });
+          console.log(JSON.stringify({ full: snap.full, len: snap.full.length }));
+        `);
+        baselineLen = first.len;
+        expect(first.full).toContain("List entry number 0");
+      } finally {
+        await stepOne.dispose();
+      }
+
+      const stepTwo = await createSandboxHarness(manager, stepBrowser);
+      try {
+        const second = await stepTwo.runJson<{
+          full: string;
+          incremental?: string;
+          len: number;
+        }>(`
+          const page = await browser.getPage("cross-step");
+          await page.evaluate(() => {
+            const button = document.createElement("button");
+            button.textContent = "CROSSSTEP_UNIQUE";
+            document.querySelector("main").appendChild(button);
+          });
+          const snap = await page.snapshotForAI({ track: "step" });
+          console.log(JSON.stringify({
+            full: snap.full,
+            incremental: snap.incremental,
+            len: snap.full.length,
+          }));
+        `);
+
+        // The new sandbox diffs against the baseline set in the previous one.
+        expect(second.full).toContain("CROSSSTEP_UNIQUE");
+        expect(second.incremental).toBe(second.full);
+        expect(second.len).toBeLessThan(baselineLen);
+      } finally {
+        await stepTwo.dispose();
+        await manager.stopBrowser(stepBrowser);
+      }
+    }, 30_000);
   });
 
   describe.sequential("screenshots and input devices", () => {
@@ -969,6 +1135,41 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       expect(result.accepts).toBe("ada@example.com");
       // One input event per typed character (3) — atomic fill would be 1.
       expect(result.inputCount).toBeGreaterThanOrEqual(3);
+    }, 15_000);
+
+    it("reveal scrolls a target into view without clicking it", async () => {
+      const result = await harness.runJson<{
+        beforeInView: boolean;
+        afterInView: boolean;
+        mouseResult: string | null;
+      }>(
+        withTestPage(
+          "reveal",
+          `
+          const inView = () =>
+            page.evaluate(() => {
+              const r = document
+                .getElementById("footer")
+                .getBoundingClientRect();
+              return r.top >= 0 && r.bottom <= window.innerHeight;
+            });
+          const beforeInView = await inView();
+          await page.reveal("#footer");
+          const afterInView = await inView();
+          console.log(JSON.stringify({
+            beforeInView,
+            afterInView,
+            mouseResult: await page.getAttribute("#result", "data-mouse"),
+          }));
+        `
+        )
+      );
+
+      // #footer sits below a 1400px spacer — off-screen until revealed.
+      expect(result.beforeInView).toBe(false);
+      expect(result.afterInView).toBe(true);
+      // reveal shows the element; it must not click anything.
+      expect(result.mouseResult).toBeNull();
     }, 15_000);
   });
 });

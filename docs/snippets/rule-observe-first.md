@@ -2,6 +2,10 @@
   is there, pick a semantic selector from it (`getByRole`, `getByText`), then interact. Never
   guess selectors blind.
 - Known page or selectors? Skip the snapshot and use direct selectors — faster and more reliable.
+- The snapshot covers the whole page no matter where it's scrolled — never add a scroll step just to
+  observe. To cut the repeated nav/sidebar chrome, scope it with `{ selector: "main" }`; after an
+  interaction, pass `{ track: "main" }` to get just what changed instead of re-reading (and
+  re-slicing) the full outline.
 - After a navigation the new page often renders asynchronously (client-side routing / SPAs swap
   content without a full document load). Don't snapshot or assert the instant a click returns.
   Prefer acting on or waiting for a KNOWN element on the destination (`getByRole`/`getByText`) —
