@@ -371,35 +371,6 @@ async function runFfmpeg(
   return { stdout, stderr };
 }
 
-// Total video duration in seconds, read from the container header (fast — no
-// decode). `ffmpeg -i` with no output exits non-zero but still prints the
-// Duration line to stderr, so tolerate that.
-function parseDurationSec(stderr: string): number {
-  const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
-  if (!m) {
-    return 0;
-  }
-  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
-}
-
-async function probeDurationSec(
-  ffmpeg: string,
-  videoPath: string
-): Promise<number> {
-  try {
-    const { stderr } = await execFileAsync(ffmpeg, [
-      "-hide_banner",
-      "-i",
-      videoPath,
-    ]);
-    return parseDurationSec(stderr);
-  } catch (err) {
-    return parseDurationSec(
-      (err as { stderr?: string } | undefined)?.stderr ?? ""
-    );
-  }
-}
-
 // Clamp each window to [0, durationSec], drop empties, and merge overlapping or
 // touching windows into a sorted, disjoint keep list.
 export function mergeWindows(
@@ -423,6 +394,46 @@ export function mergeWindows(
     }
   }
   return merged;
+}
+
+// Subtract detected freezes from interaction-aware keep windows so that dead
+// waits inside a step (e.g. a 30-second login response within one action) are
+// trimmed even when the caller supplies explicit keepWindows.
+export function subtractFreezesFromWindows(
+  keeps: Segment[],
+  freezes: Segment[],
+  maxStillSec: number = MAX_STILL_SEC
+): Segment[] {
+  const cuts = freezes
+    .map((f) => ({ start: f.start + maxStillSec, end: f.end }))
+    .filter((c) => c.end > c.start);
+
+  const result: Segment[] = [];
+  for (const keep of keeps) {
+    let parts: Segment[] = [{ start: keep.start, end: keep.end }];
+    for (const cut of cuts) {
+      const cs = Math.max(cut.start, keep.start);
+      const ce = Math.min(cut.end, keep.end);
+      if (ce <= cs) {
+        continue;
+      }
+      parts = parts.flatMap((seg) => {
+        if (ce <= seg.start || cs >= seg.end) {
+          return [seg];
+        }
+        const out: Segment[] = [];
+        if (seg.start < cs) {
+          out.push({ start: seg.start, end: cs });
+        }
+        if (seg.end > ce) {
+          out.push({ start: ce, end: seg.end });
+        }
+        return out;
+      });
+    }
+    result.push(...parts);
+  }
+  return result.filter((s) => s.end > s.start);
 }
 
 export interface CondenseResult {
@@ -465,16 +476,44 @@ export async function condenseVideo(
 
     let durationSec: number;
     let keeps: Segment[];
-    if (options.keepWindows && options.keepWindows.length > 0) {
-      // Interaction-aware: keep the step windows, trim everything else. No
-      // freezedetect — a typed character / the small virtual cursor change
-      // fewer pixels than the codec's static-frame noise, so frame-diff can't
-      // tell typing from a dead wait; the step windows mark what's active.
-      durationSec = await probeDurationSec(ffmpeg, videoPath);
+    const keepWindows = options.keepWindows;
+    if (keepWindows && keepWindows.length > 0) {
+      // Interaction-aware: keep the step windows, trim everything else. Also
+      // run freeze-detect to cut dead waits that fall inside a step window —
+      // a long server response (login, heavy query) is indistinguishable from
+      // real work at the keepWindows level but is pixel-identical on camera.
+      const windowAnalyze = await runFfmpeg(
+        ffmpeg,
+        [
+          "-hide_banner",
+          "-nostats",
+          "-i",
+          videoPath,
+          "-vf",
+          `freezedetect=n=${FREEZE_NOISE}:d=${FREEZE_MIN_SEC}`,
+          "-map",
+          "0:v:0",
+          "-an",
+          "-progress",
+          "pipe:1",
+          "-f",
+          "null",
+          "-",
+        ],
+        ANALYZE_TIMEOUT_MS
+      );
+      const windowAnalysis = parseFreezeOutput(
+        windowAnalyze.stderr,
+        windowAnalyze.stdout
+      );
+      durationSec = windowAnalysis.durationSec;
       if (durationSec <= 0) {
         return { condensed: false, reason: "could not determine duration" };
       }
-      keeps = mergeWindows(options.keepWindows, durationSec);
+      keeps = subtractFreezesFromWindows(
+        mergeWindows(keepWindows, durationSec),
+        windowAnalysis.freezes
+      );
     } else {
       const analyze = await runFfmpeg(
         ffmpeg,
