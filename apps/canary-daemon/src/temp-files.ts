@@ -237,3 +237,24 @@ export async function readCanaryTempFile(fileName: unknown): Promise<string> {
     await handle?.close();
   }
 }
+
+// Read a temp file as raw bytes — for binary payloads like image/PDF uploads.
+// Mirrors readCanaryTempFile's containment and symlink defenses exactly (the
+// same sanitized path resolution, the lstat symlink check, and O_NOFOLLOW on
+// open) so a binary read can't escape the controlled temp directory either.
+export async function readCanaryTempFileBytes(
+  fileName: unknown
+): Promise<Buffer> {
+  const destinationPath = await resolveCanaryTempPath(fileName);
+  await assertDestinationIsNotSymlink(destinationPath);
+
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(destinationPath, constants.O_RDONLY | NOFOLLOW_FLAG);
+    return await handle.readFile();
+  } catch (error) {
+    throw normalizeSymlinkError(error, destinationPath);
+  } finally {
+    await handle?.close();
+  }
+}

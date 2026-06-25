@@ -99,6 +99,12 @@ https://playwright.dev/docs/api/class-page
   `"hidden"` / `"detached"`) / `page.waitForURL(pattern)` (polls the live URL, so it resolves on
   History API / Turbo / SPA navigations too; `pattern` is a glob, RegExp, or predicate) /
   `page.waitForLoadState(state)` / `page.waitForFunction(fn)` / `page.waitForTimeout(ms)` — waiting
+- `page.setInputFiles(target, files, opts?)` — Canary helper: attach files to a file `<input>`.
+  `files` is one filename or an array; each must already live in the sandbox temp dir (write it
+  with `writeFile(name, data)` first, or have the user drop it in via takeover). The bytes are read
+  host-side — confined to that dir — and handed to the browser as an in-memory payload, so a script
+  can only upload files it put there. Glides the cursor to the control when it's visible. `target`
+  is a selector or locator
 - `page.screenshot({ fullPage })` — capture a screenshot Buffer; save it with `saveScreenshot(...)`
 - `page.evaluate(fn[, arg])` / `page.$eval(sel, fn)` / `page.$$eval(sel, fn)` — run plain
   JavaScript in the page context (real DOM; args/returns must be serializable)

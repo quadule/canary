@@ -8,6 +8,7 @@ import { CURSOR_GLIDE_MS } from "../session-cursor.js";
 import {
   ensureCanaryTempDir,
   readCanaryTempFile,
+  readCanaryTempFileBytes,
   writeCanaryTempFile,
 } from "../temp-files.js";
 import { HostBridge } from "./host-bridge.js";
@@ -141,6 +142,45 @@ function wrapScriptWithWallClockTimeout(
   `;
 }
 
+// Best-effort MIME type for an upload payload, keyed on the file extension.
+// setInputFiles only needs something plausible for the page's accept filter and
+// any client-side type check; unknown extensions fall back to a generic binary
+// type, which browsers accept.
+const UPLOAD_MIME_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  svg: "image/svg+xml",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  pdf: "application/pdf",
+  txt: "text/plain",
+  csv: "text/csv",
+  json: "application/json",
+  xml: "application/xml",
+  html: "text/html",
+  htm: "text/html",
+  md: "text/markdown",
+  zip: "application/zip",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+};
+
+function inferUploadMimeType(fileName: string): string {
+  const ext = fileName.includes(".")
+    ? (fileName.split(".").pop() ?? "").toLowerCase()
+    : "";
+  return UPLOAD_MIME_TYPES[ext] ?? "application/octet-stream";
+}
+
 function requireString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new TypeError(`${label} must be a non-empty string`);
@@ -249,6 +289,7 @@ export class QuickJSSandbox {
           saveScreenshot: (name, data) => this.#writeTempFile(name, data),
           writeFile: (name, data) => this.#writeTempFile(name, data),
           readFile: (name) => this.#readTempFile(name),
+          readUploadFile: (name) => this.#readUploadFile(name),
         },
         onConsole: (level, args) => {
           this.#routeConsole(level, args);
@@ -694,6 +735,36 @@ export class QuickJSSandbox {
                   }
                   if (delay > 0) await page.waitForTimeout(delay);
                 }
+              };
+              // Attach files to a file <input> from the sandbox temp directory —
+              // the same directory writeFile/readFile use. Pass one filename or
+              // an array; each is read host-side (confined to that directory) and
+              // handed to Playwright as an in-memory payload, so no host path is
+              // ever exposed to the script and the QuickJS client never touches
+              // the filesystem. Glides the cursor to the control first when it's
+              // visible (a styled button); silently skips the camera move for the
+              // hidden <input> that file pickers usually use. Write the file with
+              // writeFile(name, data) first, or have the user drop it in via
+              // takeover, then point this at the input.
+              page.setInputFiles = async (target, files, options) => {
+                const names = Array.isArray(files) ? files : [files];
+                const payloads = [];
+                for (const name of names) {
+                  const f = await hostCall(
+                    "readUploadFile",
+                    JSON.stringify([name]),
+                  );
+                  payloads.push({
+                    name: f.name,
+                    mimeType: f.mimeType,
+                    buffer: Buffer.from(f.base64, "base64"),
+                  });
+                }
+                const locator = resolveLocator(page, target);
+                // Best-effort camera move; hidden file inputs throw on reveal, so
+                // don't let that abort the upload.
+                await revealAndGlide(page, locator).catch(() => undefined);
+                await locator.setInputFiles(payloads, options);
               };
               // Generic "let the page settle" wait — framework-agnostic. Waits
               // for the document load (a no-op once loaded) and then for the DOM
@@ -1178,6 +1249,25 @@ export class QuickJSSandbox {
 
   async #readTempFile(name: unknown): Promise<string> {
     return await readCanaryTempFile(requireString(name, "File name"));
+  }
+
+  // Read a file from the sandbox temp directory as an upload payload for
+  // setInputFiles: the bytes (base64), the basename the page will see, and a
+  // best-effort MIME type from the extension. resolveCanaryTempPath inside
+  // readCanaryTempFileBytes confines the read to that directory — a script can
+  // only upload files it (or the user, via takeover) first wrote there — so the
+  // page never gains access to arbitrary host paths.
+  async #readUploadFile(
+    name: unknown
+  ): Promise<{ name: string; mimeType: string; base64: string }> {
+    const fileName = requireString(name, "File name");
+    const bytes = await readCanaryTempFileBytes(fileName);
+    const base = fileName.split(/[\\/]/).pop() || fileName;
+    return {
+      name: base,
+      mimeType: inferUploadMimeType(base),
+      base64: bytes.toString("base64"),
+    };
   }
 
   async #cleanupAnonymousPages(

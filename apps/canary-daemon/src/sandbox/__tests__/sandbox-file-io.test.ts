@@ -260,6 +260,46 @@ describe.sequential("QuickJS sandbox file I/O", () => {
     }
   });
 
+  it("uploads a temp-dir file via page.setInputFiles", async () => {
+    const requestedName = "upload-demo.png";
+    const expectedPath = await resolveCanaryTempPath(requestedName);
+    cleanupPaths.add(expectedPath);
+
+    // PNG magic + a few bytes — arbitrary binary, round-tripped base64 to prove
+    // non-text payloads survive the host->sandbox->browser hop intact.
+    const bytes = [137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4, 5];
+
+    const output = await runSandboxScript(`
+      await writeFile(${JSON.stringify(requestedName)}, new Uint8Array(${JSON.stringify(bytes)}));
+      const page = await browser.getPage("file-io-set-input-files");
+      await page.setContent('<input type="file" id="f" accept="image/png">');
+      await page.setInputFiles("#f", ${JSON.stringify(requestedName)});
+      const picked = await page.evaluate(() => {
+        const input = document.getElementById("f");
+        const file = input.files[0];
+        return file ? { name: file.name, size: file.size, type: file.type } : null;
+      });
+      console.log(JSON.stringify(picked));
+    `);
+
+    const picked = parseLastJsonLine<{
+      name: string;
+      size: number;
+      type: string;
+    }>(output);
+    expect(picked.name).toBe("upload-demo.png");
+    expect(picked.size).toBe(bytes.length);
+    expect(picked.type).toBe("image/png");
+  }, 120_000);
+
+  it("rejects setInputFiles paths outside the temp directory", async () => {
+    await expectSandboxScriptToThrow(`
+      const page = await browser.getPage("file-io-set-input-files-traversal");
+      await page.setContent('<input type="file" id="f">');
+      await page.setInputFiles("#f", "../../etc/passwd");
+    `);
+  }, 120_000);
+
   it("rejects unsafe screenshot path options", async () => {
     await expectSandboxScriptToThrow(`
       const page = await browser.getPage("file-io-invalid-screenshot");
