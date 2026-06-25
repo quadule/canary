@@ -2,6 +2,20 @@ import { type Browser, chromium } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SESSION_CURSOR_SCRIPT } from "./session-cursor.js";
 
+// The init script attaches these to the page's `window` at runtime; declare them
+// so the in-browser `page.evaluate` callbacks type-check against the real shape.
+declare global {
+  interface Window {
+    __canaryCursor: {
+      x: number;
+      y: number;
+      glyph: string;
+      glide: (x: number, y: number, el?: Element) => void;
+    };
+    __ripples: number;
+  }
+}
+
 // The virtual cursor is positioned ONLY by the agent's explicit state.glide()
 // (called from the humanClick/humanFill helpers). It must never track raw mouse
 // events — those are indistinguishable from the user's real pointer, so tracking
@@ -71,6 +85,9 @@ describe("session cursor", () => {
 
       const center = await page.evaluate(() => {
         const el = document.getElementById("link");
+        if (!el) {
+          throw new Error("test fixture missing #link");
+        }
         const r = el.getBoundingClientRect();
         const x = r.left + r.width / 2;
         const y = r.top + r.height / 2;

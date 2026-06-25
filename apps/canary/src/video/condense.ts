@@ -255,7 +255,7 @@ async function buildCondensed(
     const segmentPath = `${videoPath}.seg${i}.webm`;
     temps.push(segmentPath);
     segmentPaths.push(segmentPath);
-    await encodeKeeps(ffmpeg, videoPath, batches[i], segmentPath);
+    await encodeKeeps(ffmpeg, videoPath, batches[i] ?? [], segmentPath);
   }
 
   const listPath = `${videoPath}.concat.txt`;

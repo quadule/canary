@@ -80,8 +80,12 @@ function fixtureManifest(extra?: {
       kind: "video",
       path: `${DIR}/video/page.webm`,
     });
-    record.steps[0].videoTime = 1;
-    record.steps[1].videoTime = 2;
+    if (record.steps[0]) {
+      record.steps[0].videoTime = 1;
+    }
+    if (record.steps[1]) {
+      record.steps[1].videoTime = 2;
+    }
   }
   return buildManifest({
     actionsByStep: extra?.actionsByStep,
