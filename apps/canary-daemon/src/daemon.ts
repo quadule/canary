@@ -29,7 +29,7 @@ const BASE_DIR = getCanaryBaseDir();
 const SOCKET_PATH = getDaemonEndpoint();
 const PID_PATH = getPidPath();
 const BROWSERS_DIR = getBrowsersDir();
-const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
+const DEFAULT_SCRIPT_TIMEOUT_MS = 15_000;
 const SOCKET_CLOSE_TIMEOUT_MS = 500;
 
 const LOG_PATH = path.join(BASE_DIR, "daemon.log");
