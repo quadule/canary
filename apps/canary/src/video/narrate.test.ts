@@ -97,6 +97,24 @@ describe("parseNarrationJson", () => {
     expect(parseNarrationJson(`${fence}\n${valid}\n${fence}`)).not.toBeNull();
   });
 
+  it("recovers JSON from a chatty preamble (first { to last })", () => {
+    expect(
+      parseNarrationJson(
+        `Sure! Here is the narration:\n${valid}\nHope it helps!`
+      )
+    ).toEqual({
+      title: "THE CAPER",
+      steps: [{ index: 0, narration: "He approaches." }],
+    });
+  });
+
+  it("strips libass override tags from narration", () => {
+    const parsed = parseNarrationJson(
+      '{"title":"X","steps":[{"index":0,"narration":"{\\\\pos(9,9)}sneaky {\\\\fs99}text"}]}'
+    );
+    expect(parsed?.steps[0]?.narration).toBe("sneaky text");
+  });
+
   it("returns null on garbage", () => {
     expect(parseNarrationJson("not json at all")).toBeNull();
     expect(parseNarrationJson("")).toBeNull();

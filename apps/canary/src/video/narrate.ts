@@ -88,8 +88,18 @@ export interface CinematicOptions {
   theme?: string;
 }
 
+export interface CinematicMeta {
+  rate: number;
+  style: StyleId;
+  themes: string[];
+  voice: string;
+}
+
 export interface CinematicResult {
   applied: boolean;
+  // The randomly-chosen theme/style/voice/rate, surfaced so a good run can be
+  // reproduced. Present only when applied.
+  meta?: CinematicMeta;
   // User-facing degradation notes when the pass applied but this ffmpeg build
   // couldn't do everything (e.g. no drawtext → no title card; no subtitles →
   // soft-sub .srt only). The caller surfaces these so the user isn't left
@@ -186,7 +196,7 @@ export function buildNarrationPrompt(args: {
   const themeLine =
     themes.length === 1
       ? `Theme: ${themes[0]}`
-      : `Themes (mix and match for the best effect): ${themes.join("; ")}`;
+      : `Themes (commit to ONE as the dominant voice; optionally borrow a small flourish from the others — don't blend all equally): ${themes.join("; ")}`;
   const stepLines = steps
     .map((step) => {
       const slice = step.script?.slice(0, SCRIPT_SLICE_CHARS).trim();
@@ -228,13 +238,7 @@ const STYLE_DIRECTIVES: Record<StyleId, string> = {
 // Strips ```json fences, JSON.parses, and checks the shape defensively so a
 // malformed reply degrades to "skip" rather than throwing.
 export function parseNarrationJson(raw: string): Narration | null {
-  const stripped = stripCodeFences(raw);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stripped);
-  } catch {
-    return null;
-  }
+  const parsed = tryParseJson(raw);
   if (typeof parsed !== "object" || parsed === null) {
     return null;
   }
@@ -254,7 +258,13 @@ export function parseNarrationJson(raw: string): Narration | null {
     ) {
       return null;
     }
-    steps.push({ index: stepRecord.index, narration: stepRecord.narration });
+    steps.push({
+      index: stepRecord.index,
+      // Strip `{...}` runs: burned into the SRT they'd be parsed by libass as
+      // style-override tags (reposition/recolor/hide). The narration is prose,
+      // never tags.
+      narration: stripOverrideTags(stepRecord.narration),
+    });
   }
   return { title: record.title, steps };
 }
@@ -273,6 +283,12 @@ export function parseInstalledVoiceNames(stdout: string): Set<string> {
   return names;
 }
 
+// Remove ASS/SSA override tags (and stray braces) so narration burned into the
+// captions can't restyle/reposition/hide itself via libass.
+function stripOverrideTags(text: string): string {
+  return text.replace(/\{[^}]*\}/g, "").replace(/[{}]/g, "");
+}
+
 function stripCodeFences(raw: string): string {
   const trimmed = raw.trim();
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
@@ -280,6 +296,28 @@ function stripCodeFences(raw: string): string {
     return fenced[1].trim();
   }
   return trimmed;
+}
+
+// Parse the model's reply leniently: try the fence-stripped text, then fall back
+// to the first `{`…last `}` slice so a chatty preamble ("Here's the narration:")
+// doesn't abort the whole pass. Returns the parsed value or null.
+function tryParseJson(raw: string): unknown {
+  const stripped = stripCodeFences(raw);
+  try {
+    return JSON.parse(stripped);
+  } catch {
+    // fall through to brace extraction
+  }
+  const open = stripped.indexOf("{");
+  const close = stripped.lastIndexOf("}");
+  if (open >= 0 && close > open) {
+    try {
+      return JSON.parse(stripped.slice(open, close + 1));
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -695,8 +733,10 @@ async function buildTitleCard(args: {
 }
 
 // drawtext is sensitive to colons, single quotes, backslashes and percent.
+// Newlines are collapsed to spaces so a multi-line LLM title renders as one line.
 function escapeDrawText(text: string): string {
   return text
+    .replace(/[\r\n]+/g, " ")
     .replace(/\\/g, "\\\\")
     .replace(/'/g, "’")
     .replace(/:/g, "\\:")
@@ -747,13 +787,20 @@ async function encodeSlice(args: {
   startSec: number;
   durSec: number;
   holdSec: number;
+  frameRate: number;
   outPath: string;
 }): Promise<void> {
-  const { ffmpeg, src, startSec, durSec, holdSec, outPath } = args;
-  const filter =
-    holdSec > 0
-      ? ["-vf", `tpad=stop_mode=clone:stop_duration=${holdSec.toFixed(3)}`]
-      : [];
+  const { ffmpeg, src, startSec, durSec, holdSec, frameRate, outPath } = args;
+  // Force constant frame rate the way condense.ts does (fps + setpts), so each
+  // slice's actual duration matches `-t`/`tpad` exactly. Without this, libvpx
+  // slices come up tens of ms short and the per-segment error ACCUMULATES across
+  // the concat, drifting narration/captions off the picture on long sessions.
+  const fps = frameRate > 0 ? frameRate : 30;
+  const chain = [`fps=${fps}`];
+  if (holdSec > 0) {
+    chain.push(`tpad=stop_mode=clone:stop_duration=${holdSec.toFixed(3)}`);
+  }
+  chain.push("setpts=N/FRAME_RATE/TB");
   await run(
     ffmpeg,
     [
@@ -766,7 +813,10 @@ async function encodeSlice(args: {
       durSec.toFixed(3),
       "-i",
       src,
-      ...filter,
+      "-vf",
+      chain.join(","),
+      "-r",
+      String(fps),
       "-an",
       "-c:v",
       "libvpx",
@@ -847,9 +897,10 @@ async function retimeForNarration(args: {
   videoPath: string;
   steps: CinematicStep[];
   clipDurSec: number[];
+  frameRate: number;
   temps: string[];
 }): Promise<{ path: string; starts: number[] } | null> {
-  const { ffmpeg, videoPath, steps, clipDurSec, temps } = args;
+  const { ffmpeg, videoPath, steps, clipDurSec, frameRate, temps } = args;
   const totalSec = await audioDurationSec(ffmpeg, videoPath);
   if (totalSec === undefined || totalSec <= 0) {
     return null;
@@ -869,6 +920,7 @@ async function retimeForNarration(args: {
       startSec: 0,
       durSec: plan.leadSec,
       holdSec: 0,
+      frameRate,
       outPath: leadPath,
     });
     segs.push(leadPath);
@@ -882,6 +934,7 @@ async function retimeForNarration(args: {
       startSec: steps[i]?.videoTime ?? 0,
       durSec: plan.footage[i] ?? 0.1,
       holdSec: plan.holds[i] ?? 0,
+      frameRate,
       outPath: segPath,
     });
     segs.push(segPath);
@@ -895,19 +948,17 @@ async function retimeForNarration(args: {
 
 // Build the title card matched to the source geometry and concat it ahead of the
 // body, returning the new (title-prefixed) video path. Pushes its temps for
-// cleanup. Only called when this ffmpeg has the drawtext filter.
+// cleanup. Only called when drawtext is available AND geometry is known — the
+// title MUST match the body's exact geometry or the concat-copy silently locks
+// the body into the title's resolution and corrupts the picture.
 async function prependTitleCard(args: {
   ffmpeg: string;
   videoPath: string;
   title: string;
+  geometry: ProbedVideo;
   temps: string[];
 }): Promise<string> {
-  const { ffmpeg, videoPath, title, temps } = args;
-  const geometry = (await probeVideo(ffmpeg, videoPath)) ?? {
-    width: 1280,
-    height: 720,
-    frameRate: 30,
-  };
+  const { ffmpeg, videoPath, title, geometry, temps } = args;
   const titlePath = `${videoPath}.title.webm`;
   temps.push(titlePath);
   await buildTitleCard({ ffmpeg, title, geometry, outPath: titlePath });
@@ -922,6 +973,48 @@ async function prependTitleCard(args: {
     listPath,
   });
   return concatPath;
+}
+
+// Decide whether to prepend the title card, returning the body path to mix onto
+// and the timeline offset it introduced. Skips (and records a note) when drawtext
+// is unavailable or geometry couldn't be probed — guessing geometry would corrupt
+// the concat.
+async function applyTitleCard(args: {
+  ffmpeg: string;
+  retimedPath: string;
+  title: string;
+  hasDrawtext: boolean;
+  geometry: ProbedVideo | undefined;
+  temps: string[];
+  notes: string[];
+  log: Logger;
+}): Promise<{ body: string; titleOffsetSec: number }> {
+  const {
+    ffmpeg,
+    retimedPath,
+    title,
+    hasDrawtext,
+    geometry,
+    temps,
+    notes,
+    log,
+  } = args;
+  if (hasDrawtext && geometry) {
+    const body = await prependTitleCard({
+      ffmpeg,
+      videoPath: retimedPath,
+      title,
+      geometry,
+      temps,
+    });
+    return { body, titleOffsetSec: TITLE_SEC };
+  }
+  const note = hasDrawtext
+    ? "title card skipped — couldn't probe the video geometry (no ffprobe?)"
+    : "title card skipped — this ffmpeg has no `drawtext` filter";
+  notes.push(note);
+  log.warn({ ffmpeg }, `cinematic: ${note}`);
+  return { body: retimedPath, titleOffsetSec: 0 };
 }
 
 // Final pass: mix the delayed narration clips onto the concatenated video and
@@ -954,7 +1047,7 @@ async function mixAudioAndCaptions(args: {
   }
 
   const filterComplex = burnCaptions
-    ? `${filter};[0:v]subtitles=${escapeSubtitlesPath(srtPath)}:force_style='${SUBTITLE_STYLE}'[vout]`
+    ? `${filter};[0:v]subtitles='${escapeSubtitlesPath(srtPath)}':force_style='${SUBTITLE_STYLE}'[vout]`
     : filter;
 
   const videoMap = burnCaptions ? "[vout]" : "0:v";
@@ -994,7 +1087,9 @@ async function mixAudioAndCaptions(args: {
 const SUBTITLE_STYLE =
   "FontSize=18,PrimaryColour=&H00FFFFFF,BorderStyle=3,BackColour=&HA0000000,Alignment=2,MarginV=40";
 
-// The subtitles filter's path argument needs colons and backslashes escaped.
+// Escape the subtitles path for the filtergraph. The caller wraps it in single
+// quotes, so filtergraph metacharacters (, ; [ ]) are already literal; we escape
+// the quote and libass-significant backslash/colon for safety inside the quotes.
 function escapeSubtitlesPath(srtPath: string): string {
   return srtPath
     .replace(/\\/g, "\\\\")
@@ -1076,12 +1171,17 @@ export async function cinematicProcess(
       return notApplied("narration generation failed");
     }
 
-    // 4. Voice + TTS: one clip per step that got narration text.
+    // 4. Voice + TTS: one clip per step that got narration text. Surface the
+    // randomly-chosen theme/style/voice/rate so a delightful run can be
+    // reproduced (pin them via --theme and $CANARY_SAY_VOICE/$CANARY_SAY_RATE).
     const voice = pickVoice(installedVoices);
+    const rate = pickRate();
+    const meta = { themes, style, voice, rate };
+    log.info(meta, "cinematic: narration parameters");
     const clips = await synthesizeClips({
       ffmpeg: ffmpegPath,
       voice,
-      rate: pickRate(),
+      rate,
       steps: narratableSteps,
       byIndex: new Map(narration.steps.map((s) => [s.index, s.narration])),
       videoPath,
@@ -1090,6 +1190,14 @@ export async function cinematicProcess(
     if (clips.length === 0) {
       return notApplied("no narration audio could be synthesized");
     }
+
+    // Probe the source geometry once: the frame rate drives CFR re-encoding (so
+    // segment durations stay exact), and the width/height let the title card
+    // match the body. A failed probe (e.g. no ffprobe) means we keep a default
+    // frame rate for re-timing but MUST skip the title card — guessing its
+    // geometry would corrupt the body on concat.
+    const geometry = await probeVideo(ffmpegPath, videoPath);
+    const frameRate = geometry?.frameRate ?? 30;
 
     // 5. Re-time: freeze each step's frame long enough for its narration so
     // clips never overlap. This MOVES the steps, so the new positions flow back
@@ -1102,28 +1210,25 @@ export async function cinematicProcess(
       videoPath,
       steps: narratableSteps,
       clipDurSec,
+      frameRate,
       temps,
     });
     if (!retimed) {
       return notApplied("could not probe the video to re-time it");
     }
 
-    // 6. Title card (drawtext) — only if this build supports it. When present it
-    // shifts the whole timeline by TITLE_SEC; otherwise the offset is 0.
-    const titleOffsetSec = hasDrawtext ? TITLE_SEC : 0;
-    let body = retimed.path;
-    if (hasDrawtext) {
-      body = await prependTitleCard({
-        ffmpeg: ffmpegPath,
-        videoPath: retimed.path,
-        title: narration.title,
-        temps,
-      });
-    } else {
-      const note = "title card skipped — this ffmpeg has no `drawtext` filter";
-      notes.push(note);
-      log.warn({ ffmpeg: ffmpegPath }, `cinematic: ${note}`);
-    }
+    // 6. Title card (drawtext) — only when supported AND geometry is known. When
+    // present it shifts the whole timeline by TITLE_SEC; otherwise the offset is 0.
+    const { body, titleOffsetSec } = await applyTitleCard({
+      ffmpeg: ffmpegPath,
+      retimedPath: retimed.path,
+      title: narration.title,
+      hasDrawtext,
+      geometry,
+      temps,
+      notes,
+      log,
+    });
 
     // Each step's final position and each clip's start, both shifted past the
     // title card. A clip starts exactly when its step's (re-timed) footage begins.
@@ -1133,9 +1238,12 @@ export async function cinematicProcess(
       return (idx >= 0 ? (retimed.starts[idx] ?? 0) : 0) + titleOffsetSec;
     });
 
-    // 7 (write SRT unconditionally). Cues carry NARRATION text; each starts when
-    // its clip plays and ends after the clip's audio duration.
+    // 7. Write the SRT (needed on disk before the burn pass reads it). Track it
+    // as a temp so a later failure cleans it up — a stale .srt with cinematic
+    // timings beside an un-processed video would mis-caption every soft-sub
+    // player. It's promoted to a deliverable only after the rename succeeds.
     const srtPath = srtPathFor(videoPath);
+    temps.push(srtPath);
     const cues = clips.map((clip, k) => {
       const start = clipOffsetsSec[k] ?? 0;
       return { start, end: start + clip.durationSec, text: clip.narration };
@@ -1173,9 +1281,11 @@ export async function cinematicProcess(
 
     // 9. Atomic in-place replace (like condense).
     await rename(finalPath, videoPath);
-    // The final file is now the original path — drop it from the cleanup list.
+    // The final video is now the original path, and the .srt beside it is a
+    // deliverable — drop both from the cleanup list.
     temps.splice(temps.indexOf(finalPath), 1);
-    return { applied: true, titleOffsetSec, stepTimes, notes };
+    temps.splice(temps.indexOf(srtPath), 1);
+    return { applied: true, titleOffsetSec, stepTimes, notes, meta };
   } catch (err) {
     log.debug(
       { err, videoPath },
