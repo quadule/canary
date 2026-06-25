@@ -217,6 +217,7 @@ async function cinematizeSessionVideo(
     prompt: opts.prompt,
     captions: opts.captions,
     log: logger,
+    onProgress: (message) => process.stderr.write(`  · ${message}\n`),
   });
   if (!outcome.applied) {
     process.stderr.write(`  ⚠ cinematic pass skipped: ${outcome.reason}\n`);

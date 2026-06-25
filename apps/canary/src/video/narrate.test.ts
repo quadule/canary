@@ -3,11 +3,14 @@ import {
   buildAdelayMix,
   buildNarrationPrompt,
   buildSrt,
+  changeScaleHint,
   parseFilterNames,
   parseInstalledVoiceNames,
   parseNarrationJson,
   planRetime,
   secToSrtTimestamp,
+  titleStyle,
+  wrapTitle,
 } from "./narrate.js";
 
 describe("secToSrtTimestamp", () => {
@@ -170,6 +173,77 @@ describe("buildNarrationPrompt", () => {
       steps,
     });
     expect(prompt).toContain("page.open('/login')");
+  });
+
+  it("embeds the change scale as a SECONDARY cue when provided", () => {
+    const withChange = buildNarrationPrompt({
+      direction: "noir",
+      change: {
+        label: "45 commits, 71 files, +7386/-402",
+        scaleHint: "large — go expansive",
+      },
+      steps,
+    });
+    expect(withChange).toContain("change under review is 45 commits");
+    expect(withChange).toContain("SECONDARY");
+    expect(withChange).toContain("go expansive");
+    const without = buildNarrationPrompt({ direction: "noir", steps });
+    expect(without).not.toContain("change under review");
+  });
+});
+
+describe("wrapTitle", () => {
+  it("greedily word-wraps to the char limit", () => {
+    expect(wrapTitle("THE GREAT PULL REQUEST CAPER", 12)).toEqual([
+      "THE GREAT",
+      "PULL REQUEST",
+      "CAPER",
+    ]);
+  });
+
+  it("honors explicit newlines as forced breaks", () => {
+    expect(wrapTitle("ACT ONE\nThe Setup", 100)).toEqual([
+      "ACT ONE",
+      "The Setup",
+    ]);
+  });
+
+  it("keeps an over-long single word whole", () => {
+    expect(wrapTitle("SUPERCALIFRAGILISTIC", 8)).toEqual([
+      "SUPERCALIFRAGILISTIC",
+    ]);
+  });
+
+  it("never returns an empty array", () => {
+    expect(wrapTitle("", 10)).toEqual([""]);
+  });
+});
+
+describe("changeScaleHint", () => {
+  it("sizes by length/energy without imposing a format", () => {
+    expect(changeScaleHint(1, 10)).toContain("very small");
+    expect(changeScaleHint(45, 7788)).toContain("large");
+    // Format-agnostic: never names a film/trailer that could fight the theme.
+    expect(changeScaleHint(45, 7788)).not.toMatch(/film|trailer|epic movie/);
+  });
+
+  it("scales through the middle tiers", () => {
+    expect(changeScaleHint(2, 200)).toContain("small");
+    expect(changeScaleHint(7, 600)).toContain("medium");
+  });
+});
+
+describe("titleStyle", () => {
+  it("falls back to Helvetica/white for an unknown category", () => {
+    const style = titleStyle(undefined);
+    expect(style.font).toContain("Helvetica");
+    expect(style.color).toBe("white");
+  });
+
+  it("returns a defined font + color for a known category", () => {
+    const style = titleStyle("commercial");
+    expect(style.font.length).toBeGreaterThan(0);
+    expect(style.color).toBe("0xFFD400");
   });
 });
 

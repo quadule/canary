@@ -17,11 +17,18 @@
 // and a timeout on every spawn. Temp files are siblings of the video and are
 // all cleaned up in a finally, even on partial failure.
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { access, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Logger } from "@usecanary/logger";
-import { type StyleId, selectStyle, selectThemes } from "./themes.js";
+import { branchContributors, buildCreditsRoll } from "./credits.js";
+import {
+  type StyleId,
+  selectStyle,
+  selectThemes,
+  type ThemeCategory,
+} from "./themes.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -56,6 +63,55 @@ const DEFAULT_SAY_RATE = 175;
 // explicit font file rather than a font name.
 const TITLE_FONT_FILE = "/System/Library/Fonts/Helvetica.ttc";
 
+// A small, curated title-card look per theme category: a font that fits the genre
+// and a high-contrast color (always rendered over a dark scrim, so brights read).
+// Not a font-discovery engine — just enough to make the card feel intentional.
+// Unknown/missing fonts fall back to Helvetica/white via titleStyle().
+const TITLE_STYLES: Record<ThemeCategory, { font: string; color: string }> = {
+  movie: { font: "/System/Library/Fonts/Times.ttc", color: "white" },
+  tv: { font: "/System/Library/Fonts/Supplemental/Futura.ttc", color: "white" },
+  documentary: {
+    font: "/System/Library/Fonts/Helvetica.ttc",
+    color: "0xF5F5F0",
+  },
+  commercial: {
+    font: "/System/Library/Fonts/Supplemental/Impact.ttf",
+    color: "0xFFD400",
+  },
+  training: { font: "/System/Library/Fonts/Helvetica.ttc", color: "0x7FE0FF" },
+  radio: {
+    font: "/System/Library/Fonts/Supplemental/Courier New.ttf",
+    color: "0xFFB347",
+  },
+  sports: {
+    font: "/System/Library/Fonts/Supplemental/Impact.ttf",
+    color: "white",
+  },
+  game_show: {
+    font: "/System/Library/Fonts/Supplemental/Impact.ttf",
+    color: "0xFFD400",
+  },
+  soap: {
+    font: "/System/Library/Fonts/Supplemental/Georgia.ttf",
+    color: "0xFFE9F0",
+  },
+  news: { font: "/System/Library/Fonts/Helvetica.ttc", color: "white" },
+  kids: { font: "/System/Library/Fonts/SFNSRounded.ttf", color: "0xFF7AD9" },
+};
+
+const DEFAULT_TITLE_STYLE = { font: TITLE_FONT_FILE, color: "white" };
+
+// Resolve the title-card font+color for a category, falling back to
+// Helvetica/white when the category is unknown or its font isn't installed.
+export function titleStyle(category: ThemeCategory | undefined): {
+  font: string;
+  color: string;
+} {
+  const pref = (category && TITLE_STYLES[category]) || DEFAULT_TITLE_STYLE;
+  const font = existsSync(pref.font) ? pref.font : TITLE_FONT_FILE;
+  return { font, color: pref.color };
+}
+
 // Timeouts (ms). The LLM call is generous; `say` and the encodes are bounded
 // like condense's encode pass.
 const VERSION_PROBE_TIMEOUT_MS = 10_000;
@@ -83,9 +139,15 @@ export interface CinematicOptions {
   captions: boolean;
   ffmpegPath: string;
   log: Logger;
+  // Called as each stage starts so the caller can show the user live progress
+  // (this pass takes a while — LLM call, TTS, several encodes).
+  onProgress?: (message: string) => void;
   // Verbatim user steer (--prompt) for theme/tone/style; when set, the random
   // theme + style draw is skipped and this drives the narration.
   prompt?: string;
+  // Directory of the project under review — its branch (vs configured base) sets
+  // the contributor credits and scales the narration. Defaults to process.cwd().
+  repoDir?: string;
 }
 
 export interface CinematicMeta {
@@ -186,15 +248,43 @@ export function buildAdelayMix(offsetsMs: number[]): string {
   return `${delays};${labels}amix=inputs=${offsetsMs.length}:normalize=0[aout]`;
 }
 
+// Wrap a title into lines of at most `maxChars`, honoring any explicit newlines
+// the model included (so it can force a layout) and greedily word-wrapping the
+// rest. A single word longer than the limit is kept whole rather than split.
+// Pure → unit-tested.
+export function wrapTitle(title: string, maxChars: number): string[] {
+  const limit = Math.max(1, maxChars);
+  const lines: string[] = [];
+  for (const rawLine of title.split("\n")) {
+    const words = rawLine.trim().split(/\s+/).filter(Boolean);
+    let current = "";
+    for (const word of words) {
+      if (current === "") {
+        current = word;
+      } else if (current.length + 1 + word.length <= limit) {
+        current += ` ${word}`;
+      } else {
+        lines.push(current);
+        current = word;
+      }
+    }
+    if (current !== "") {
+      lines.push(current);
+    }
+  }
+  return lines.length > 0 ? lines : [""];
+}
+
 // Build the `claude -p` prompt: the creative direction, the step list, and a
 // strict-JSON output contract. The `direction` is the already-composed steering
 // text (a random theme+style draw, or the user's verbatim --prompt). Deterministic
 // given its inputs (testable).
 export function buildNarrationPrompt(args: {
   direction: string;
+  change?: ChangeContext;
   steps: { index: number; name: string; script?: string }[];
 }): string {
-  const { direction, steps } = args;
+  const { direction, change, steps } = args;
   const stepLines = steps
     .map((step) => {
       const slice = step.script?.slice(0, SCRIPT_SLICE_CHARS).trim();
@@ -203,12 +293,20 @@ export function buildNarrationPrompt(args: {
     })
     .join("\n");
 
+  const changeLines = change
+    ? [
+        `Sense of scale (SECONDARY to the creative direction — use it only to size the length and energy, never to override the theme or its format): the change under review is ${change.label}, so ${change.scaleHint}.`,
+        "",
+      ]
+    : [];
+
   return [
     "You are scripting voiceover narration for a screen-recording of an automated browser QA session.",
     "Narrate it as a short cinematic piece, fully in character for the creative direction below.",
     "",
     `Creative direction: ${direction}`,
     "",
+    ...changeLines,
     "Steps (each is one moment in the video, in order):",
     stepLines,
     "",
@@ -217,7 +315,7 @@ export function buildNarrationPrompt(args: {
     "- Stay in character for the creative direction throughout; commit to the bit.",
     "- Never repeat the literal step name; describe what is happening in that voice.",
     "- If the direction calls for a verse form (poem/limerick/haiku/song), write the narration in that form.",
-    '- Provide a punchy, dramatic, mostly-uppercase "title" for an opening title card.',
+    '- Provide a punchy, dramatic, mostly-uppercase "title" for an opening title card. You may use a newline in the title to force a two-line layout.',
     "",
     'Respond with STRICT JSON only — no prose, no markdown fences — exactly: {"title": string, "steps": [{"index": number, "narration": string}]}',
   ].join("\n");
@@ -561,20 +659,135 @@ function pickRate(): number {
 }
 
 // Resolve the creative direction: the user's verbatim --prompt wins; otherwise
-// draw distinct random themes (commit to one) + a weighted style. Returns the
-// text injected into the narration prompt and a short label for reproducibility.
+// draw ONE or TWO random themes (per the request — a focused draw the LLM can
+// commit to, then adapt to the change's scale) + a weighted style. Returns the
+// text injected into the prompt, a short reproducibility label, and the dominant
+// theme category (drives the title-card font/color).
 function resolveDirection(userPrompt: string | undefined): {
   text: string;
   label: string;
+  category?: ThemeCategory;
 } {
   if (userPrompt?.trim()) {
     const text = userPrompt.trim();
     return { text, label: `prompt: "${text}"` };
   }
-  const themes = selectThemes(3).map((theme) => theme.label);
+  const count = Math.random() < 0.5 ? 1 : 2;
+  const drawn = selectThemes(count);
+  const themes = drawn.map((theme) => theme.label);
   const style = selectStyle();
-  const text = `commit to ONE of these as the dominant voice, optionally borrowing a small flourish from the others (don't blend all equally) — ${themes.join("; ")}. Render it as ${STYLE_DIRECTIVES[style]}`;
-  return { text, label: `theme: ${themes.join(" + ")} · style: ${style}` };
+  const themePart =
+    themes.length === 1
+      ? themes[0]
+      : `commit to "${themes[0]}" as the dominant voice, optionally borrowing a flourish from "${themes[1]}"`;
+  const text = `${themePart}. Render it as ${STYLE_DIRECTIVES[style]}`;
+  return {
+    text,
+    label: `theme: ${themes.join(" + ")} · style: ${style}`,
+    category: drawn[0]?.category,
+  };
+}
+
+interface ChangeContext {
+  // Stats line for the prompt, e.g. "45 commits, 71 files, +7386/-402".
+  label: string;
+  // A nudge toward the right production scale for the LLM to match.
+  scaleHint: string;
+}
+
+// The branch's review base — its configured upstream (what it'll merge back
+// into), NOT a hardcoded "main". Falls back to origin's default branch, then
+// "main". Used for both the change-scale cue and the contributor credits so they
+// count only this branch's own commits.
+async function resolveBase(repoDir: string): Promise<string> {
+  try {
+    const { stdout } = await run(
+      "git",
+      [
+        "-C",
+        repoDir,
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "@{upstream}",
+      ],
+      VERSION_PROBE_TIMEOUT_MS
+    );
+    const upstream = stdout.trim();
+    if (upstream) {
+      return upstream;
+    }
+  } catch {
+    // no configured upstream — fall through
+  }
+  try {
+    const { stdout } = await run(
+      "git",
+      ["-C", repoDir, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+      VERSION_PROBE_TIMEOUT_MS
+    );
+    const def = stdout.trim();
+    if (def) {
+      return def;
+    }
+  } catch {
+    // no origin/HEAD — fall through
+  }
+  return "main";
+}
+
+// Describe the change under review (branch vs base) so the narration can scale
+// its production to match — a sweeping feature film for a big branch, a 30-second
+// trailer for a tiny prep change. Best-effort: returns null off a git repo / with
+// no diff, and the narration simply omits the scale cue.
+async function describeChange(
+  repoDir: string,
+  base: string
+): Promise<ChangeContext | null> {
+  try {
+    const { stdout: countOut } = await run(
+      "git",
+      ["-C", repoDir, "rev-list", "--count", `${base}..HEAD`],
+      VERSION_PROBE_TIMEOUT_MS
+    );
+    const commits = Number(countOut.trim());
+    const { stdout: statOut } = await run(
+      "git",
+      ["-C", repoDir, "diff", "--shortstat", `${base}...HEAD`],
+      VERSION_PROBE_TIMEOUT_MS
+    );
+    const files = Number(statOut.match(/(\d+) files? changed/)?.[1] ?? 0);
+    const ins = Number(statOut.match(/(\d+) insertions?/)?.[1] ?? 0);
+    const del = Number(statOut.match(/(\d+) deletions?/)?.[1] ?? 0);
+    if (!(Number.isFinite(commits) && commits > 0) && files === 0) {
+      return null;
+    }
+    const churn = ins + del;
+    const scaleHint = changeScaleHint(commits, churn);
+    return {
+      label: `${commits} commit${commits === 1 ? "" : "s"}, ${files} file${files === 1 ? "" : "s"}, +${ins}/-${del}`,
+      scaleHint,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Map change size to a sense of LENGTH/ENERGY only — deliberately format-agnostic
+// so it never fights the random theme (an "epic film" cue would clash with a game
+// show or a cooking-show theme). The theme leads; this just sizes the piece.
+// Pure → testable.
+export function changeScaleHint(commits: number, churn: number): string {
+  if (commits <= 1 && churn < 60) {
+    return "very small — keep it short and punchy, a beat or two";
+  }
+  if (commits <= 3 && churn < 250) {
+    return "small — short and snappy";
+  }
+  if (commits <= 10 && churn < 1000) {
+    return "medium — room for a full little arc";
+  }
+  return "large — go expansive; give it weight and a few more beats";
 }
 
 // Ask the LLM for narration JSON, or null on any failure.
@@ -594,6 +807,188 @@ async function generateNarration(
     log.debug({ stdout }, "cinematic: could not parse narration JSON");
   }
   return narration;
+}
+
+// Resolve the creative direction (+ change-scale cue) and generate the narration.
+// Returns the direction (for title styling + reproducibility) and the narration,
+// or null if generation failed.
+async function planNarration(args: {
+  options: CinematicOptions;
+  narratableSteps: CinematicStep[];
+  log: Logger;
+}): Promise<{
+  direction: ReturnType<typeof resolveDirection>;
+  narration: Narration;
+  repoDir: string;
+  base: string;
+} | null> {
+  const { options, narratableSteps, log } = args;
+  const direction = resolveDirection(options.prompt);
+  const repoDir = options.repoDir ?? process.cwd();
+  const base = await resolveBase(repoDir);
+  const change = (await describeChange(repoDir, base)) ?? undefined;
+  const prompt = buildNarrationPrompt({
+    direction: direction.text,
+    change,
+    steps: narratableSteps.map((step, index) => ({
+      index,
+      name: step.name,
+      script: step.script,
+    })),
+  });
+  const narration = await generateNarration(prompt, log);
+  return narration ? { direction, narration, repoDir, base } : null;
+}
+
+// Append a scrolling end-credits roll (this branch's contributors) after the body.
+// Best-effort: returns the body unchanged on no contributors or any failure.
+// Credits sit at the very end, so they don't shift any step's videoTime.
+async function appendCredits(args: {
+  ffmpeg: string;
+  body: string;
+  videoPath: string;
+  heading: string;
+  repoDir: string;
+  base: string;
+  geometry: ProbedVideo;
+  temps: string[];
+  log: Logger;
+}): Promise<string> {
+  const {
+    ffmpeg,
+    body,
+    videoPath,
+    heading,
+    repoDir,
+    base,
+    geometry,
+    temps,
+    log,
+  } = args;
+  try {
+    const contributors = await branchContributors(repoDir, base);
+    if (contributors.length === 0) {
+      return body;
+    }
+    const creditsPath = `${videoPath}.credits.webm`;
+    temps.push(creditsPath);
+    await buildCreditsRoll({
+      ffmpeg,
+      contributors,
+      heading,
+      geometry,
+      outPath: creditsPath,
+    });
+    const outPath = `${videoPath}.withcredits.webm`;
+    const listPath = `${videoPath}.credits-list.txt`;
+    temps.push(outPath, listPath);
+    await concatSegments(ffmpeg, [body, creditsPath], outPath, listPath);
+    return outPath;
+  } catch (err) {
+    log.debug({ err }, "cinematic: credits roll failed; skipping it");
+    return body;
+  }
+}
+
+// Turn the condensed body + narration clips into the final cinematic video:
+// re-time so each step holds for its line, prepend the title card, append the
+// credits. Returns the final body path and where each step/clip lands in it, or
+// null if the source duration can't be probed for re-timing.
+async function assembleVideo(args: {
+  ffmpeg: string;
+  videoPath: string;
+  narratableSteps: CinematicStep[];
+  clips: RenderedClip[];
+  title: string;
+  category: ThemeCategory | undefined;
+  hasDrawtext: boolean;
+  repoDir: string;
+  base: string;
+  temps: string[];
+  notes: string[];
+  log: Logger;
+  progress: (message: string) => void;
+}): Promise<{
+  finalBody: string;
+  stepTimes: number[];
+  clipOffsetsSec: number[];
+  titleOffsetSec: number;
+} | null> {
+  const {
+    ffmpeg,
+    videoPath,
+    narratableSteps,
+    clips,
+    title,
+    category,
+    hasDrawtext,
+    repoDir,
+    base,
+    temps,
+    notes,
+    log,
+    progress,
+  } = args;
+
+  // Probe geometry once: frame rate drives CFR re-encoding (exact slice
+  // durations); width/height let the title card match the body. A failed probe
+  // (no ffprobe) keeps a default frame rate but MUST skip the title/credits —
+  // guessing geometry corrupts the concat.
+  const geometry = await probeVideo(ffmpeg, videoPath);
+  const frameRate = geometry?.frameRate ?? 30;
+
+  progress("re-timing the video to fit the narration…");
+  const clipDurSec = narratableSteps.map(
+    (step) => clips.find((c) => c.step === step)?.durationSec ?? 0
+  );
+  const retimed = await retimeForNarration({
+    ffmpeg,
+    videoPath,
+    steps: narratableSteps,
+    clipDurSec,
+    frameRate,
+    temps,
+  });
+  if (!retimed) {
+    return null;
+  }
+
+  progress("painting the title card…");
+  const { body, titleOffsetSec } = await applyTitleCard({
+    ffmpeg,
+    retimedPath: retimed.path,
+    title,
+    style: titleStyle(category),
+    hasDrawtext,
+    geometry,
+    temps,
+    notes,
+    log,
+  });
+
+  const stepTimes = retimed.starts.map((s) => s + titleOffsetSec);
+  const clipOffsetsSec = clips.map((clip) => {
+    const idx = narratableSteps.indexOf(clip.step);
+    return (idx >= 0 ? (retimed.starts[idx] ?? 0) : 0) + titleOffsetSec;
+  });
+
+  let finalBody = body;
+  if (hasDrawtext && geometry) {
+    progress("rolling the credits…");
+    finalBody = await appendCredits({
+      ffmpeg,
+      body,
+      videoPath,
+      heading: title,
+      repoDir,
+      base,
+      geometry,
+      temps,
+      log,
+    });
+  }
+
+  return { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec };
 }
 
 interface RenderedClip {
@@ -688,37 +1083,80 @@ async function synthesizeClips(args: {
   return clips;
 }
 
-// Render a black 2.5s title card matching the source geometry, encoded to webm
-// (libvpx) so the concat demuxer can stream-copy it ahead of the body.
+// Render a 2.5s title card matching the source geometry, encoded to webm
+// (libvpx) so the concat demuxer can stream-copy it ahead of the body. The
+// title is wrapped to fit the frame (honoring any model-supplied line breaks),
+// drawn in the category's font/color over a dark scrim, on either a solid black
+// base or a provided background image (scaled+cropped to fill, then darkened).
 async function buildTitleCard(args: {
   ffmpeg: string;
   title: string;
+  style: { font: string; color: string };
   geometry: ProbedVideo;
+  background?: string;
+  temps: string[];
   outPath: string;
 }): Promise<void> {
-  const { ffmpeg, title, geometry, outPath } = args;
-  const fontSize = Math.max(24, Math.round(geometry.height / 12));
-  const escaped = escapeDrawText(title);
+  const { ffmpeg, title, style, geometry, background, temps, outPath } = args;
+  // Size text to the frame, then word-wrap; shrink a touch when it spills past
+  // ~3 lines so a long title still fits without overflowing the card.
+  const baseSize = Math.max(24, Math.round(geometry.height / 12));
+  const maxChars = Math.max(
+    8,
+    Math.floor((geometry.width * 0.82) / (baseSize * 0.52))
+  );
+  const lines = wrapTitle(title, maxChars);
+  const fontSize = lines.length > 3 ? Math.round(baseSize * 0.8) : baseSize;
+  const lineSpacing = Math.round(fontSize * 0.35);
+
+  // drawtext reads the text from a file (expansion=none) so newlines and any
+  // %, :, \ in the title render literally — no filtergraph-escaping minefield.
+  const textFile = `${outPath}.txt`;
+  temps.push(textFile);
+  await writeFile(textFile, lines.join("\n"));
+
+  const font = existsSync(style.font) ? style.font : TITLE_FONT_FILE;
   const drawtext = [
-    `fontfile=${TITLE_FONT_FILE}`,
-    `text='${escaped}'`,
-    "fontcolor=white",
+    `fontfile=${font}`,
+    `textfile=${textFile}`,
+    "expansion=none",
+    `fontcolor=${style.color}`,
     `fontsize=${fontSize}`,
+    "text_align=C",
+    `line_spacing=${lineSpacing}`,
     "x=(w-text_w)/2",
     "y=(h-text_h)/2",
+    // Dark scrim behind the text so it stays legible over any background image.
+    "box=1",
+    "boxcolor=black@0.45",
+    `boxborderw=${Math.round(fontSize * 0.6)}`,
   ].join(":");
+
+  // Base layer: a provided background image (scaled to fill + darkened so white
+  // text reads), else a solid black frame.
+  const filter = background
+    ? `scale=${geometry.width}:${geometry.height}:force_original_aspect_ratio=increase,crop=${geometry.width}:${geometry.height},eq=brightness=-0.25,drawtext=${drawtext},fps=${geometry.frameRate},setpts=N/FRAME_RATE/TB`
+    : `drawtext=${drawtext}`;
+  const input = background
+    ? ["-loop", "1", "-t", String(TITLE_SEC), "-i", background]
+    : [
+        "-f",
+        "lavfi",
+        "-i",
+        `color=c=black:s=${geometry.width}x${geometry.height}:r=${geometry.frameRate}:d=${TITLE_SEC}`,
+      ];
+
   await run(
     ffmpeg,
     [
       "-hide_banner",
       "-nostats",
       "-y",
-      "-f",
-      "lavfi",
-      "-i",
-      `color=c=black:s=${geometry.width}x${geometry.height}:r=${geometry.frameRate}:d=${TITLE_SEC}`,
+      ...input,
       "-vf",
-      `drawtext=${drawtext}`,
+      filter,
+      "-r",
+      String(geometry.frameRate),
       "-pix_fmt",
       "yuv420p",
       "-c:v",
@@ -729,17 +1167,6 @@ async function buildTitleCard(args: {
     ],
     ENCODE_TIMEOUT_MS
   );
-}
-
-// drawtext is sensitive to colons, single quotes, backslashes and percent.
-// Newlines are collapsed to spaces so a multi-line LLM title renders as one line.
-function escapeDrawText(text: string): string {
-  return text
-    .replace(/[\r\n]+/g, " ")
-    .replace(/\\/g, "\\\\")
-    .replace(/'/g, "’")
-    .replace(/:/g, "\\:")
-    .replace(/%/g, "\\%");
 }
 
 // Concat the title card and the condensed body (both libvpx/webm → stream copy)
@@ -954,13 +1381,23 @@ async function prependTitleCard(args: {
   ffmpeg: string;
   videoPath: string;
   title: string;
+  style: { font: string; color: string };
+  background?: string;
   geometry: ProbedVideo;
   temps: string[];
 }): Promise<string> {
-  const { ffmpeg, videoPath, title, geometry, temps } = args;
+  const { ffmpeg, videoPath, title, style, background, geometry, temps } = args;
   const titlePath = `${videoPath}.title.webm`;
   temps.push(titlePath);
-  await buildTitleCard({ ffmpeg, title, geometry, outPath: titlePath });
+  await buildTitleCard({
+    ffmpeg,
+    title,
+    style,
+    background,
+    geometry,
+    temps,
+    outPath: titlePath,
+  });
   const concatPath = `${videoPath}.concat.webm`;
   const listPath = `${videoPath}.concat.txt`;
   temps.push(concatPath, listPath);
@@ -982,6 +1419,8 @@ async function applyTitleCard(args: {
   ffmpeg: string;
   retimedPath: string;
   title: string;
+  style: { font: string; color: string };
+  background?: string;
   hasDrawtext: boolean;
   geometry: ProbedVideo | undefined;
   temps: string[];
@@ -992,6 +1431,8 @@ async function applyTitleCard(args: {
     ffmpeg,
     retimedPath,
     title,
+    style,
+    background,
     hasDrawtext,
     geometry,
     temps,
@@ -1003,6 +1444,8 @@ async function applyTitleCard(args: {
       ffmpeg,
       videoPath: retimedPath,
       title,
+      style,
+      background,
       geometry,
       temps,
     });
@@ -1151,23 +1594,19 @@ export async function cinematicProcess(
     const hasDrawtext = filters.has("drawtext");
     const hasSubtitles = filters.has("subtitles");
     const notes: string[] = [];
+    const progress = options.onProgress ?? (() => undefined);
 
-    // 2. Creative direction: the user's --prompt, or a random theme + style.
-    const direction = resolveDirection(options.prompt);
-
-    // 3. Narration via claude -p.
-    const prompt = buildNarrationPrompt({
-      direction: direction.text,
-      steps: narratableSteps.map((step, index) => ({
-        index,
-        name: step.name,
-        script: step.script,
-      })),
+    // 2 + 3. Resolve the creative direction (+ change scale) and get narration.
+    progress("writing narration…");
+    const planned = await planNarration({
+      options,
+      narratableSteps,
+      log,
     });
-    const narration = await generateNarration(prompt, log);
-    if (!narration) {
+    if (!planned) {
       return notApplied("narration generation failed");
     }
+    const { direction, narration, repoDir, base } = planned;
 
     // 4. Voice + TTS: one clip per step that got narration text. Surface the
     // chosen direction/voice/rate so a delightful run can be reproduced (pin via
@@ -1176,6 +1615,7 @@ export async function cinematicProcess(
     const rate = pickRate();
     const meta: CinematicMeta = { direction: direction.label, voice, rate };
     log.info(meta, "cinematic: narration parameters");
+    progress(`voicing ${narration.steps.length} lines (${voice})…`);
     const clips = await synthesizeClips({
       ffmpeg: ffmpegPath,
       voice,
@@ -1189,52 +1629,27 @@ export async function cinematicProcess(
       return notApplied("no narration audio could be synthesized");
     }
 
-    // Probe the source geometry once: the frame rate drives CFR re-encoding (so
-    // segment durations stay exact), and the width/height let the title card
-    // match the body. A failed probe (e.g. no ffprobe) means we keep a default
-    // frame rate for re-timing but MUST skip the title card — guessing its
-    // geometry would corrupt the body on concat.
-    const geometry = await probeVideo(ffmpegPath, videoPath);
-    const frameRate = geometry?.frameRate ?? 30;
-
-    // 5. Re-time: freeze each step's frame long enough for its narration so
-    // clips never overlap. This MOVES the steps, so the new positions flow back
-    // to the caller as stepTimes (not a mere offset).
-    const clipDurSec = narratableSteps.map(
-      (step) => clips.find((c) => c.step === step)?.durationSec ?? 0
-    );
-    const retimed = await retimeForNarration({
+    // 5–6. Re-time the video, prepend the title card, and append the credits —
+    // producing the final body plus each step's/clip's position in it.
+    const assembled = await assembleVideo({
       ffmpeg: ffmpegPath,
       videoPath,
-      steps: narratableSteps,
-      clipDurSec,
-      frameRate,
-      temps,
-    });
-    if (!retimed) {
-      return notApplied("could not probe the video to re-time it");
-    }
-
-    // 6. Title card (drawtext) — only when supported AND geometry is known. When
-    // present it shifts the whole timeline by TITLE_SEC; otherwise the offset is 0.
-    const { body, titleOffsetSec } = await applyTitleCard({
-      ffmpeg: ffmpegPath,
-      retimedPath: retimed.path,
+      narratableSteps,
+      clips,
       title: narration.title,
+      category: direction.category,
       hasDrawtext,
-      geometry,
+      repoDir,
+      base,
       temps,
       notes,
       log,
+      progress,
     });
-
-    // Each step's final position and each clip's start, both shifted past the
-    // title card. A clip starts exactly when its step's (re-timed) footage begins.
-    const stepTimes = retimed.starts.map((s) => s + titleOffsetSec);
-    const clipOffsetsSec = clips.map((clip) => {
-      const idx = narratableSteps.indexOf(clip.step);
-      return (idx >= 0 ? (retimed.starts[idx] ?? 0) : 0) + titleOffsetSec;
-    });
+    if (!assembled) {
+      return notApplied("could not probe the video to re-time it");
+    }
+    const { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec } = assembled;
 
     // 7. Write the SRT (needed on disk before the burn pass reads it). Track it
     // as a temp so a later failure cleans it up — a stale .srt with cinematic
@@ -1260,11 +1675,14 @@ export async function cinematicProcess(
 
     // 8. Mix narration onto the (re-timed, possibly title-prefixed) video; burn
     // captions if supported.
+    progress(
+      burnCaptions ? "mixing audio and burning captions…" : "mixing audio…"
+    );
     const finalPath = `${videoPath}.cinematic.webm`;
     temps.push(finalPath);
     await mixAudioAndCaptions({
       ffmpeg: ffmpegPath,
-      videoPath: body,
+      videoPath: finalBody,
       clips,
       offsetsSec: clipOffsetsSec,
       srtPath,
