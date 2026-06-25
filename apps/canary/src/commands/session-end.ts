@@ -29,8 +29,8 @@ interface SessionEndOpts {
   cinematic?: boolean;
   condense?: boolean;
   open?: boolean;
+  prompt?: string;
   stopDaemon?: boolean;
-  theme?: string;
 }
 
 // Open a file/URL in the OS default app, detached and best-effort: opening the
@@ -166,7 +166,7 @@ async function condenseSessionVideos(
 
 interface CinematicOpts {
   captions: boolean;
-  theme?: string;
+  prompt?: string;
 }
 
 // Apply the opt-in cinematic pass (LLM narration + macOS TTS + burned captions +
@@ -214,7 +214,7 @@ async function cinematizeSessionVideo(
   process.stderr.write("Adding cinematic narration…\n");
   const outcome = await cinematicProcess(video.path, steps, {
     ffmpegPath: ffmpeg,
-    theme: opts.theme,
+    prompt: opts.prompt,
     captions: opts.captions,
     log: logger,
   });
@@ -237,12 +237,10 @@ async function cinematizeSessionVideo(
     .catch(() => video.bytes);
   process.stderr.write("  ✓ narration added\n");
   // Surface the chosen parameters so a delightful random run can be reproduced
-  // (pin via --theme and $CANARY_SAY_VOICE / $CANARY_SAY_RATE).
+  // (pin via --prompt and $CANARY_SAY_VOICE / $CANARY_SAY_RATE).
   if (outcome.meta) {
-    const { themes, style, voice, rate } = outcome.meta;
-    process.stderr.write(
-      `  🎬 theme: ${themes.join(" + ")} · style: ${style} · voice: ${voice} @ ${rate} wpm\n`
-    );
+    const { direction, voice, rate } = outcome.meta;
+    process.stderr.write(`  🎬 ${direction} · voice: ${voice} @ ${rate} wpm\n`);
   }
   // Surface any degradation (e.g. this ffmpeg lacks drawtext/subtitles) so the
   // user isn't left wondering where the title card or burned captions went.
@@ -310,7 +308,7 @@ export async function sessionEnd(
   // stamped step.videoTime and the trimmed video). Default output is unchanged.
   if (opts.cinematic) {
     await cinematizeSessionVideo(endResult, record, {
-      theme: opts.theme,
+      prompt: opts.prompt,
       captions: opts.captions !== false,
     });
   }

@@ -109,8 +109,8 @@ interface SessionEndOpts {
   cinematic?: boolean;
   condense?: boolean;
   open?: boolean;
+  prompt?: string;
   stopDaemon?: boolean;
-  theme?: string;
 }
 
 interface UiOpts {
@@ -198,8 +198,8 @@ export function buildProgram(): CommandType {
       "Add LLM narration, a macOS voice-over, captions, and a title card (macOS only; needs `claude` and `say`)"
     )
     .option(
-      "--theme <description>",
-      'Override the random cinematic theme, e.g. "1970s heist film" (implies --cinematic)'
+      "--prompt <text>",
+      'Steer the cinematic narration — theme, tone, and style — in your own words, e.g. "1970s heist film, narrated as a limerick" (implies --cinematic)'
     )
     .option("--no-captions", "With --cinematic, skip burning in subtitles")
     .option("--open", "Open the rendered report.html in your default browser")
@@ -207,8 +207,8 @@ export function buildProgram(): CommandType {
       const code = await sessionEnd(id, isJson(program), {
         stopDaemon: opts.stopDaemon === true,
         condense: opts.condense,
-        cinematic: opts.cinematic === true || typeof opts.theme === "string",
-        theme: opts.theme,
+        cinematic: opts.cinematic === true || typeof opts.prompt === "string",
+        prompt: opts.prompt,
         captions: opts.captions,
         open: opts.open === true,
       });

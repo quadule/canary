@@ -143,36 +143,33 @@ describe("buildNarrationPrompt", () => {
     { index: 1, name: "Fill the password field" },
   ];
 
-  it("includes every theme, the style directive, and every step name", () => {
+  it("embeds the creative direction and every step name", () => {
     const prompt = buildNarrationPrompt({
-      themes: ["1970s heist thriller", "noir radio drama"],
-      style: "poem",
+      direction: "1970s heist thriller, narrated as a limerick",
       steps,
     });
-    expect(prompt).toContain("1970s heist thriller");
-    expect(prompt).toContain("noir radio drama");
-    expect(prompt).toContain("poetry");
+    expect(prompt).toContain(
+      "Creative direction: 1970s heist thriller, narrated as a limerick"
+    );
     expect(prompt).toContain("Open the login page");
     expect(prompt).toContain("Fill the password field");
   });
 
   it("demands strict JSON output", () => {
     const prompt = buildNarrationPrompt({
-      themes: ["nature documentary"],
-      style: "prose",
+      direction: "nature documentary",
       steps,
     });
     expect(prompt).toContain("STRICT JSON");
     expect(prompt).toContain('"title"');
   });
 
-  it("uses a single-theme phrasing for one theme", () => {
+  it("includes a step's script slice when present", () => {
     const prompt = buildNarrationPrompt({
-      themes: ["nature documentary"],
-      style: "prose",
+      direction: "noir",
       steps,
     });
-    expect(prompt).toContain("Theme: nature documentary");
+    expect(prompt).toContain("page.open('/login')");
   });
 });
 

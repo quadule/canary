@@ -116,7 +116,21 @@ copy): the pre-page-load segment is dropped and motionless stretches are trimmed
 frame-accurate re-encode that keeps real motion (cursor, typing, captions). Pass --no-condense
 to keep the raw recordings.
 
-  canary session end "$id"`;
+CINEMATIC MODE (--cinematic, macOS only): turn the silent recording into a narrated short.
+An LLM writes themed narration per step, the macOS 'say' voice reads it, and each step's frame
+is held just long enough for its line; an opening title card and burned-in captions are added,
+plus a sibling .srt. Requires the 'claude' CLI and 'say' on PATH; the title card needs an ffmpeg
+built with drawtext and burned captions need the subtitles filter (otherwise it writes a
+soft-sub .srt and tells you). The chosen theme/voice are printed so you can reproduce a run.
+
+  --prompt "<text>"   steer theme/tone/style in your own words (implies --cinematic);
+                      omit for a random theme. e.g. --prompt "noir detective, as a haiku"
+  --no-captions       skip burning subtitles into the video (the .srt is still written)
+  $CANARY_SAY_VOICE / $CANARY_SAY_RATE   pin the voice / words-per-minute
+
+  canary session end "$id"
+  canary session end "$id" --cinematic
+  canary session end "$id" --prompt "1970s heist film"`;
 
 export const STOP_LONG_ABOUT = `Stop the background daemon and everything it is running (all browsers and sessions).
 

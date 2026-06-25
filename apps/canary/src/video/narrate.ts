@@ -83,21 +83,22 @@ export interface CinematicOptions {
   captions: boolean;
   ffmpegPath: string;
   log: Logger;
-  // Verbatim user override (--theme); when set, skip the random draw and the
-  // style modifier.
-  theme?: string;
+  // Verbatim user steer (--prompt) for theme/tone/style; when set, the random
+  // theme + style draw is skipped and this drives the narration.
+  prompt?: string;
 }
 
 export interface CinematicMeta {
+  // Human-readable creative direction (the random theme+style, or the --prompt),
+  // surfaced so a good run can be reproduced.
+  direction: string;
   rate: number;
-  style: StyleId;
-  themes: string[];
   voice: string;
 }
 
 export interface CinematicResult {
   applied: boolean;
-  // The randomly-chosen theme/style/voice/rate, surfaced so a good run can be
+  // The chosen creative direction + voice/rate, surfaced so a good run can be
   // reproduced. Present only when applied.
   meta?: CinematicMeta;
   // User-facing degradation notes when the pass applied but this ffmpeg build
@@ -185,18 +186,15 @@ export function buildAdelayMix(offsetsMs: number[]): string {
   return `${delays};${labels}amix=inputs=${offsetsMs.length}:normalize=0[aout]`;
 }
 
-// Build the `claude -p` prompt: theme(s), the style directive, the step list,
-// and a strict-JSON output contract. Deterministic given its inputs (testable).
+// Build the `claude -p` prompt: the creative direction, the step list, and a
+// strict-JSON output contract. The `direction` is the already-composed steering
+// text (a random theme+style draw, or the user's verbatim --prompt). Deterministic
+// given its inputs (testable).
 export function buildNarrationPrompt(args: {
-  themes: string[];
-  style: StyleId;
+  direction: string;
   steps: { index: number; name: string; script?: string }[];
 }): string {
-  const { themes, style, steps } = args;
-  const themeLine =
-    themes.length === 1
-      ? `Theme: ${themes[0]}`
-      : `Themes (commit to ONE as the dominant voice; optionally borrow a small flourish from the others — don't blend all equally): ${themes.join("; ")}`;
+  const { direction, steps } = args;
   const stepLines = steps
     .map((step) => {
       const slice = step.script?.slice(0, SCRIPT_SLICE_CHARS).trim();
@@ -207,19 +205,18 @@ export function buildNarrationPrompt(args: {
 
   return [
     "You are scripting voiceover narration for a screen-recording of an automated browser QA session.",
-    "Narrate it as a short cinematic piece, fully in character for the theme.",
+    "Narrate it as a short cinematic piece, fully in character for the creative direction below.",
     "",
-    themeLine,
-    `Style: ${STYLE_DIRECTIVES[style]}`,
+    `Creative direction: ${direction}`,
     "",
     "Steps (each is one moment in the video, in order):",
     stepLines,
     "",
     "Rules:",
     "- Write one narration entry per step: SHORT and PUNCHY, 1-2 sentences max, tight enough to be read aloud within the step's brief on-screen window. Favor brevity over flourish.",
-    "- Stay in character for the theme throughout; commit to the bit.",
-    "- Never repeat the literal step name; describe what is happening in the theme's voice.",
-    "- Apply the style directive (for poem/limerick/haiku/song variants, the narration text should take that form).",
+    "- Stay in character for the creative direction throughout; commit to the bit.",
+    "- Never repeat the literal step name; describe what is happening in that voice.",
+    "- If the direction calls for a verse form (poem/limerick/haiku/song), write the narration in that form.",
     '- Provide a punchy, dramatic, mostly-uppercase "title" for an opening title card.',
     "",
     'Respond with STRICT JSON only — no prose, no markdown fences — exactly: {"title": string, "steps": [{"index": number, "narration": string}]}',
@@ -563,19 +560,21 @@ function pickRate(): number {
     : DEFAULT_SAY_RATE;
 }
 
-// Resolve the theme(s) and style: a verbatim --theme override uses plain prose,
-// otherwise draw distinct random themes and a weighted style.
-function resolveThemeAndStyle(themeOverride: string | undefined): {
-  themes: string[];
-  style: StyleId;
+// Resolve the creative direction: the user's verbatim --prompt wins; otherwise
+// draw distinct random themes (commit to one) + a weighted style. Returns the
+// text injected into the narration prompt and a short label for reproducibility.
+function resolveDirection(userPrompt: string | undefined): {
+  text: string;
+  label: string;
 } {
-  if (themeOverride) {
-    return { themes: [themeOverride], style: "prose" };
+  if (userPrompt?.trim()) {
+    const text = userPrompt.trim();
+    return { text, label: `prompt: "${text}"` };
   }
-  return {
-    themes: selectThemes(3).map((theme) => theme.label),
-    style: selectStyle(),
-  };
+  const themes = selectThemes(3).map((theme) => theme.label);
+  const style = selectStyle();
+  const text = `commit to ONE of these as the dominant voice, optionally borrowing a small flourish from the others (don't blend all equally) — ${themes.join("; ")}. Render it as ${STYLE_DIRECTIVES[style]}`;
+  return { text, label: `theme: ${themes.join(" + ")} · style: ${style}` };
 }
 
 // Ask the LLM for narration JSON, or null on any failure.
@@ -1153,13 +1152,12 @@ export async function cinematicProcess(
     const hasSubtitles = filters.has("subtitles");
     const notes: string[] = [];
 
-    // 2. Theme + style.
-    const { themes, style } = resolveThemeAndStyle(options.theme);
+    // 2. Creative direction: the user's --prompt, or a random theme + style.
+    const direction = resolveDirection(options.prompt);
 
     // 3. Narration via claude -p.
     const prompt = buildNarrationPrompt({
-      themes,
-      style,
+      direction: direction.text,
       steps: narratableSteps.map((step, index) => ({
         index,
         name: step.name,
@@ -1172,11 +1170,11 @@ export async function cinematicProcess(
     }
 
     // 4. Voice + TTS: one clip per step that got narration text. Surface the
-    // randomly-chosen theme/style/voice/rate so a delightful run can be
-    // reproduced (pin them via --theme and $CANARY_SAY_VOICE/$CANARY_SAY_RATE).
+    // chosen direction/voice/rate so a delightful run can be reproduced (pin via
+    // --prompt and $CANARY_SAY_VOICE/$CANARY_SAY_RATE).
     const voice = pickVoice(installedVoices);
     const rate = pickRate();
-    const meta = { themes, style, voice, rate };
+    const meta: CinematicMeta = { direction: direction.label, voice, rate };
     log.info(meta, "cinematic: narration parameters");
     const clips = await synthesizeClips({
       ffmpeg: ffmpegPath,
