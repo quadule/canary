@@ -8,17 +8,23 @@
 //
 // CONTRACT: every method writes a finished file to `outPath` (an
 // ffmpeg-decodable audio/image file — that's the entire integration surface)
-// and THROWS a clean Error on any failure. To honor "never leave a half-written
-// file the caller might use", each method writes to a sibling temp path and only
-// `rename`s it into place once the bytes are validated.
+// and THROWS a clean Error on any failure. The caller (narrate.ts) dictates the
+// output path AND its extension (e.g. `${videoPath}.bed.wav`); we always write
+// the returned container bytes to that exact path. ffmpeg decodes by content, so
+// the on-disk extension and the actual codec need not match. To honor "never
+// leave a half-written file the caller might use", each method writes to a
+// sibling temp path and only `rename`s it into place once the bytes are valid.
 //
-// API SURFACE NOTE: Google currently exposes two surfaces — the newer
-// "Interactions API" (POST .../v1beta/interactions) and the older `generateContent`
-// surface (one doc page labels it "Legacy"). We deliberately target
-// `generateContent` because its request/response JSON is the shape we could verify
-// most precisely from the docs; the Interactions equivalents are listed in the
-// constants below so a future maintainer can flip in one place. See the module's
-// shipping notes / PR description for citations.
+// API SURFACE: these providers target Google's "Interactions API"
+// (POST .../v1beta/interactions), the current surface that documents image
+// (Nano Banana), TTS, and Lyria music behind one request/response shape. (The
+// older `generateContent` surface is now labeled "Legacy".) Endpoint, auth
+// header, model ids, and the modality field all live in the constants below so a
+// maintainer can adjust them in one place. See the per-feature docs:
+//   - https://ai.google.dev/gemini-api/docs/image-generation (Nano Banana)
+//   - https://ai.google.dev/gemini-api/docs/speech-generation (TTS)
+//   - https://ai.google.dev/gemini-api/docs/music-generation (Lyria)
+//   - https://ai.google.dev/api/interactions-api (request/response reference)
 //
 // PRIVACY: the directionText and per-step narration text are session-derived and
 // are sent to Google's API. The API key is read from `env` only and is never
@@ -66,37 +72,34 @@ export interface MediaProviders {
 }
 
 // ---------------------------------------------------------------------------
-// Configuration constants. Endpoints + model ids live here so the surface can be
-// swapped in one place (see the API SURFACE NOTE at the top of the file).
+// Configuration constants. Endpoint + model ids + the modality field live here
+// so the surface can be swapped in one place (see the API SURFACE note above).
 // ---------------------------------------------------------------------------
 
-const API_BASE = "https://generativelanguage.googleapis.com/v1beta";
+// The Interactions API is a single endpoint for every modality; the `model`
+// field in the body selects the capability. Auth travels in the header.
+const INTERACTIONS_URL =
+  "https://generativelanguage.googleapis.com/v1beta/interactions";
 
-// Image generation ("Nano Banana"). GA dropped the `-preview` suffix.
-// generateContent: POST {API_BASE}/models/{IMAGE_MODEL}:generateContent
-// Interactions alternative (current surface): model "gemini-3.1-flash-image"
-// (a.k.a. "Nano Banana 2") / "gemini-3-pro-image" via POST {API_BASE}/interactions.
-const IMAGE_MODEL = "gemini-2.5-flash-image";
+// Image generation ("Nano Banana 2"). Confirmed on the image-generation docs.
+// Fall-back / higher-quality alternative: "gemini-3-pro-image".
+const IMAGE_MODEL = "gemini-3.1-flash-image";
 
-// Text-to-speech. This is the legacy-but-documented generateContent TTS model.
-// Interactions alternative (current surface): "gemini-3.1-flash-tts-preview".
-const TTS_MODEL = "gemini-2.5-flash-preview-tts";
+// Text-to-speech. Confirmed on the speech-generation docs (preview).
+const TTS_MODEL = "gemini-3.1-flash-tts-preview";
 
-// Gemini TTS returns raw PCM: 16-bit signed little-endian, 24 kHz, mono. We wrap
-// it in a WAV header before writing so ffmpeg can decode it.
+// Music ("Lyria 3"). The clip model is fixed at ~30s and suits the instrumental
+// bed; the pro model produces full-length songs with verse/chorus structure.
+const MUSIC_CLIP_MODEL = "lyria-3-clip-preview"; // bed (≤30s, instrumental)
+const MUSIC_PRO_MODEL = "lyria-3-pro-preview"; // song (full-length)
+
+// Gemini TTS returns raw PCM (16-bit signed little-endian, 24 kHz, mono) inside
+// an audio block. When the returned mime indicates raw PCM we wrap it in a WAV
+// header before writing; a real container (mp3/wav, as Lyria returns) is written
+// through unchanged. These describe the PCM the TTS model emits.
 const TTS_SAMPLE_RATE = 24_000;
 const TTS_CHANNELS = 1;
 const TTS_BITS_PER_SAMPLE = 16;
-
-// Music ("Lyria 3"). UNVERIFIED: at research time only the Interactions API was
-// documented for Lyria, and Lyria has historically been Vertex-only (via
-// `:predict`). The generateContent shape below is a best-cited GUESS modeled on
-// the image/TTS shape and MAY be wrong (wrong endpoint entirely, Vertex-only, or
-// a different response path). It is wired up because each capability is
-// independent and the caller falls back cleanly on a throw — but do not trust it
-// until confirmed against live docs. Interactions models seen in docs:
-// "lyria-3-clip-preview" (~30s) and "lyria-3-pro-preview" (full-length).
-const MUSIC_MODEL = "lyria-3-clip-preview";
 
 // Single-speaker voices the Gemini TTS model accepts. One is picked per session
 // (consistency) and surfaced in the provider's `label` for reproducibility.
@@ -151,35 +154,85 @@ export function pcmToWav(
   return Buffer.concat([header, pcm]);
 }
 
-interface InlinePart {
-  inlineData?: { data?: unknown; mimeType?: unknown };
+// The media type we want back from an interaction: "image" or "audio". This is
+// matched against `steps[].content[].type` and used to pick the convenience
+// `output_image` / `output_audio` field.
+type InteractionMediaType = "image" | "audio";
+
+interface InteractionContent {
+  data?: unknown;
+  mime_type?: unknown;
+  type?: unknown;
 }
 
-// Extract the first inline-data payload (base64 → Buffer, plus its mimeType) from
-// a generateContent response body. Returns null when the shape doesn't match, so
-// callers can throw a clean "no media in response" error. Pure.
-export function extractInlineData(
-  body: unknown
+// Decode one base64 content block into bytes + mime. Returns null unless `type`
+// matches `wantType` and `data` is a non-empty base64 string. Pure.
+function readContentBlock(
+  block: InteractionContent | undefined,
+  wantType: InteractionMediaType
+): { bytes: Buffer; mimeType: string } | null {
+  if (!block || block.type !== wantType) {
+    return null;
+  }
+  if (typeof block.data !== "string" || block.data.length === 0) {
+    return null;
+  }
+  const mimeType = typeof block.mime_type === "string" ? block.mime_type : "";
+  return { bytes: Buffer.from(block.data, "base64"), mimeType };
+}
+
+// Defensively extract the first media block of `wantType` from an Interactions
+// API response. Reads both shapes the docs describe:
+//   - the convenience field `interaction.output_image` / `output_audio`
+//     ({ data, mime_type }), checked first; and
+//   - the full `steps[].content[]` array, where each content block has
+//     { type: "image"|"audio", data: <base64>, mime_type }.
+// Returns null when no usable block is present, so callers can throw a clean
+// "no media in response" error. Pure.
+export function extractInteractionMedia(
+  body: unknown,
+  wantType: InteractionMediaType
 ): { bytes: Buffer; mimeType: string } | null {
   if (typeof body !== "object" || body === null) {
     return null;
   }
-  const candidates = (body as { candidates?: unknown }).candidates;
-  if (!Array.isArray(candidates)) {
+  // Defensive: the docs describe a top-level object, but the SDK phrasing
+  // (`interaction.output_image.data`) hints the raw HTTP body may wrap
+  // everything under an `interaction` key on some surfaces. Unwrap it if
+  // present so we read `steps`/`output_*` from the right level either way.
+  const wrapped = (body as { interaction?: unknown }).interaction;
+  const root = (wrapped && typeof wrapped === "object" ? wrapped : body) as {
+    output_image?: InteractionContent;
+    output_audio?: InteractionContent;
+    steps?: unknown;
+  };
+
+  // 1) Convenience field. The SDK surfaces the last image/audio block here.
+  const convenience =
+    wantType === "image" ? root.output_image : root.output_audio;
+  const fromConvenience = readContentBlock(
+    // The convenience block omits `type`; treat it as already the wanted type.
+    convenience ? { ...convenience, type: wantType } : undefined,
+    wantType
+  );
+  if (fromConvenience) {
+    return fromConvenience;
+  }
+
+  // 2) Full steps[].content[] walk.
+  const steps = root.steps;
+  if (!Array.isArray(steps)) {
     return null;
   }
-  for (const candidate of candidates) {
-    const parts = (candidate as { content?: { parts?: unknown } })?.content
-      ?.parts;
-    if (!Array.isArray(parts)) {
+  for (const step of steps) {
+    const content = (step as { content?: unknown })?.content;
+    if (!Array.isArray(content)) {
       continue;
     }
-    for (const part of parts as InlinePart[]) {
-      const inline = part?.inlineData;
-      if (inline && typeof inline.data === "string" && inline.data.length > 0) {
-        const mimeType =
-          typeof inline.mimeType === "string" ? inline.mimeType : "";
-        return { bytes: Buffer.from(inline.data, "base64"), mimeType };
+    for (const block of content as InteractionContent[]) {
+      const found = readContentBlock(block, wantType);
+      if (found) {
+        return found;
       }
     }
   }
@@ -226,203 +279,22 @@ export function buildImagePrompt(directionText: string): string {
 }
 
 // Build the music prompt. `wantVocals` distinguishes an instrumental bed from a
-// full song; genre/mood are mapped from the direction by the model. Pure →
-// unit-tested.
+// full song; genre/mood are mapped from the direction by the model. A full song
+// may use [Verse]/[Chorus] structure markers (Lyria pro understands them). Pure
+// → unit-tested.
 export function buildMusicPrompt(
   directionText: string,
   seconds: number,
   wantVocals: boolean
 ): string {
   const kind = wantVocals
-    ? "a complete song with vocals"
+    ? "a complete song with vocals (use [Verse] and [Chorus] structure as it fits)"
     : "an instrumental score with NO vocals";
   return [
     `Compose ${kind} as the soundtrack for a short cinematic piece with this creative direction: ${directionText}.`,
     `Target roughly ${Math.round(seconds)} seconds.`,
     "Match the genre, mood, tempo, and instrumentation to that theme; make it evocative and film-quality.",
   ].join(" ");
-}
-
-// Read the Gemini API key from the env. Accepts either documented var name.
-// Returns undefined when neither is set. The key value itself is never logged.
-export function readApiKey(env: NodeJS.ProcessEnv): string | undefined {
-  const key = env.GEMINI_API_KEY ?? env.GOOGLE_GENAI_API_KEY;
-  const trimmed = key?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-// ---------------------------------------------------------------------------
-// HTTP + file helpers (network; not unit-tested — covered by manual/live runs).
-// ---------------------------------------------------------------------------
-
-// POST a generateContent request and return the parsed JSON body. Throws a clean
-// Error (carrying NEITHER the key NOR the request text) on a non-2xx or transport
-// failure. Uses the global fetch with an AbortSignal timeout.
-async function postGenerateContent(args: {
-  model: string;
-  apiKey: string;
-  body: unknown;
-  timeoutMs: number;
-}): Promise<unknown> {
-  const { model, apiKey, body, timeoutMs } = args;
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}/models/${model}:generateContent`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        // Key travels in the header form, never in the URL or logs.
-        "x-goog-api-key": apiKey,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-  } catch (err) {
-    // Network/timeout. Surface a short reason without the request payload.
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`Gemini ${model} request failed: ${reason}`);
-  }
-  if (!response.ok) {
-    // Status only — the body can echo request text, so we don't include it.
-    throw new Error(`Gemini ${model} returned HTTP ${response.status}`);
-  }
-  return response.json();
-}
-
-// Decode a generateContent response to media bytes or throw. Centralizes the
-// "empty/missing media" error so every provider fails the same clean way.
-function inlineBytesOrThrow(model: string, body: unknown): Buffer {
-  const found = extractInlineData(body);
-  if (!found || found.bytes.length === 0) {
-    throw new Error(`Gemini ${model} returned no media bytes`);
-  }
-  return found.bytes;
-}
-
-// Write bytes to `outPath` atomically: write a sibling temp first, then rename,
-// so a crash mid-write never leaves a partial/0-byte file the caller might use.
-async function writeFileAtomic(outPath: string, bytes: Buffer): Promise<void> {
-  if (bytes.length === 0) {
-    throw new Error("refusing to write 0 bytes");
-  }
-  const tmp = `${outPath}.tmp-${process.pid}`;
-  try {
-    await writeFile(tmp, bytes);
-    await rename(tmp, outPath);
-  } catch (err) {
-    await rm(tmp, { force: true });
-    throw err instanceof Error ? err : new Error(String(err));
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Provider factories. Each closes over the key + logger; the key never leaves.
-// ---------------------------------------------------------------------------
-
-function createTtsProvider(
-  apiKey: string,
-  env: NodeJS.ProcessEnv
-): TtsProvider {
-  // One voice for the whole session: every step's clip uses it, and `label`
-  // carries it (e.g. "gemini:Charon") so a good run can be reproduced via
-  // $CANARY_TTS_VOICE.
-  const voice = pickTtsVoice(env);
-  return {
-    id: "gemini-tts",
-    label: `gemini:${voice}`,
-    async synthesize(text: string, outPath: string): Promise<void> {
-      const prompt = buildTtsPrompt(text);
-      const body = {
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } },
-          },
-        },
-      };
-      const json = await postGenerateContent({
-        model: TTS_MODEL,
-        apiKey,
-        body,
-        timeoutMs: TTS_TIMEOUT_MS,
-      });
-      const pcm = inlineBytesOrThrow(TTS_MODEL, json);
-      // Gemini TTS returns headerless PCM (audio/L16); wrap it so ffmpeg decodes it.
-      const wav = pcmToWav(pcm, TTS_SAMPLE_RATE, TTS_CHANNELS);
-      await writeFileAtomic(outPath, wav);
-    },
-  };
-}
-
-function createTitleBackgroundProvider(
-  apiKey: string
-): TitleBackgroundProvider {
-  return {
-    id: "gemini-image",
-    async render(
-      directionText: string,
-      width: number,
-      height: number,
-      outPath: string
-    ): Promise<void> {
-      const aspectRatio = aspectRatioFor(width, height);
-      const body = {
-        contents: [{ parts: [{ text: buildImagePrompt(directionText) }] }],
-        generationConfig: {
-          // ["TEXT","IMAGE"] rather than ["IMAGE"]: docs conflict on whether
-          // image-only is accepted, and at least one source says an image is
-          // only returned when TEXT is also requested. Asking for both is the
-          // strictly-safer default — extractInlineData ignores any text part.
-          responseModalities: ["TEXT", "IMAGE"],
-          // Steer the output toward the video's shape; the field is best-effort
-          // and ignored by builds that don't support it.
-          imageConfig: { aspectRatio },
-        },
-      };
-      const json = await postGenerateContent({
-        model: IMAGE_MODEL,
-        apiKey,
-        body,
-        timeoutMs: IMAGE_TIMEOUT_MS,
-      });
-      const bytes = inlineBytesOrThrow(IMAGE_MODEL, json);
-      await writeFileAtomic(outPath, bytes);
-    },
-  };
-}
-
-function createMusicProvider(apiKey: string): MusicProvider {
-  // UNVERIFIED surface (see MUSIC_MODEL note). Shaped like image/TTS so it slots
-  // into the same generateContent path; the caller falls back on any throw.
-  const generate = async (prompt: string, outPath: string): Promise<void> => {
-    const body = { contents: [{ parts: [{ text: prompt }] }] };
-    const json = await postGenerateContent({
-      model: MUSIC_MODEL,
-      apiKey,
-      body,
-      timeoutMs: MUSIC_TIMEOUT_MS,
-    });
-    const bytes = inlineBytesOrThrow(MUSIC_MODEL, json);
-    await writeFileAtomic(outPath, bytes);
-  };
-  return {
-    id: "gemini-music",
-    bed(
-      directionText: string,
-      seconds: number,
-      outPath: string
-    ): Promise<void> {
-      return generate(buildMusicPrompt(directionText, seconds, false), outPath);
-    },
-    song(
-      directionText: string,
-      seconds: number,
-      outPath: string
-    ): Promise<void> {
-      return generate(buildMusicPrompt(directionText, seconds, true), outPath);
-    },
-  };
 }
 
 // Map pixel geometry to one of the aspect-ratio strings the image model accepts.
@@ -452,14 +324,261 @@ export function aspectRatioFor(width: number, height: number): string {
   return best.label;
 }
 
+// The shape of a `response_format` request object. `type` is required; the image
+// fields are optional and ignored for audio.
+interface ResponseFormat {
+  aspect_ratio?: string;
+  image_size?: string;
+  mime_type?: string;
+  type: InteractionMediaType;
+}
+
+// Build the Interactions API request body. Pure (no network, no fs) so the body
+// shape is unit-tested directly. `input` is sent as a plain string (the docs
+// accept a string or an array of `{type,text}`/`{type:"image",...}` parts; a
+// string is the simplest form for our text-only prompts). Output modality is
+// requested via `response_format` per the concrete per-feature doc examples.
+//
+// NOTE: the API reference also documents a `response_modalities: ["image"|...]`
+// array as an alternative to `response_format`. Every per-feature example uses
+// `response_format`, so we send that; flip here if a live call rejects it.
+export function buildInteractionBody(args: {
+  model: string;
+  input: string;
+  responseFormat: ResponseFormat;
+  // TTS only: generation_config.speech_config voices.
+  speechVoice?: string;
+}): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: args.model,
+    input: args.input,
+    response_format: args.responseFormat,
+  };
+  if (args.speechVoice) {
+    // speech_config is an ARRAY of speaker configs; single-speaker = one entry.
+    body.generation_config = {
+      speech_config: [{ voice: args.speechVoice }],
+    };
+  }
+  return body;
+}
+
+// Read the Gemini API key from the env. Accepts either documented var name.
+// Returns undefined when neither is set. The key value itself is never logged.
+export function readApiKey(env: NodeJS.ProcessEnv): string | undefined {
+  const key = env.GEMINI_API_KEY ?? env.GOOGLE_GENAI_API_KEY;
+  const trimmed = key?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// HTTP + file helpers (network; not unit-tested — covered by manual/live runs).
+// ---------------------------------------------------------------------------
+
+// POST an interaction request and return the parsed JSON body. Throws a clean
+// Error (carrying NEITHER the key NOR the request text) on a non-2xx or transport
+// failure. Uses the global fetch with an AbortSignal timeout.
+async function postInteraction(args: {
+  model: string;
+  apiKey: string;
+  body: unknown;
+  timeoutMs: number;
+}): Promise<unknown> {
+  const { model, apiKey, body, timeoutMs } = args;
+  let response: Response;
+  try {
+    response = await fetch(INTERACTIONS_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        // Key travels in the header form, never in the URL or logs.
+        "x-goog-api-key": apiKey,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    // Network/timeout. Surface a short reason without the request payload.
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Gemini ${model} request failed: ${reason}`);
+  }
+  if (!response.ok) {
+    // Status only — the body can echo request text, so we don't include it.
+    throw new Error(`Gemini ${model} returned HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+// Decode an interaction response to media bytes (+ mime) or throw. Centralizes
+// the "empty/missing media" error so every provider fails the same clean way.
+function mediaOrThrow(
+  model: string,
+  body: unknown,
+  wantType: InteractionMediaType
+): { bytes: Buffer; mimeType: string } {
+  const found = extractInteractionMedia(body, wantType);
+  if (!found || found.bytes.length === 0) {
+    throw new Error(`Gemini ${model} returned no media bytes`);
+  }
+  return found;
+}
+
+// Write bytes to `outPath` atomically: write a sibling temp first, then rename,
+// so a crash mid-write never leaves a partial/0-byte file the caller might use.
+async function writeFileAtomic(outPath: string, bytes: Buffer): Promise<void> {
+  if (bytes.length === 0) {
+    throw new Error("refusing to write 0 bytes");
+  }
+  const tmp = `${outPath}.tmp-${process.pid}`;
+  try {
+    await writeFile(tmp, bytes);
+    await rename(tmp, outPath);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+}
+
+// Audio can come back as raw PCM (Gemini TTS: `audio/l16` / `audio/pcm`) or as a
+// real container (Lyria: `audio/mpeg` mp3, or `audio/wav`). ffmpeg decodes by
+// content, so for a container we write the bytes through unchanged; only raw PCM
+// needs a WAV header wrapped around it. Returns the bytes to write to `outPath`.
+function audioBytesForWriting(bytes: Buffer, mimeType: string): Buffer {
+  const mime = mimeType.toLowerCase();
+  const isRawPcm = mime.includes("l16") || mime.includes("pcm");
+  if (isRawPcm) {
+    return pcmToWav(bytes, TTS_SAMPLE_RATE, TTS_CHANNELS);
+  }
+  return bytes;
+}
+
+// ---------------------------------------------------------------------------
+// Provider factories. Each closes over the key + logger; the key never leaves.
+// ---------------------------------------------------------------------------
+
+function createTtsProvider(
+  apiKey: string,
+  env: NodeJS.ProcessEnv
+): TtsProvider {
+  // One voice for the whole session: every step's clip uses it, and `label`
+  // carries it (e.g. "gemini:Charon") so a good run can be reproduced via
+  // $CANARY_TTS_VOICE.
+  const voice = pickTtsVoice(env);
+  return {
+    id: "gemini-tts",
+    label: `gemini:${voice}`,
+    async synthesize(text: string, outPath: string): Promise<void> {
+      const body = buildInteractionBody({
+        model: TTS_MODEL,
+        input: buildTtsPrompt(text),
+        responseFormat: { type: "audio" },
+        speechVoice: voice,
+      });
+      const json = await postInteraction({
+        model: TTS_MODEL,
+        apiKey,
+        body,
+        timeoutMs: TTS_TIMEOUT_MS,
+      });
+      const { bytes, mimeType } = mediaOrThrow(TTS_MODEL, json, "audio");
+      // Raw PCM → wrap as WAV; a container passes through unchanged.
+      await writeFileAtomic(outPath, audioBytesForWriting(bytes, mimeType));
+    },
+  };
+}
+
+function createTitleBackgroundProvider(
+  apiKey: string
+): TitleBackgroundProvider {
+  return {
+    id: "gemini-image",
+    async render(
+      directionText: string,
+      width: number,
+      height: number,
+      outPath: string
+    ): Promise<void> {
+      const body = buildInteractionBody({
+        model: IMAGE_MODEL,
+        input: buildImagePrompt(directionText),
+        responseFormat: {
+          type: "image",
+          // Steer the output toward the video's shape; best-effort fields.
+          aspect_ratio: aspectRatioFor(width, height),
+        },
+      });
+      const json = await postInteraction({
+        model: IMAGE_MODEL,
+        apiKey,
+        body,
+        timeoutMs: IMAGE_TIMEOUT_MS,
+      });
+      const { bytes } = mediaOrThrow(IMAGE_MODEL, json, "image");
+      // Image bytes (png/jpg) are a real container; write through unchanged.
+      await writeFileAtomic(outPath, bytes);
+    },
+  };
+}
+
+function createMusicProvider(apiKey: string): MusicProvider {
+  const generate = async (
+    model: string,
+    prompt: string,
+    outPath: string
+  ): Promise<void> => {
+    const body = buildInteractionBody({
+      model,
+      input: prompt,
+      responseFormat: { type: "audio" },
+    });
+    const json = await postInteraction({
+      model,
+      apiKey,
+      body,
+      timeoutMs: MUSIC_TIMEOUT_MS,
+    });
+    const { bytes, mimeType } = mediaOrThrow(model, json, "audio");
+    // Lyria returns an mp3 (or wav) container; write through unchanged. The
+    // raw-PCM branch is defensive and won't trigger for Lyria's containers.
+    await writeFileAtomic(outPath, audioBytesForWriting(bytes, mimeType));
+  };
+  return {
+    id: "gemini-music",
+    bed(
+      directionText: string,
+      seconds: number,
+      outPath: string
+    ): Promise<void> {
+      // Instrumental bed → the fixed ~30s clip model.
+      return generate(
+        MUSIC_CLIP_MODEL,
+        buildMusicPrompt(directionText, seconds, false),
+        outPath
+      );
+    },
+    song(
+      directionText: string,
+      seconds: number,
+      outPath: string
+    ): Promise<void> {
+      // Full song → the full-length pro model.
+      return generate(
+        MUSIC_PRO_MODEL,
+        buildMusicPrompt(directionText, seconds, true),
+        outPath
+      );
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Resolver.
 // ---------------------------------------------------------------------------
 
 // Returns Gemini-backed providers when a key is set; otherwise {} (just notes),
 // so the caller falls back to its local say/drawtext/no-music paths. Each
-// capability is independent: TTS and image use verified generateContent shapes;
-// music is wired but UNVERIFIED (a throw there falls back to no-music).
+// capability is independent: a throw in any one falls back without affecting the
+// others.
 export function resolveMediaProviders(opts: {
   env: NodeJS.ProcessEnv;
   log: Logger;
@@ -480,7 +599,7 @@ export function resolveMediaProviders(opts: {
     titleBackground: createTitleBackgroundProvider(apiKey),
     music: createMusicProvider(apiKey),
     notes: [
-      "Gemini media providers enabled: TTS + title background are verified; music (Lyria) is UNVERIFIED and may fall back. Session-derived text is sent to Google.",
+      "Gemini media providers enabled (Interactions API): generated narration, title background, and music. Session-derived text is sent to Google.",
     ],
   };
 }

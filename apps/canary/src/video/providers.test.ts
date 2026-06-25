@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   aspectRatioFor,
   buildImagePrompt,
+  buildInteractionBody,
   buildMusicPrompt,
   buildTtsPrompt,
-  extractInlineData,
+  extractInteractionMedia,
   pcmToWav,
   pickTtsVoice,
   readApiKey,
@@ -66,67 +67,170 @@ describe("pcmToWav", () => {
   });
 });
 
-describe("extractInlineData", () => {
-  it("decodes the first inlineData base64 part to a Buffer", () => {
+describe("extractInteractionMedia", () => {
+  it("finds an audio block in steps[].content[]", () => {
     const payload = Buffer.from("hello media");
     const body = {
-      candidates: [
+      steps: [
         {
-          content: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType: "audio/L16;rate=24000",
-                  data: payload.toString("base64"),
-                },
-              },
-            ],
-          },
+          content: [
+            { type: "text", text: "here is your audio" },
+            {
+              type: "audio",
+              mime_type: "audio/L16;rate=24000",
+              data: payload.toString("base64"),
+            },
+          ],
         },
       ],
     };
-    const found = extractInlineData(body);
+    const found = extractInteractionMedia(body, "audio");
     expect(found).not.toBeNull();
     expect(found?.bytes.equals(payload)).toBe(true);
     expect(found?.mimeType).toBe("audio/L16;rate=24000");
   });
 
-  it("skips text parts and finds inlineData later in the list", () => {
-    const payload = Buffer.from("img");
+  it("finds an image block and ignores audio blocks when image is wanted", () => {
+    const img = Buffer.from("img");
+    const audio = Buffer.from("aud");
     const body = {
-      candidates: [
+      steps: [
         {
-          content: {
-            parts: [
-              { text: "here is your image" },
-              {
-                inlineData: {
-                  mimeType: "image/png",
-                  data: payload.toString("base64"),
-                },
-              },
-            ],
-          },
+          content: [
+            {
+              type: "audio",
+              mime_type: "audio/mpeg",
+              data: audio.toString("base64"),
+            },
+            {
+              type: "image",
+              mime_type: "image/png",
+              data: img.toString("base64"),
+            },
+          ],
         },
       ],
     };
-    expect(extractInlineData(body)?.bytes.equals(payload)).toBe(true);
+    const found = extractInteractionMedia(body, "image");
+    expect(found?.bytes.equals(img)).toBe(true);
+    expect(found?.mimeType).toBe("image/png");
   });
 
-  it("returns null on a missing / malformed shape", () => {
-    expect(extractInlineData(null)).toBeNull();
-    expect(extractInlineData({})).toBeNull();
-    expect(extractInlineData({ candidates: [] })).toBeNull();
+  it("reads the convenience output_image / output_audio fields", () => {
+    const img = Buffer.from("conv-image");
     expect(
-      extractInlineData({
-        candidates: [{ content: { parts: [{ text: "x" }] } }],
-      })
-    ).toBeNull();
+      extractInteractionMedia(
+        {
+          output_image: {
+            mime_type: "image/jpeg",
+            data: img.toString("base64"),
+          },
+        },
+        "image"
+      )?.bytes.equals(img)
+    ).toBe(true);
+
+    const aud = Buffer.from("conv-audio");
+    const foundAudio = extractInteractionMedia(
+      {
+        output_audio: { mime_type: "audio/mpeg", data: aud.toString("base64") },
+      },
+      "audio"
+    );
+    expect(foundAudio?.bytes.equals(aud)).toBe(true);
+    expect(foundAudio?.mimeType).toBe("audio/mpeg");
+  });
+
+  it("unwraps a top-level `interaction` envelope if present", () => {
+    const img = Buffer.from("wrapped-image");
+    const body = {
+      interaction: {
+        steps: [
+          {
+            content: [
+              {
+                type: "image",
+                mime_type: "image/png",
+                data: img.toString("base64"),
+              },
+            ],
+          },
+        ],
+      },
+    };
+    expect(extractInteractionMedia(body, "image")?.bytes.equals(img)).toBe(
+      true
+    );
+  });
+
+  it("returns null when the wanted media type is absent or malformed", () => {
+    expect(extractInteractionMedia(null, "image")).toBeNull();
+    expect(extractInteractionMedia({}, "audio")).toBeNull();
+    expect(extractInteractionMedia({ steps: [] }, "image")).toBeNull();
+    // Only a text block present → no audio.
     expect(
-      extractInlineData({
-        candidates: [{ content: { parts: [{ inlineData: { data: "" } }] } }],
-      })
+      extractInteractionMedia(
+        { steps: [{ content: [{ type: "text", text: "x" }] }] },
+        "audio"
+      )
     ).toBeNull();
+    // Right type but empty data → not usable.
+    expect(
+      extractInteractionMedia(
+        { steps: [{ content: [{ type: "image", data: "" }] }] },
+        "image"
+      )
+    ).toBeNull();
+    // Wanting image but only audio present.
+    expect(
+      extractInteractionMedia(
+        { output_audio: { data: Buffer.from("a").toString("base64") } },
+        "image"
+      )
+    ).toBeNull();
+  });
+});
+
+describe("buildInteractionBody", () => {
+  it("builds an image request with model, string input, and response_format", () => {
+    const body = buildInteractionBody({
+      model: "gemini-3.1-flash-image",
+      input: "a cinematic background",
+      responseFormat: { type: "image", aspect_ratio: "16:9" },
+    });
+    expect(body.model).toBe("gemini-3.1-flash-image");
+    expect(body.input).toBe("a cinematic background");
+    expect(body.response_format).toEqual({
+      type: "image",
+      aspect_ratio: "16:9",
+    });
+    // No speech config for non-TTS requests.
+    expect(body.generation_config).toBeUndefined();
+  });
+
+  it("builds a TTS request with speech_config voice array", () => {
+    const body = buildInteractionBody({
+      model: "gemini-3.1-flash-tts-preview",
+      input: "Read this aloud: hi",
+      responseFormat: { type: "audio" },
+      speechVoice: "Charon",
+    });
+    expect(body.model).toBe("gemini-3.1-flash-tts-preview");
+    expect(body.response_format).toEqual({ type: "audio" });
+    expect(body.generation_config).toEqual({
+      speech_config: [{ voice: "Charon" }],
+    });
+  });
+
+  it("builds an audio (music) request without speech config", () => {
+    const body = buildInteractionBody({
+      model: "lyria-3-clip-preview",
+      input: "an instrumental score",
+      responseFormat: { type: "audio" },
+    });
+    expect(body.model).toBe("lyria-3-clip-preview");
+    expect(body.response_format).toEqual({ type: "audio" });
+    expect(body.generation_config).toBeUndefined();
   });
 });
 
