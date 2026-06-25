@@ -272,3 +272,6 @@ last-opened tab and binds it to that step in the report. So:
   attach it, continue recording.
 - **Split / dropdown button submenus:** after clicking a button that reveals a submenu, snapshot
   immediately — before any `waitForSettled` or other call — to capture the menu while it's open.
+- **Cinematic mode is a `session end` flag.** Pass `--cinematic` (and `--open`) to
+  `npx @usecanary/cli session end`, not to `session start` or `run`. Re-running
+  `session end --cinematic` on an already-ended session is safe — it rebuilds the report idempotently.

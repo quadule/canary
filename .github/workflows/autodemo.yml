@@ -95,17 +95,81 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ runner.os }}-
       - run: pnpm build
       - name: Install ffmpeg and a font (title card / credits need drawtext + a font)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
-      - name: Install Playwright chromium
-        run: pnpm --filter @usecanary/daemon exec playwright install --with-deps chromium
+      # The browser comes from `canary install` below, which pins Chromium to the
+      # embedded daemon's runtime Playwright version (@usecanary/protocol's
+      # DAEMON_RUNTIME_DEPENDENCIES). We deliberately do NOT download it via the
+      # daemon package here — that would tie the CI browser to the package's
+      # dev-dep rather than the runtime pin. So this step installs only the apt
+      # system libs Chromium links against; `canary install` is the single
+      # source of the browser, and the ms-playwright cache holds the binary.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      # Cache only the daemon's npm deps (~/.canary/node_modules) — NOT
+      # ~/.canary/sessions, which a stale restore could feed to Finalize's
+      # `session list | .[0]` fallback. `canary install` still runs and
+      # reconciles, so a partial/stale cache is safe; this just skips the
+      # npm install on a hit.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.canary/node_modules
+          key: canary-runtime-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Install Chromium system dependencies
+        run: pnpm --filter @usecanary/daemon exec playwright install-deps chromium
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code
-      - name: Put the canary CLI on PATH
-        run: echo "$GITHUB_WORKSPACE/node_modules/.bin" >> "$GITHUB_PATH"
+      - name: Put the canary CLIs on PATH
+        # The root package is private with no `bin`, and nothing depends on
+        # @usecanary/cli, so pnpm never links a `canary` into node_modules/.bin.
+        # Symlink the built CLIs directly. (node resolves the symlink's realpath
+        # for import.meta.url, so the bundled daemon assets still resolve.)
+        run: |
+          mkdir -p "$HOME/.local/bin" "$HOME/.canary"
+          chmod +x "$GITHUB_WORKSPACE/apps/canary/dist/cli.js" "$GITHUB_WORKSPACE/apps/canary-browser/dist/cli.js"
+          ln -sf "$GITHUB_WORKSPACE/apps/canary/dist/cli.js" "$HOME/.local/bin/canary"
+          ln -sf "$GITHUB_WORKSPACE/apps/canary-browser/dist/cli.js" "$HOME/.local/bin/canary-browser"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Verify the canary CLIs are runnable
+        # Fail fast and cheaply: if the CLI isn't on PATH the agent would
+        # otherwise flail for minutes hitting permission walls (every fallback
+        # `ls`/`cat`/`find` is denied by the `Bash(canary *)` allowlist, and in
+        # headless `-p` mode a denial is returned to the model as a retryable
+        # error). This step turns that whole failure class into a ~2s job failure
+        # before the agent — and any API spend — starts.
+        run: |
+          canary --version
+          canary-browser --help >/dev/null
+      - name: Install the canary daemon runtime
+        # Set up canary's embedded daemon NOW, in a free CI step — not lazily
+        # inside the agent. Last run the agent's first `canary session start`
+        # died with "Embedded daemon dependencies are missing. Run `canary
+        # install`", then ran the ~150 MB download mid-turn (burning agent
+        # wall-clock/tokens). This extracts the daemon bundle, npm-installs its
+        # deps into ~/.canary/node_modules, and downloads the runtime-pinned
+        # Chromium into ~/.cache/ms-playwright. Both are cached above; the apt
+        # libs come from the install-deps step. Idempotent — a cache hit makes it
+        # near-free, and it reconciles a stale cached node_modules (the
+        # ~/.canary cache key tracks pnpm-lock, which a protocol-only version
+        # bump doesn't change, so canary install is what actually upgrades it).
+        run: canary install
 
       - name: Record the demo with the canary-verify agent
+        # Hard wall-clock ceiling so a flailing agent can never run unbounded.
+        # A normal recording is a few minutes; tune this down once we have a
+        # baseline from a green run. This pairs with the --max-budget-usd cap
+        # below: the dollar cap bounds cost, but denied-command flail is nearly
+        # free and would loop a long time before it trips, so the timeout is the
+        # reliable backstop on wall-clock.
+        timeout-minutes: 12
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -128,19 +192,39 @@ jobs:
           # interpolated as DATA: bash does not re-evaluate command substitutions
           # that live inside a variable's value, so a crafted PR body can't inject.
           PROMPT=$(printf '%s\n' \
-            "Use the canary-verify agent and skills in this repo to record a short browser demo of the change in this pull request." \
-            "Drive the app at: $RESOLVED" \
+            "Record a short browser demo of the user-facing flow in this pull request." \
+            "Target URL: $RESOLVED" \
             "" \
-            "PR description (use it to choose which user-facing flow to demonstrate):" \
+            "PR description:" \
             "$PR_BODY" \
             "" \
+            "Environment: this is a CI runner with NO display. Always pass --headless to" \
+            "'canary session start'. Do NOT attempt xvfb, Xvfb, or DISPLAY= — they are" \
+            "unavailable here and every such command will be denied. Do NOT pass --no-video;" \
+            "the recorded video is required for the cinematic cut." \
+            "" \
             "Steps:" \
-            "1. Read the canary-scripting reference, then start a Canary session and drive the single most important user-facing flow this PR affects, using humanClick/humanFill." \
-            "2. Do NOT run 'session end' — leave the session recorded." \
-            "3. Print the session id on its own line as: SESSION_ID=<id>")
+            "1. Use the canary:session-agent subagent to record the flow — it already knows" \
+            "   the Canary scripting API. Pass it the headless/no-xvfb constraints above." \
+            "2. Drive the single most important user-facing flow this PR adds or modifies," \
+            "   using humanClick/humanFill." \
+            "3. Do NOT run 'canary session end' — leave the session open; CI finalizes it." \
+            "4. Print the session id as: SESSION_ID=<id>")
           # The agent records the flow but does NOT end the session — the workflow
           # finalizes it below so the cinematic/theme decision stays in tested code.
-          claude -p "$PROMPT" --permission-mode acceptEdits 2>&1 | tee agent.log
+          claude -p "$PROMPT" \
+            --model claude-sonnet-4-6 \
+            --effort low \
+            --max-budget-usd 5 \
+            --permission-mode acceptEdits \
+            --allowedTools "Bash(canary *)" \
+            --add-dir "$HOME/.canary" \
+            --output-format stream-json \
+            --verbose \
+            --exclude-dynamic-system-prompt-sections \
+            --plugin-dir "$GITHUB_WORKSPACE" \
+            --append-system-prompt 'CI run: use the `canary` CLI directly (it is already on PATH) — never `npx @usecanary/cli` or any other npx form. The skill files mention `npx @usecanary/cli` because they target end-users; substitute `canary` for every such reference. This runner has NO display: always pass `--headless` to `canary session start`, and never attempt `xvfb`/`Xvfb`/`DISPLAY=` — those are unavailable and will be denied. Do not pass `--no-video`; the recorded video is required.' \
+            2>&1 | tee agent.log | grep -v '"subtype":"thinking_tokens"'
 
       - name: Finalize the cinematic cut
         id: finalize
