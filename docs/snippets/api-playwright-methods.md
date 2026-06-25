@@ -2,7 +2,7 @@
   `"domcontentloaded"` / `"networkidle"` (prefer `"domcontentloaded"` on dev servers)
 - `page.title()` / `page.url()` — current title / URL
 - `page.snapshotForAI(options)` — AI-optimized page outline; returns `{ full, incremental? }`;
-  options `{ track?, depth?, timeout? }`
+  options `{ track?, timeout? }` (omit `depth` — a shallow tree forces expensive fallbacks)
 - `page.getByRole(role, { name })` / `page.getByText(text)` — semantic locators (survive re-renders)
 - `page.textContent(sel)` / `page.innerText(sel)` / `page.innerHTML(sel)` /
   `page.getAttribute(sel, name)` — read by selector
@@ -19,6 +19,11 @@
 - `page.showCaption(text, opts?)` — Canary helper: overlay a short caption on the page to label a
   moment in the recording for a human viewer; fades after `opts.durationMs` (default 3000).
   Cosmetic only — use sparingly, not to echo step names
+- `page.showSpotlight(target?)` — Canary helper: animate a spotlight vignette to focus on an
+  element (`target` is a selector or locator). The spotlight opens wide then tightens to
+  circumscribe the element's bounding box, drawing the reviewer's eye before you interact.
+  Omit `target` to spotlight the current cursor position. Use for subtle elements a viewer
+  might miss — validation errors, small toggles, non-obvious fields
 - `page.waitForSettled(opts?)` — Canary helper: wait (bounded) for the page to stop changing —
   document load then DOM-mutation quiescence (`opts.quietMs`, `opts.timeoutMs`). Framework-agnostic
   and won't hang on live connections (it watches the DOM, not the network). Use before observing an

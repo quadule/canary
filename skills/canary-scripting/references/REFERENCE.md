@@ -62,7 +62,7 @@ https://playwright.dev/docs/api/class-page
   `"domcontentloaded"` / `"networkidle"` (prefer `"domcontentloaded"` on dev servers)
 - `page.title()` / `page.url()` — current title / URL
 - `page.snapshotForAI(options)` — AI-optimized page outline; returns `{ full, incremental? }`;
-  options `{ track?, depth?, timeout? }`
+  options `{ track?, timeout? }` (omit `depth` — a shallow tree forces expensive fallbacks)
 - `page.getByRole(role, { name })` / `page.getByText(text)` — semantic locators (survive re-renders)
 - `page.textContent(sel)` / `page.innerText(sel)` / `page.innerHTML(sel)` /
   `page.getAttribute(sel, name)` — read by selector
@@ -79,6 +79,11 @@ https://playwright.dev/docs/api/class-page
 - `page.showCaption(text, opts?)` — Canary helper: overlay a short caption on the page to label a
   moment in the recording for a human viewer; fades after `opts.durationMs` (default 3000).
   Cosmetic only — use sparingly, not to echo step names
+- `page.showSpotlight(target?)` — Canary helper: animate a spotlight vignette to focus on an
+  element (`target` is a selector or locator). The spotlight opens wide then tightens to
+  circumscribe the element's bounding box, drawing the reviewer's eye before you interact.
+  Omit `target` to spotlight the current cursor position. Use for subtle elements a viewer
+  might miss — validation errors, small toggles, non-obvious fields
 - `page.waitForSettled(opts?)` — Canary helper: wait (bounded) for the page to stop changing —
   document load then DOM-mutation quiescence (`opts.quietMs`, `opts.timeoutMs`). Framework-agnostic
   and won't hang on live connections (it watches the DOM, not the network). Use before observing an
@@ -114,9 +119,10 @@ Semantic factories (also `Locator`): `page.getByRole(role, { name })`, `page.get
   page: roles, accessible names, `[ref=eN]` markers on actionable nodes. Read it to pick a
   semantic selector — `page.getByRole("button", { name: "Continue" })`,
   `page.getByText("Sign in")` — then act.
-- Options `{ track?, depth?, timeout? }`: re-run `page.snapshotForAI({ track: "main" })` after
-  the page changes to get just the `incremental` diff; `{ depth: N }` caps the tree on huge
-  pages; `timeout` bounds the walk.
+- Options `{ track?, timeout? }`: re-run `page.snapshotForAI({ track: "main" })` after the page
+  changes to get just the `incremental` diff; `timeout` bounds the walk. Don't pass `depth` —
+  a shallow snapshot silently omits elements, causing avoidable fallback to screenshots or full
+  HTML.
 - `page.locator("aria-ref=e12")` works for an immediate action in the same script only — refs go
   stale across steps and after navigations. Prefer re-deriving a semantic selector.
 <!-- canary:end api-snapshot -->
@@ -191,8 +197,9 @@ Semantic factories (also `Locator`): `page.getByRole(role, { name })`, `page.get
 <!-- canary:end rule-visible-interaction -->
 
 Keeping it small: snapshot once to orient; after the page changes, use `{ track }` incrementals
-instead of a full re-dump. Pass `{ depth: N }` on huge pages, or skip the snapshot and read just
-the region you care about with targeted `locator(sel).count()` / `.innerText()`.
+instead of a full re-dump. If you only need a specific value, skip the snapshot entirely and read
+it directly with `locator(sel).innerText()` / `.count()`. Don't limit depth — a truncated
+snapshot causes consecutive observe steps and expensive screenshot fallbacks.
 
 <!-- canary:snippet ex-snapshot fenced=js -->
 ```js
