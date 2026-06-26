@@ -68,11 +68,6 @@ as it records.
   Do NOT clear the user's ToS acceptance — that prompt IS the point, and the environment was likely
   prepared so it shows.) Reading the code or inspecting state to understand the flow is fine, but
   only AFTER you've attempted to drive it from the browser, and strictly read-only — never mutate.
-- Blocked by something only an operator can do (no login credentials, a feature flag, manual setup)?
-  In an INTERACTIVE session, STOP and ask the user — they may have set it up already. In an
-  AUTONOMOUS / CI run, proceed carefully but never bypass or fake what's under test; if you're truly
-  blocked, end the session and report exactly what blocked you, with the evidence — never fabricate a
-  pass or quietly skip the step under test.
 - Weigh what you were asked. Verifying a change or feature → be conservative: the setup IS the test,
   so touch nothing and drive exactly what a real user would. Only performing or recording a workflow
   (no pass/fail claim) → more leeway to arrange incidental preconditions, but still drive as a real
@@ -97,8 +92,9 @@ The difference from the autonomous flow is just *who decides*:
   guessing. You're in the main thread — a question is cheap.
 - **Hand over when you can't.** Some steps aren't yours to do: logging in with the user's
   credentials, flipping a feature flag, changing company settings, dismissing a one-time dialog,
-  anything off the happy path. Hand the user the live browser, let them do it, and capture what
-  they did as a recorded step (see *Manual takeover*).
+  anything off the happy path. Don't manufacture the precondition yourself (no console / DB / API) —
+  hand the user the live browser, let them do it, and capture what they did as a recorded step (see
+  *Manual takeover*). Or just ask: they may have set it up for you already.
 
 ## When to use
 

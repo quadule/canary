@@ -67,16 +67,20 @@ renders a self-contained `report.html`.
   Do NOT clear the user's ToS acceptance — that prompt IS the point, and the environment was likely
   prepared so it shows.) Reading the code or inspecting state to understand the flow is fine, but
   only AFTER you've attempted to drive it from the browser, and strictly read-only — never mutate.
-- Blocked by something only an operator can do (no login credentials, a feature flag, manual setup)?
-  In an INTERACTIVE session, STOP and ask the user — they may have set it up already. In an
-  AUTONOMOUS / CI run, proceed carefully but never bypass or fake what's under test; if you're truly
-  blocked, end the session and report exactly what blocked you, with the evidence — never fabricate a
-  pass or quietly skip the step under test.
 - Weigh what you were asked. Verifying a change or feature → be conservative: the setup IS the test,
   so touch nothing and drive exactly what a real user would. Only performing or recording a workflow
   (no pass/fail claim) → more leeway to arrange incidental preconditions, but still drive as a real
   user and never mutate what the run is meant to show.
 <!-- canary:end rule-test-as-user -->
+
+<!-- canary:snippet rule-blocked-autonomous -->
+- No live user to ask here. Blocked by something only an operator can do (no login credentials, a
+  feature flag, a settings change, manual setup)? Do NOT brute-force it, manufacture it (console /
+  DB / API / seed), fake it, or silently skip it — that defeats the test. End the session so the
+  report still captures what you got, then report exactly what blocked you, with the evidence — never
+  fabricate a pass. If a human could unblock it, say the flow needs the interactive variant
+  (canary-session-interactive), where someone can take over the live browser.
+<!-- canary:end rule-blocked-autonomous -->
 
 <!-- canary:snippet rule-scripting-reference cli=npx-cli -->
 - The canary-scripting skill is the full scripting reference — the custom page and locator API, the
