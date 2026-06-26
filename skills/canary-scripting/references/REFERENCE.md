@@ -125,6 +125,14 @@ https://playwright.dev/docs/api/class-page
 - `page.reload()` / `page.goBack()` / `page.goForward()` — history;
   `page.content()` / `page.setContent(html)` — full HTML
 - `page.on("console", handler)` — observe page console events
+- Browser dialogs (`alert` / `confirm` / `prompt`) freeze the page until answered. By default
+  Canary fails the step on an unanswered one (it dismisses the dialog — cancelling whatever opened
+  it — and reports a clear error) so a silently-cancelled flow can't pass unnoticed. When a flow
+  expects a dialog, say so **before** the action that triggers it: `await page.acceptDialogs()`
+  (click OK / confirm), `await page.dismissDialogs()` (cancel quietly, no failure), or
+  `await page.failOnDialogs()` to restore the strict default. The choice lasts for the current step
+  only. A standard `page.on("dialog", …)` handler does **not** work — Canary answers dialogs itself
+  — so use these methods.
 <!-- canary:end api-playwright-methods -->
 
 ## `Locator` — `page.locator(selector)`

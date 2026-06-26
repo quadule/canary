@@ -1251,4 +1251,149 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       expect(result.mouseResult).toBeNull();
     }, 15_000);
   });
+
+  describe.sequential("dialogs", () => {
+    const browserName = "playwright-dialogs";
+
+    beforeAll(async () => {
+      await manager.ensureBrowser(browserName, { headless: true });
+    }, 180_000);
+
+    // A low-level runner: unlike the JSON harness it tolerates stderr and
+    // surfaces whether the script threw, so we can assert the failure path.
+    async function runScript(
+      script: string
+    ): Promise<{ stdout: string; stderr: string; error?: string }> {
+      const output = createOutput();
+      const sandbox = new QuickJSSandbox({
+        manager,
+        browserName,
+        onStdout: output.sink.onStdout,
+        onStderr: output.sink.onStderr,
+        timeoutMs: SANDBOX_TIMEOUT_MS,
+      });
+      await sandbox.initialize();
+      let error: string | undefined;
+      try {
+        await sandbox.executeScript(`(async () => {\n${script}\n})()`);
+      } catch (caught) {
+        error = caught instanceof Error ? caught.message : String(caught);
+      } finally {
+        await sandbox.dispose();
+      }
+      return {
+        stdout: output.stdout.join(""),
+        stderr: output.stderr.join(""),
+        error,
+      };
+    }
+
+    const confirmPage = (pageName: string) => `
+      const page = await browser.getPage(${JSON.stringify(pageName)});
+      await page.setContent(
+        '<button id="go" onclick="window.__r = confirm(\\'Delete this?\\')">go</button>',
+        { waitUntil: "load" }
+      );
+    `;
+
+    afterAll(async () => {
+      await manager.stopBrowser(browserName);
+    }, 180_000);
+
+    it("fails the step on an unhandled dialog, naming the dialog and the fix", async () => {
+      const result = await runScript(`
+        ${confirmPage("dialog-unhandled")}
+        await page.humanClick(page.locator("#go"));
+        await page.waitForTimeout(50);
+        console.log("STILL-RUNNING");
+      `);
+
+      // The step fails rather than silently passing, and the message is
+      // self-contained: dialog type, its text, and how to handle it.
+      const surfaced = `${result.error ?? ""}${result.stderr}`;
+      expect(surfaced).toContain("Unhandled confirm dialog");
+      expect(surfaced).toContain("Delete this?");
+      expect(surfaced).toContain("page.acceptDialogs()");
+      expect(result.error).toBeDefined();
+    }, 30_000);
+
+    it("leaves the page usable for the next step (dialog was dismissed)", async () => {
+      // First step trips the unhandled-dialog failure...
+      await runScript(`
+        ${confirmPage("dialog-recover")}
+        await page.humanClick(page.locator("#go"));
+      `);
+
+      // ...and the persistent page must NOT be frozen by a still-open dialog:
+      // a fresh step on the same page name should run normally.
+      const next = await runScript(`
+        const page = await browser.getPage("dialog-recover");
+        await page.setContent("<div id='ok'>ready</div>", { waitUntil: "load" });
+        console.log(await page.locator("#ok").textContent());
+      `);
+      expect(next.error).toBeUndefined();
+      expect(next.stdout).toContain("ready");
+    }, 30_000);
+
+    it("proceeds when the script opts into accepting dialogs", async () => {
+      const result = await runScript(`
+        ${confirmPage("dialog-accept")}
+        await page.acceptDialogs();
+        await page.humanClick(page.locator("#go"));
+        console.log(JSON.stringify({ r: await page.evaluate(() => window.__r) }));
+      `);
+
+      expect(result.error).toBeUndefined();
+      expect(result.stderr).toBe("");
+      expect(JSON.parse(result.stdout.trim().split("\n").at(-1)!)).toEqual({
+        r: true,
+      });
+    }, 30_000);
+
+    it("fails with pointed guidance when a script uses the unsupported page.on('dialog')", async () => {
+      const result = await runScript(`
+        ${confirmPage("dialog-scripted")}
+        page.on("dialog", (d) => d.accept());
+        await page.humanClick(page.locator("#go"));
+        await page.waitForTimeout(50);
+      `);
+
+      // Canary owns dialog delivery, so the listener never fires. Rather than
+      // hang, the step fails and points at the supported override.
+      const surfaced = `${result.error ?? ""}${result.stderr}`;
+      expect(surfaced).toContain('page.on("dialog"');
+      expect(surfaced).toContain("page.acceptDialogs()");
+      expect(result.error).toBeDefined();
+    }, 30_000);
+
+    it("resets the dialog policy each step (accept does not leak forward)", async () => {
+      // Step 1 accepts on this page...
+      const first = await runScript(`
+        ${confirmPage("dialog-reset")}
+        await page.acceptDialogs();
+        await page.humanClick(page.locator("#go"));
+        console.log(JSON.stringify({ r: await page.evaluate(() => window.__r) }));
+      `);
+      expect(first.error).toBeUndefined();
+      expect(JSON.parse(first.stdout.trim().split("\n").at(-1)!)).toEqual({
+        r: true,
+      });
+
+      // ...step 2 on the SAME page must start strict again: an unhandled dialog
+      // fails, so accept can't quietly harden into boilerplate.
+      const second = await runScript(`
+        const page = await browser.getPage("dialog-reset");
+        await page.setContent(
+          '<button id="go2" onclick="confirm(\\'Again?\\')">go</button>',
+          { waitUntil: "load" }
+        );
+        await page.humanClick(page.locator("#go2"));
+        await page.waitForTimeout(50);
+      `);
+      expect(`${second.error ?? ""}${second.stderr}`).toContain(
+        "Unhandled confirm dialog"
+      );
+      expect(second.error).toBeDefined();
+    }, 45_000);
+  });
 });

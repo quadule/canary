@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import util from "node:util";
 
-import type { Page } from "playwright";
+import type { Dialog, Page } from "playwright";
 
 import type { BrowserManager } from "../browser-manager.js";
 import { CURSOR_GLIDE_MS } from "../session-cursor.js";
@@ -257,6 +257,18 @@ export class QuickJSSandbox {
   readonly #transportInbox: string[] = [];
 
   #asyncError?: Error;
+  // Dialog handling is daemon-side (the forked client in the sandbox can't
+  // reliably receive dialog events in this setup). All three maps below are
+  // per-sandbox — and a sandbox is recreated for every step — so a script's
+  // dialog choices never leak into a later step and never become invisible
+  // boilerplate. #dialogGuards tracks the listeners we added so dispose() can
+  // detach them from the (persistent) page. #dialogPolicies holds per-page
+  // overrides set via page.acceptDialogs()/dismissDialogs(). #dialogScripted
+  // holds pages where the script registered its OWN page.on("dialog"), so the
+  // guard steps aside and lets that handler own the dialog.
+  readonly #dialogGuards = new Map<Page, (dialog: Dialog) => void>();
+  readonly #dialogPolicies = new Map<string, "accept" | "dismiss" | "fail">();
+  readonly #dialogScripted = new Set<string>();
   #host?: QuickJSHost;
   #hostBridge?: HostBridge;
   #flushPromise?: Promise<void>;
@@ -290,6 +302,8 @@ export class QuickJSSandbox {
           writeFile: (name, data) => this.#writeTempFile(name, data),
           readFile: (name) => this.#readTempFile(name),
           readUploadFile: (name) => this.#readUploadFile(name),
+          setDialogPolicy: (guid, action) =>
+            this.#setDialogPolicy(guid, action),
         },
         onConsole: (level, args) => {
           this.#routeConsole(level, args);
@@ -1040,6 +1054,26 @@ export class QuickJSSandbox {
               page.reveal = async (target) => {
                 await revealAndGlide(page, resolveLocator(page, target));
               };
+              // Tell Canary how to answer browser dialogs (alert/confirm/prompt)
+              // on this page. By default an unanswered dialog FAILS the step (it
+              // blocks the page and silently cancels the action that opened it),
+              // so opt in deliberately, before the action that triggers it:
+              //   await page.acceptDialogs();   // click OK / confirm
+              //   await page.dismissDialogs();  // cancel quietly, no failure
+              //   await page.failOnDialogs();    // back to the strict default
+              // The choice lasts for this step only (the next step starts strict
+              // again) so auto-answering never hardens into invisible boilerplate.
+              // (A standard page.on("dialog", ...) handler does NOT work here —
+              // Canary answers dialogs daemon-side — so use these methods.)
+              page.acceptDialogs = async () => {
+                await hostCall("setDialogPolicy", JSON.stringify([page._guid, "accept"]));
+              };
+              page.dismissDialogs = async () => {
+                await hostCall("setDialogPolicy", JSON.stringify([page._guid, "dismiss"]));
+              };
+              page.failOnDialogs = async () => {
+                await hostCall("setDialogPolicy", JSON.stringify([page._guid, "fail"]));
+              };
               return page;
             };
 
@@ -1171,6 +1205,19 @@ export class QuickJSSandbox {
 
     this.#disposed = true;
 
+    // Detach the dialog guards we added — the pages outlive this sandbox, so a
+    // leftover listener would write into a disposed sandbox on a later step.
+    for (const [page, handler] of this.#dialogGuards) {
+      try {
+        page.off("dialog", handler);
+      } catch {
+        // Page may already be closed; nothing to detach.
+      }
+    }
+    this.#dialogGuards.clear();
+    this.#dialogPolicies.clear();
+    this.#dialogScripted.clear();
+
     await this.#cleanupAnonymousPages({
       suppressErrors: true,
     });
@@ -1206,6 +1253,8 @@ export class QuickJSSandbox {
       return;
     }
 
+    this.#trackDialogSubscription(message);
+
     const operation = this.#hostBridge
       .receiveFromSandbox(message)
       .catch((error: unknown) => {
@@ -1216,6 +1265,32 @@ export class QuickJSSandbox {
       });
 
     this.#pendingHostOperations.add(operation);
+  }
+
+  // The forked client sends an updateSubscription message when a script adds or
+  // removes a page.on("dialog") listener. Watching it here lets the daemon-side
+  // guard defer to a script that wants to own its dialogs, without the daemon and
+  // the script racing to answer the same dialog. The message guid is the page
+  // guid — the same one #getPage handed the sandbox.
+  #trackDialogSubscription(message: string): void {
+    let parsed: { guid?: unknown; method?: unknown; params?: unknown };
+    try {
+      parsed = JSON.parse(message) as typeof parsed;
+    } catch {
+      return;
+    }
+    if (parsed.method !== "updateSubscription") {
+      return;
+    }
+    const params = parsed.params as { event?: unknown; enabled?: unknown };
+    if (params?.event !== "dialog" || typeof parsed.guid !== "string") {
+      return;
+    }
+    if (params.enabled) {
+      this.#dialogScripted.add(parsed.guid);
+    } else {
+      this.#dialogScripted.delete(parsed.guid);
+    }
   }
 
   async #drainAsyncOps(): Promise<void> {
@@ -1267,7 +1342,9 @@ export class QuickJSSandbox {
       this.#options.browserName,
       requireString(name, "Page name or targetId")
     );
-    return extractGuid(page);
+    const guid = extractGuid(page);
+    this.#guardDialogs(page, guid);
+    return guid;
   }
 
   async #newPage(): Promise<string> {
@@ -1276,7 +1353,77 @@ export class QuickJSSandbox {
     page.on("close", () => {
       this.#anonymousPages.delete(page);
     });
-    return extractGuid(page);
+    const guid = extractGuid(page);
+    this.#guardDialogs(page, guid);
+    return guid;
+  }
+
+  // Attach our dialog guard to a page exactly once per sandbox. The page object
+  // persists across steps, but each step is a fresh sandbox, so #dialogGuards is
+  // empty here at the start of every step and we re-attach (and re-detach on
+  // dispose) — closures never outlive their sandbox.
+  #guardDialogs(page: Page, guid: string): void {
+    if (this.#dialogGuards.has(page)) {
+      return;
+    }
+    const handler = (dialog: Dialog): void => {
+      void this.#handleDialog(guid, dialog);
+    };
+    this.#dialogGuards.set(page, handler);
+    page.on("dialog", handler);
+  }
+
+  // A browser dialog (alert/confirm/prompt) freezes the page's JS thread until
+  // it's answered, and Playwright would answer it silently — so a confirm()
+  // guarding the action a step just triggered gets cancelled, the flow stalls,
+  // and nothing in the run explains why. We answer every dialog deliberately and,
+  // by default, make an unanswered one fail the step loudly instead of passing.
+  async #handleDialog(guid: string, dialog: Dialog): Promise<void> {
+    const kind = dialog.type();
+    // beforeunload is the browser's "leave this page?" guard, not a test signal —
+    // accept it so navigations aren't blocked, and stay quiet.
+    if (kind === "beforeunload") {
+      await dialog.accept().catch(() => undefined);
+      return;
+    }
+    const policy = this.#dialogPolicies.get(guid) ?? "fail";
+    if (policy === "accept") {
+      await dialog.accept().catch(() => undefined);
+      return;
+    }
+    // Dismiss in every other case so the page is never left frozen for the next
+    // step. "dismiss" is a deliberate, quiet cancel; "fail" is the default.
+    await dialog.dismiss().catch(() => undefined);
+    if (policy === "dismiss") {
+      return;
+    }
+    const detail = dialog.message() ? ` "${dialog.message()}"` : "";
+    // A script that reached for the standard page.on("dialog", ...) gets a
+    // pointed message: Canary answers dialogs itself (the daemon owns the only
+    // delivery that works in the sandbox), so that listener never fires — the
+    // supported override is page.acceptDialogs()/dismissDialogs().
+    const message = this.#dialogScripted.has(guid)
+      ? `Unhandled ${kind} dialog${detail}. Canary answers browser dialogs itself, ` +
+        `so a page.on("dialog", ...) handler in a script never fires. Use ` +
+        "page.acceptDialogs() (click OK) or page.dismissDialogs() (cancel) before " +
+        "the action that opens the dialog. Canary dismissed this one and failed " +
+        "the step."
+      : `Unhandled ${kind} dialog${detail}. A browser dialog blocks the page until ` +
+        `it's answered; Canary dismissed it (which cancels the action that opened ` +
+        `it) and failed this step so it can't pass silently. If this flow expects ` +
+        "the dialog, say so before the action that triggers it: page.acceptDialogs() " +
+        "to click OK, or page.dismissDialogs() to cancel quietly.";
+    this.#options.onStderr(`[canary] ${message}\n`);
+    this.#asyncError ??= new Error(message);
+  }
+
+  #setDialogPolicy(guid: unknown, action: unknown): void {
+    const pageGuid = requireString(guid, "Page id");
+    const policy = requireString(action, "Dialog action");
+    if (policy !== "accept" && policy !== "dismiss" && policy !== "fail") {
+      throw new Error(`Unknown dialog action "${policy}"`);
+    }
+    this.#dialogPolicies.set(pageGuid, policy);
   }
 
   async #closePage(name: unknown): Promise<void> {
