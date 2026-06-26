@@ -59,8 +59,12 @@ https://playwright.dev/docs/api/class-page
 
 <!-- canary:snippet api-playwright-methods -->
 - `page.goto(url, { waitUntil: "domcontentloaded" })` — navigate; `waitUntil` is `"load"` /
-  `"domcontentloaded"` / `"networkidle"` (prefer `"domcontentloaded"` on dev servers)
-- `page.title()` / `page.url()` — current title / URL
+  `"domcontentloaded"` / `"networkidle"` (prefer `"domcontentloaded"` on dev servers; `"networkidle"`
+  can hang on apps with long-lived HTTP — SSE, long-polling, heartbeats — though an open WebSocket
+  alone does not block it)
+- `page.title()` / `page.url()` — current title / URL (note: `page.url()` is client-cached and lags a
+  Turbo/SPA nav until it commits — to confirm a navigation use `humanClickAndWaitForURL` /
+  `waitForURLChange`, or read the live `await page.evaluate(() => location.href)`)
 - `page.snapshotForAI(options)` — AI-optimized page outline (whole page, any scroll position);
   returns `{ full, incremental? }`; options `{ selector?, track?, timeout? }` — `selector` scopes to
   an element (e.g. `"main"`, to drop nav chrome after a full first look proves it is noise),
@@ -80,7 +84,7 @@ https://playwright.dev/docs/api/class-page
   NAVIGATES, then wait for it the race-free way. Captures `location.href` BEFORE the click and waits
   — under one `opts.timeout` (default 15000) — for the URL to settle AND `opts.loadState` (default
   `"load"`). Returns the new href. The one-liner for "click this link and continue on the new page":
-  no stale `page.url()`, no `waitForSettled` race. Pass `opts.url` (glob/RegExp/predicate) to wait
+  no stale `page.url()`, no racy read after the click. Pass `opts.url` (glob/RegExp/predicate) to wait
   for a specific destination, or `opts.loadState: "networkidle"` to also wait for the fetch +
   sub-resources (safe only when the app's sole live connection is a WebSocket). For a click that does
   NOT navigate use `humanClick` — this throws once the timeout elapses if the URL never changes.
@@ -99,12 +103,13 @@ https://playwright.dev/docs/api/class-page
   it WITHOUT clicking (the `humanClick` motion minus the press). Use to show something in the
   recording; never `window.scrollTo` / `page.evaluate(() => scrollTo(...))` (invisible on camera).
   You don't need it to observe — `snapshotForAI` sees the whole page regardless of scroll
-- `page.waitForSettled(opts?)` — Canary helper: wait (bounded) for the page to stop changing —
-  document load then DOM-mutation quiescence (`opts.quietMs`, `opts.timeoutMs`). Framework-agnostic
-  and won't hang on live connections (it watches the DOM, not the network). Use to let an
-  ALREADY-navigated page render before observing — NOT to wait out a navigation itself: its quiet
-  window can elapse during the fetch gap and return before the nav commits. To wait for a nav, use
-  `humanClickAndWaitForURL` / `waitForURLChange`
+- Settling is AUTOMATIC — you never call a settle yourself. Canary settles the page (document load +
+  a bounded network-idle + DOM-mutation quiescence) at the END of every step, so each step's
+  screenshot and the next step's fresh page both start committed and quiet. WITHIN a step, wait on a
+  concrete signal: a navigation → `humanClickAndWaitForURL` / `waitForURLChange`; a known element →
+  `waitForSelector` / `locator.waitFor` (most actions already auto-wait); a fetch → `waitForResponse`;
+  an arbitrary condition → `waitForFunction`. To observe an unknown result with no nameable signal,
+  end the step and observe at the start of the next one
 - `page.waitForSelector(sel, { state, timeout })` (`state`: `"attached"` / `"visible"` /
   `"hidden"` / `"detached"`) / `page.waitForURL(pattern)` (polls the live URL, so it resolves on
   History API / Turbo / SPA navigations too; `pattern` is a glob, RegExp, or predicate) /
@@ -112,13 +117,12 @@ https://playwright.dev/docs/api/class-page
 - `page.waitForURLChange(opts?)` — Canary helper: wait until the live URL changes (returns the new
   href) when you DON'T know the destination — e.g. confirming a click navigated. For the common
   click→nav case, reach for `humanClickAndWaitForURL` instead — it wraps this. Use this directly when
-  the nav isn't triggered by a single click. Don't use `humanClick` then `waitForSettled` then read
-  `location.href`: `waitForSettled` watches the DOM, which can go quiet before Turbo/Hotwire runs its
-  `pushState`, so you read a stale URL. Capture the start URL before the click and pass it: `const
-  from = await page.evaluate(() => location.href); await page.humanClick(link); await
+  the nav isn't triggered by a single click. Capture the start URL before the click and pass it:
+  `const from = await page.evaluate(() => location.href); await page.humanClick(link); await
   page.waitForURLChange({ from });` — or run both at once: `await Promise.all([page.waitForURLChange(),
   page.humanClick(link)])`. (`page.url()` is client-cached and won't reflect a Turbo nav; the helper
-  reads `location.href`.) Then act on a known destination element or `waitForSettled()` before observing
+  reads `location.href`.) Then act on a known destination element before observing — or simply end the
+  step, since Canary settles the committed page for the next one
 - `page.setInputFiles(target, files, opts?)` — Canary helper: attach files to a file `<input>`.
   `files` is one filename or an array; each must already live in the sandbox temp dir (write it
   with `writeFile(name, data)` first, or have the user drop it in via takeover). The bytes are read
@@ -196,20 +200,20 @@ Semantic factories (also `Locator`): `page.getByRole(role, { name })`, `page.get
   content without a full document load). Don't snapshot or assert the instant a click returns.
   Prefer acting on or waiting for a KNOWN element on the destination (`getByRole`/`getByText`) —
   Playwright auto-waits for it, which both confirms the navigation and avoids reading stale content.
-  Triggering the nav with a click? `await page.humanClickAndWaitForURL(link)` waits for the URL and
-  load in one call. Only AFTER the nav is confirmed, to observe an unknown page, `await
-  page.waitForSettled()` to let it quiesce — `waitForSettled` ALONE is not a nav-wait: its quiet
-  window can elapse during the fetch gap and return before the nav commits. Avoid fixed
-  `waitForTimeout`; `waitForLoadState("load")` / `"domcontentloaded"` are fine, but `"networkidle"`
-  can hang on apps with long-lived HTTP (SSE, long-polling, heartbeats) — an open WebSocket alone
-  does NOT block it.
+  Need the result in the SAME step after a click that navigates? `await
+  page.humanClickAndWaitForURL(link)` waits for the URL and load in one call. Otherwise you needn't
+  wait at all: Canary settles the page (load + network-idle + DOM quiescence) at the END of every
+  step, so just end the step and observe at the start of the next — its fresh page is already on the
+  committed, quiet destination. Avoid fixed `waitForTimeout`; `waitForLoadState("load")` /
+  `"domcontentloaded"` are fine, but `"networkidle"` can hang on apps with long-lived HTTP (SSE,
+  long-polling, heartbeats) — an open WebSocket alone does NOT block it.
 - `page.url()` is a cached value updated by an async event, so right after a client-side navigation
   it can still read the OLD url — especially a Turbo/SPA visit, whose URL only changes once its fetch
-  lands and the nav commits. To get the post-nav URL,
-  prefer the helpers that read the live `location.href`: `page.humanClickAndWaitForURL(link)`
-  (returns the new href) or `page.waitForURLChange({ from })`; or `page.waitForURL(<url|regex|fn>)`
-  for a known destination; or read it directly with `await page.evaluate(() => location.href)`.
-  Never `waitForSettled()` then read `page.url()` — both can be stale.
+  lands and the nav commits (the NEXT step's fresh page reads it correctly — the step-end settle
+  guarantees that). To get the post-nav URL WITHIN a step, use the helpers that read the live
+  `location.href`: `page.humanClickAndWaitForURL(link)` (returns the new href) or
+  `page.waitForURLChange({ from })`; or `page.waitForURL(<url|regex|fn>)` for a known destination; or
+  read it directly with `await page.evaluate(() => location.href)`.
 <!-- canary:end rule-observe-first -->
 
 <!-- canary:snippet rule-visible-interaction -->
@@ -257,10 +261,11 @@ Semantic factories (also `Locator`): `page.getByRole(role, { name })`, `page.get
   submit, not just typing: checking a box, choosing a radio, selecting a dropdown option, and
   filling a field all commonly trigger async work — inline validation, a newly revealed or
   required field, a dependent control, the submit button enabling/disabling. After each such
-  interaction let the page settle (`await page.waitForSettled()` if anything's in flight) and
-  check what changed — a validation message, a new field, the button's state — before moving on,
-  and re-check once more right before you submit. Firing submit into a mid-validation form records
-  a failure that isn't the app's fault, and a real user wouldn't do it either.
+  interaction wait on the CONCRETE result before moving on — assert or act on the thing that
+  changed (the validation message appearing, the new/required field rendering, the submit button
+  flipping enabled); Playwright auto-waits when you act on it. Re-check the submit control is
+  enabled right before you submit. Firing submit into a mid-validation form records a failure that
+  isn't the app's fault, and a real user wouldn't do it either.
 - A click timeout or `page.isVisible(sel)` returning false usually means hidden, not missing:
   snapshot, find the toggle/menu/tab that reveals the element, click that, then retry.
 <!-- canary:end rule-visible-interaction -->
@@ -277,7 +282,8 @@ const snap = await page.snapshotForAI(); // full-depth first look
 console.log(page.url(), await page.title());
 console.log(snap.full); // aria outline — pick a role/text selector from this
 // then act: await page.humanClick(page.getByRole("button", { name: "Continue" }));
-// after changes, page.snapshotForAI({ track: "main" }) returns just the incremental diff
+// the first page.snapshotForAI({ track: "main" }) call sets the baseline (returns full);
+// after that, track: "main" returns just the incremental diff
 ```
 <!-- canary:end ex-snapshot -->
 

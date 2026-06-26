@@ -7,6 +7,11 @@ const headings = await page.evaluate(() =>
 );
 console.log(JSON.stringify(headings));
 
-await page.humanClick(page.getByRole("link", { name: "More information" }));
+// The link navigates — wait for the new page before reading, so the screenshot
+// (and any later read) lands on the destination, not the old/half-loaded page.
+const href = await page.humanClickAndWaitForURL(
+  page.getByRole("link", { name: "More information" })
+);
+console.log(href);
 const buf = await page.screenshot({ fullPage: false });
 await saveScreenshot(buf, "page.png");               // saveScreenshot(buffer, name)

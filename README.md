@@ -247,7 +247,12 @@ const headings = await page.evaluate(() =>
 );
 console.log(JSON.stringify(headings));
 
-await page.humanClick(page.getByRole("link", { name: "More information" }));
+// The link navigates — wait for the new page before reading, so the screenshot
+// (and any later read) lands on the destination, not the old/half-loaded page.
+const href = await page.humanClickAndWaitForURL(
+  page.getByRole("link", { name: "More information" })
+);
+console.log(href);
 const buf = await page.screenshot({ fullPage: false });
 await saveScreenshot(buf, "page.png");               // saveScreenshot(buffer, name)
 ```
@@ -297,8 +302,10 @@ https://playwright.dev/docs/api/class-page
 **Human interaction & captions.** In recorded sessions, prefer `page.humanClick(target)` and
 `page.humanFill(target, text)` over raw `click` / `fill`: they reveal the element, glide the
 on-screen cursor onto it, and act through real input (typed text, a true click) so the video reads
-like a real user. `page.showCaption(text)` overlays a short caption to label a moment, and
-`page.waitForSettled()` waits (bounded) for the page to stop changing after a navigation.
+like a real user. `page.showCaption(text)` overlays a short caption to label a moment. For a click
+that navigates, use `page.humanClickAndWaitForURL(target)` — it captures the URL before the click
+and waits race-free for the new page (`page.url()` is client-cached and lags a Turbo/SPA nav).
+Settling is otherwise automatic: Canary settles the page at the end of every step.
 
 For element discovery, `await page.snapshotForAI()` returns an LLM-friendly outline of the page —
 the `canary-scripting` skill and its `references/REFERENCE.md` carry the full API.

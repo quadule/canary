@@ -57,7 +57,9 @@ Affected workflows (most → least likely to regress):
 - Must hold (checks):
   - <visible text | element present>
   - <correct URL or redirect>
-  - <state: logged in / item in cart / no console error / network 2xx>
+  - <state: logged in / item in cart / data persisted>
+  - (console errors and network status are EVIDENCE, not pass/fail — only make a clean console or a
+    specific 2xx/redirect a must-hold when that IS the behavior under test; see rule-pass-fail)
 - Likely phases (a guide, not a script): open → <act> → assert
 - At risk because: <the changed file(s)>
 

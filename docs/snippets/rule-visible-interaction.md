@@ -42,9 +42,10 @@
   submit, not just typing: checking a box, choosing a radio, selecting a dropdown option, and
   filling a field all commonly trigger async work — inline validation, a newly revealed or
   required field, a dependent control, the submit button enabling/disabling. After each such
-  interaction let the page settle (`await page.waitForSettled()` if anything's in flight) and
-  check what changed — a validation message, a new field, the button's state — before moving on,
-  and re-check once more right before you submit. Firing submit into a mid-validation form records
-  a failure that isn't the app's fault, and a real user wouldn't do it either.
+  interaction wait on the CONCRETE result before moving on — assert or act on the thing that
+  changed (the validation message appearing, the new/required field rendering, the submit button
+  flipping enabled); Playwright auto-waits when you act on it. Re-check the submit control is
+  enabled right before you submit. Firing submit into a mid-validation form records a failure that
+  isn't the app's fault, and a real user wouldn't do it either.
 - A click timeout or `page.isVisible(sel)` returning false usually means hidden, not missing:
   snapshot, find the toggle/menu/tab that reveals the element, click that, then retry.

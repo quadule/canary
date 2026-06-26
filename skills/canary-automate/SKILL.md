@@ -89,20 +89,20 @@ User says: "is the pricing page up and what's the headline?" or "screenshot the 
   content without a full document load). Don't snapshot or assert the instant a click returns.
   Prefer acting on or waiting for a KNOWN element on the destination (`getByRole`/`getByText`) —
   Playwright auto-waits for it, which both confirms the navigation and avoids reading stale content.
-  Triggering the nav with a click? `await page.humanClickAndWaitForURL(link)` waits for the URL and
-  load in one call. Only AFTER the nav is confirmed, to observe an unknown page, `await
-  page.waitForSettled()` to let it quiesce — `waitForSettled` ALONE is not a nav-wait: its quiet
-  window can elapse during the fetch gap and return before the nav commits. Avoid fixed
-  `waitForTimeout`; `waitForLoadState("load")` / `"domcontentloaded"` are fine, but `"networkidle"`
-  can hang on apps with long-lived HTTP (SSE, long-polling, heartbeats) — an open WebSocket alone
-  does NOT block it.
+  Need the result in the SAME step after a click that navigates? `await
+  page.humanClickAndWaitForURL(link)` waits for the URL and load in one call. Otherwise you needn't
+  wait at all: Canary settles the page (load + network-idle + DOM quiescence) at the END of every
+  step, so just end the step and observe at the start of the next — its fresh page is already on the
+  committed, quiet destination. Avoid fixed `waitForTimeout`; `waitForLoadState("load")` /
+  `"domcontentloaded"` are fine, but `"networkidle"` can hang on apps with long-lived HTTP (SSE,
+  long-polling, heartbeats) — an open WebSocket alone does NOT block it.
 - `page.url()` is a cached value updated by an async event, so right after a client-side navigation
   it can still read the OLD url — especially a Turbo/SPA visit, whose URL only changes once its fetch
-  lands and the nav commits. To get the post-nav URL,
-  prefer the helpers that read the live `location.href`: `page.humanClickAndWaitForURL(link)`
-  (returns the new href) or `page.waitForURLChange({ from })`; or `page.waitForURL(<url|regex|fn>)`
-  for a known destination; or read it directly with `await page.evaluate(() => location.href)`.
-  Never `waitForSettled()` then read `page.url()` — both can be stale.
+  lands and the nav commits (the NEXT step's fresh page reads it correctly — the step-end settle
+  guarantees that). To get the post-nav URL WITHIN a step, use the helpers that read the live
+  `location.href`: `page.humanClickAndWaitForURL(link)` (returns the new href) or
+  `page.waitForURLChange({ from })`; or `page.waitForURL(<url|regex|fn>)` for a known destination; or
+  read it directly with `await page.evaluate(() => location.href)`.
 <!-- canary:end rule-observe-first -->
 
 <!-- canary:snippet rule-visible-interaction -->
@@ -150,10 +150,11 @@ User says: "is the pricing page up and what's the headline?" or "screenshot the 
   submit, not just typing: checking a box, choosing a radio, selecting a dropdown option, and
   filling a field all commonly trigger async work — inline validation, a newly revealed or
   required field, a dependent control, the submit button enabling/disabling. After each such
-  interaction let the page settle (`await page.waitForSettled()` if anything's in flight) and
-  check what changed — a validation message, a new field, the button's state — before moving on,
-  and re-check once more right before you submit. Firing submit into a mid-validation form records
-  a failure that isn't the app's fault, and a real user wouldn't do it either.
+  interaction wait on the CONCRETE result before moving on — assert or act on the thing that
+  changed (the validation message appearing, the new/required field rendering, the submit button
+  flipping enabled); Playwright auto-waits when you act on it. Re-check the submit control is
+  enabled right before you submit. Firing submit into a mid-validation form records a failure that
+  isn't the app's fault, and a real user wouldn't do it either.
 - A click timeout or `page.isVisible(sel)` returning false usually means hidden, not missing:
   snapshot, find the toggle/menu/tab that reveals the element, click that, then retry.
 <!-- canary:end rule-visible-interaction -->

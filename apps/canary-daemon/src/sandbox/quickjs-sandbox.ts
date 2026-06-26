@@ -780,78 +780,6 @@ export class QuickJSSandbox {
                 await revealAndGlide(page, locator).catch(() => undefined);
                 await locator.setInputFiles(payloads, options);
               };
-              // Generic "let the page settle" wait — framework-agnostic. Waits
-              // for the document load (a no-op once loaded) and then for the DOM
-              // to stop mutating for a quiet window, bounded by a timeout. Unlike
-              // networkidle it watches the DOM, not the network, so it doesn't
-              // hang on long-lived connections (websockets, polling). Ignores
-              // Canary's own overlays so the cursor/ripple/caption animations
-              // don't count as page activity. Use after a client-side navigation
-              // before snapshotting; for an action, prefer acting on the
-              // destination element (Playwright auto-waits for it).
-              page.waitForSettled = async (options) => {
-                const quietMs =
-                  options && typeof options.quietMs === "number"
-                    ? options.quietMs
-                    : 400;
-                const timeoutMs =
-                  options && typeof options.timeoutMs === "number"
-                    ? options.timeoutMs
-                    : 5000;
-                await page.waitForLoadState("load").catch(() => undefined);
-                await page
-                  .evaluate(
-                    (arg) =>
-                      new Promise((resolve) => {
-                        const isOverlay = (node) => {
-                          let el =
-                            node && node.nodeType === 1 ? node : node?.parentElement;
-                          while (el) {
-                            const t = el.tagName;
-                            if (
-                              t === "CANARY-VIRTUAL-CURSOR" ||
-                              t === "CANARY-CLICK-RIPPLE" ||
-                              t === "CANARY-CAPTION" ||
-                              t === "CANARY-VIGNETTE"
-                            ) {
-                              return true;
-                            }
-                            el = el.parentElement;
-                          }
-                          return false;
-                        };
-                        let quiet;
-                        const finish = () => {
-                          observer.disconnect();
-                          clearTimeout(hard);
-                          clearTimeout(quiet);
-                          resolve(undefined);
-                        };
-                        const bump = () => {
-                          clearTimeout(quiet);
-                          quiet = setTimeout(finish, arg.quietMs);
-                        };
-                        const observer = new MutationObserver((records) => {
-                          for (const r of records) {
-                            if (!isOverlay(r.target)) {
-                              bump();
-                              return;
-                            }
-                          }
-                        });
-                        observer.observe(document.documentElement, {
-                          attributes: true,
-                          characterData: true,
-                          childList: true,
-                          subtree: true,
-                        });
-                        const hard = setTimeout(finish, arg.timeoutMs);
-                        bump();
-                      }),
-                    { quietMs, timeoutMs }
-                  )
-                  .catch(() => undefined);
-              };
               // Spotlight: animate the vignette to focus on a specific element
               // (or the current cursor position when called with no argument).
               // Call this before interacting with a subtle element the reviewer
@@ -964,8 +892,8 @@ export class QuickJSSandbox {
               // full-document navigations and exact glob/baseURL matching);
               // polling location.href rescues same-document navigations. A URL
               // match does NOT guarantee the new content has rendered — act on a
-              // destination element or call waitForSettled() afterward, as the
-              // observe-first rules advise.
+              // destination element afterward (or just end the step, which Canary
+              // settles), as the observe-first rules advise.
               page.waitForURL = async (url, options) => {
                 const opts = options || {};
                 const timeout =
@@ -1006,9 +934,8 @@ export class QuickJSSandbox {
               };
               // Wait until the live URL CHANGES, without knowing the
               // destination ahead of time — for confirming a click navigated
-              // somewhere new during exploratory QA. The common
-              // humanClick → waitForSettled → location.href pattern is racy:
-              // waitForSettled watches the DOM, which can go quiet before
+              // somewhere new during exploratory QA. Reading the URL right after
+              // the click is racy: a DOM-quiescence wait can go quiet before
               // Turbo/Hotwire (or an SPA router) runs its pushState, so the URL
               // read back is stale. This waits on the URL specifically. Capture
               // the starting URL BEFORE the click (pass { from }), or start the
@@ -1048,11 +975,10 @@ export class QuickJSSandbox {
               // race-free way, in one call. Reading the URL AFTER a click is
               // racy: a Turbo/Hotwire/SPA visit fetches before it swaps the DOM
               // and runs pushState, and page.url() is client-cached and lags a
-              // same-document nav until it commits — so humanClick +
-              // waitForSettled + page.url() reads the OLD url (waitForSettled
-              // watches DOM mutations, which go quiet during the fetch gap and
-              // let it return before the nav commits). This captures location.href BEFORE the
-              // click, clicks, then waits — under ONE shared timeout — for the
+              // same-document nav until it commits — so reading the URL right
+              // after the click gets the OLD url (the DOM goes quiet during the
+              // fetch gap, before the nav commits). This captures location.href
+              // BEFORE the click, clicks, then waits — under ONE shared timeout — for the
               // live URL to settle AND the page to reach a load state. Returns
               // the new href.
               //   options.url       wait for this specific destination (glob /

@@ -12,10 +12,10 @@
   of burning 30s.
 - A click that navigates (Turbo / SPA especially) finishes asynchronously — the fetch lands, the DOM
   swaps, the URL updates — so don't read `page.url()` the instant the click returns (it's client-
-  cached and lags a same-document Turbo nav until the nav commits). Use the one call that straddles the click:
-  `const href = await page.humanClickAndWaitForURL(link)`. Don't lean on `waitForSettled` to wait out
-  a nav — it watches DOM mutations, which fall quiet during the fetch gap, so it can return before the
-  nav commits and you read a stale page/URL.
+  cached and lags a same-document Turbo nav until the nav commits). If you need the new URL in the
+  SAME step, use the call that straddles the click: `const href = await
+  page.humanClickAndWaitForURL(link)`. Otherwise you needn't wait — Canary settles the page at the
+  end of every step, so the next step's fresh page is already on the committed, quiet destination.
 - A click returning is NOT success. Before you submit, confirm the submit control is enabled and
   every required field / checkbox is satisfied; afterward, verify the change actually persisted. A
   disabled or validation-blocked submit saved nothing — never report that run as passed.

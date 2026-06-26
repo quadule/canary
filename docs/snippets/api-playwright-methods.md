@@ -1,6 +1,10 @@
 - `page.goto(url, { waitUntil: "domcontentloaded" })` — navigate; `waitUntil` is `"load"` /
-  `"domcontentloaded"` / `"networkidle"` (prefer `"domcontentloaded"` on dev servers)
-- `page.title()` / `page.url()` — current title / URL
+  `"domcontentloaded"` / `"networkidle"` (prefer `"domcontentloaded"` on dev servers; `"networkidle"`
+  can hang on apps with long-lived HTTP — SSE, long-polling, heartbeats — though an open WebSocket
+  alone does not block it)
+- `page.title()` / `page.url()` — current title / URL (note: `page.url()` is client-cached and lags a
+  Turbo/SPA nav until it commits — to confirm a navigation use `humanClickAndWaitForURL` /
+  `waitForURLChange`, or read the live `await page.evaluate(() => location.href)`)
 - `page.snapshotForAI(options)` — AI-optimized page outline (whole page, any scroll position);
   returns `{ full, incremental? }`; options `{ selector?, track?, timeout? }` — `selector` scopes to
   an element (e.g. `"main"`, to drop nav chrome after a full first look proves it is noise),
@@ -20,7 +24,7 @@
   NAVIGATES, then wait for it the race-free way. Captures `location.href` BEFORE the click and waits
   — under one `opts.timeout` (default 15000) — for the URL to settle AND `opts.loadState` (default
   `"load"`). Returns the new href. The one-liner for "click this link and continue on the new page":
-  no stale `page.url()`, no `waitForSettled` race. Pass `opts.url` (glob/RegExp/predicate) to wait
+  no stale `page.url()`, no racy read after the click. Pass `opts.url` (glob/RegExp/predicate) to wait
   for a specific destination, or `opts.loadState: "networkidle"` to also wait for the fetch +
   sub-resources (safe only when the app's sole live connection is a WebSocket). For a click that does
   NOT navigate use `humanClick` — this throws once the timeout elapses if the URL never changes.
@@ -39,12 +43,13 @@
   it WITHOUT clicking (the `humanClick` motion minus the press). Use to show something in the
   recording; never `window.scrollTo` / `page.evaluate(() => scrollTo(...))` (invisible on camera).
   You don't need it to observe — `snapshotForAI` sees the whole page regardless of scroll
-- `page.waitForSettled(opts?)` — Canary helper: wait (bounded) for the page to stop changing —
-  document load then DOM-mutation quiescence (`opts.quietMs`, `opts.timeoutMs`). Framework-agnostic
-  and won't hang on live connections (it watches the DOM, not the network). Use to let an
-  ALREADY-navigated page render before observing — NOT to wait out a navigation itself: its quiet
-  window can elapse during the fetch gap and return before the nav commits. To wait for a nav, use
-  `humanClickAndWaitForURL` / `waitForURLChange`
+- Settling is AUTOMATIC — you never call a settle yourself. Canary settles the page (document load +
+  a bounded network-idle + DOM-mutation quiescence) at the END of every step, so each step's
+  screenshot and the next step's fresh page both start committed and quiet. WITHIN a step, wait on a
+  concrete signal: a navigation → `humanClickAndWaitForURL` / `waitForURLChange`; a known element →
+  `waitForSelector` / `locator.waitFor` (most actions already auto-wait); a fetch → `waitForResponse`;
+  an arbitrary condition → `waitForFunction`. To observe an unknown result with no nameable signal,
+  end the step and observe at the start of the next one
 - `page.waitForSelector(sel, { state, timeout })` (`state`: `"attached"` / `"visible"` /
   `"hidden"` / `"detached"`) / `page.waitForURL(pattern)` (polls the live URL, so it resolves on
   History API / Turbo / SPA navigations too; `pattern` is a glob, RegExp, or predicate) /
@@ -52,13 +57,12 @@
 - `page.waitForURLChange(opts?)` — Canary helper: wait until the live URL changes (returns the new
   href) when you DON'T know the destination — e.g. confirming a click navigated. For the common
   click→nav case, reach for `humanClickAndWaitForURL` instead — it wraps this. Use this directly when
-  the nav isn't triggered by a single click. Don't use `humanClick` then `waitForSettled` then read
-  `location.href`: `waitForSettled` watches the DOM, which can go quiet before Turbo/Hotwire runs its
-  `pushState`, so you read a stale URL. Capture the start URL before the click and pass it: `const
-  from = await page.evaluate(() => location.href); await page.humanClick(link); await
+  the nav isn't triggered by a single click. Capture the start URL before the click and pass it:
+  `const from = await page.evaluate(() => location.href); await page.humanClick(link); await
   page.waitForURLChange({ from });` — or run both at once: `await Promise.all([page.waitForURLChange(),
   page.humanClick(link)])`. (`page.url()` is client-cached and won't reflect a Turbo nav; the helper
-  reads `location.href`.) Then act on a known destination element or `waitForSettled()` before observing
+  reads `location.href`.) Then act on a known destination element before observing — or simply end the
+  step, since Canary settles the committed page for the next one
 - `page.setInputFiles(target, files, opts?)` — Canary helper: attach files to a file `<input>`.
   `files` is one filename or an array; each must already live in the sandbox temp dir (write it
   with `writeFile(name, data)` first, or have the user drop it in via takeover). The bytes are read

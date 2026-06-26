@@ -15,9 +15,12 @@
   focus-then-type with real key events), so recordings read like a real user.
 - **Video captions** — `page.showCaption(text, opts?)` overlays a short caption on the recording to
   label a moment for a human viewer.
-- **`page.waitForSettled(opts?)`** — a bounded, framework-agnostic wait for the page to stop
-  changing after a navigation (document load + DOM-mutation quiescence; watches the DOM, not the
-  network, so it won't hang on long-lived connections).
+- **Automatic per-step settle + `page.humanClickAndWaitForURL(target, opts?)`.** Canary settles the
+  page at the end of every session step (bounded document-load + network-idle + DOM-mutation
+  quiescence, daemon-side), so each step's screenshot and the next step's fresh page start committed
+  and quiet without any in-script wait. For a navigation you need to resolve within a step,
+  `humanClickAndWaitForURL` captures the URL before the click and waits race-free for the new page.
+  Settling is no longer an agent-facing call.
 - **Interactive session mode** — the `canary-session-interactive` skill and `/canary:session-interactive`
   command run a recorded session in the main conversation (no subagent): the agent drives
   autonomously but can pause to ask for direction, and can hand you the live headed browser for

@@ -10,6 +10,44 @@ import {
   type Page,
 } from "playwright";
 
+// Bounds for the per-step settle barrier (settleActivePage), run daemon-side at
+// the end of every session step. Each wait is capped so a long-lived connection
+// (SSE, long-polling, heartbeat XHR, websocket) can never hang a step.
+const STEP_SETTLE_LOAD_MS = 5000;
+const STEP_SETTLE_NETWORK_MS = 2000;
+const STEP_SETTLE_QUIET_MS = 400;
+const STEP_SETTLE_QUIESCENCE_MS = 3000;
+
+// DOM-mutation quiescence, injected as a STRING (the daemon's TS build has no
+// DOM lib — same reason addInitScript takes string content). Resolves once the
+// DOM has been free of non-overlay mutations for STEP_SETTLE_QUIET_MS, or after
+// STEP_SETTLE_QUIESCENCE_MS regardless. Canary's own cursor/ripple/caption/
+// vignette overlays are ignored so their animations don't read as page activity.
+const STEP_SETTLE_DOM_QUIESCENCE_JS = `
+  new Promise((resolve) => {
+    const isOverlay = (node) => {
+      let el = node && node.nodeType === 1 ? node : (node ? node.parentElement : null);
+      while (el) {
+        const t = el.tagName;
+        if (t === "CANARY-VIRTUAL-CURSOR" || t === "CANARY-CLICK-RIPPLE" || t === "CANARY-CAPTION" || t === "CANARY-VIGNETTE") {
+          return true;
+        }
+        el = el.parentElement;
+      }
+      return false;
+    };
+    let quiet;
+    const finish = () => { observer.disconnect(); clearTimeout(hard); clearTimeout(quiet); resolve(); };
+    const bump = () => { clearTimeout(quiet); quiet = setTimeout(finish, ${STEP_SETTLE_QUIET_MS}); };
+    const observer = new MutationObserver((records) => {
+      for (const r of records) { if (!isOverlay(r.target)) { bump(); return; } }
+    });
+    observer.observe(document.documentElement, { attributes: true, characterData: true, childList: true, subtree: true });
+    const hard = setTimeout(finish, ${STEP_SETTLE_QUIESCENCE_MS});
+    bump();
+  })
+`;
+
 export interface BrowserEntry {
   appliedInitScripts: Set<string>;
   browser: Browser;
@@ -465,6 +503,41 @@ export class BrowserManager {
 
     await this.dependencies.mkdir(path.dirname(outPath), { recursive: true });
     await last.page.screenshot({ path: outPath });
+  }
+
+  // Bounded, best-effort "let the page settle" run at the END of each session
+  // step (daemon-side, on the REAL Playwright page — so it sees the true URL
+  // with no client-cache lag). Lets a navigation or fetch the step triggered
+  // commit and the DOM quiesce before the step screenshot and before the next
+  // step starts, so the next step's fresh page reads a committed URL and a
+  // stable DOM without any in-script wait. Every wait is capped and failures
+  // are swallowed — settling must never fail the underlying step.
+  async settleActivePage(browserName: string): Promise<void> {
+    const entry = this.browsers.get(browserName);
+    if (!entry?.browser.isConnected()) {
+      return;
+    }
+
+    const last = this.getContextPages(entry).at(-1);
+    if (!last) {
+      return;
+    }
+
+    const { page } = last;
+    // 1. Document load — commits a full-document navigation; a no-op once
+    //    loaded, so it does nothing for a same-document Turbo/SPA nav.
+    await page
+      .waitForLoadState("load", { timeout: STEP_SETTLE_LOAD_MS })
+      .catch(() => undefined);
+    // 2. Bounded network idle — waits out an in-flight fetch (a Turbo visit,
+    //    an AJAX update). Capped + swallowed so SSE / long-poll / heartbeat
+    //    HTTP can't hang the step; an open WebSocket does not hold networkidle.
+    await page
+      .waitForLoadState("networkidle", { timeout: STEP_SETTLE_NETWORK_MS })
+      .catch(() => undefined);
+    // 3. DOM-mutation quiescence — waits out client-side rendering after the
+    //    fetch, ignoring Canary's own overlay animations.
+    await page.evaluate(STEP_SETTLE_DOM_QUIESCENCE_JS).catch(() => undefined);
   }
 
   private async launchBrowser(

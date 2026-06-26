@@ -281,6 +281,15 @@ async function handleExecute(
         }
       );
 
+      // Structural settle barrier: after the step's script finishes, let any
+      // navigation or fetch it triggered commit and the DOM quiesce — daemon-
+      // side and bounded — so the step screenshot is of a stable frame and the
+      // NEXT step's fresh page reads a committed URL without the script needing
+      // an explicit wait. Best-effort; never fails the step.
+      if (targetSession && request.step) {
+        await manager.settleActivePage(request.browser).catch(() => undefined);
+      }
+
       await output.drain();
       await writeMessage(socket, {
         id: request.id,

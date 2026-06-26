@@ -286,6 +286,20 @@ function handleNavigationRequest(
     case "/nav/third":
       html = navigationPageHtml("Third Page", "/nav/third");
       break;
+    case "/nav/slow": {
+      // Respond after a delay so a navigation to this route is still in flight
+      // when the step's script returns — exercises the settle barrier's
+      // load/network wait (a no-op settle would leave the URL uncommitted).
+      const slowHtml = navigationPageHtml("Slow Page", "/nav/slow");
+      setTimeout(() => {
+        response.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store",
+        });
+        response.end(slowHtml);
+      }, 600);
+      return;
+    }
     default:
       response.writeHead(404, {
         "content-type": "text/plain; charset=utf-8",
@@ -569,10 +583,10 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
         const page = await browser.getPage("navigation-human-click-pushstate");
         await page.goto(${JSON.stringify(firstUrl)}, { waitUntil: "domcontentloaded" });
         // Simulate Turbo/Hotwire: intercept the link click and pushState after a
-        // gap instead of a full document load (no new "load" fires). This is the
-        // case the old humanClick + waitForSettled + page.url() pattern lost —
-        // the DOM falls quiet during the gap, so waitForSettled returns before
-        // the pushState. humanClickAndWaitForURL polls location.href across it.
+        // gap instead of a full document load (no new "load" fires). A wait that
+        // just lets the DOM go quiet returns during the gap, before the
+        // pushState, reading a stale URL — humanClickAndWaitForURL polls
+        // location.href across it.
         await page.evaluate(() => {
           const link = document.getElementById("next-link");
           link.addEventListener("click", (event) => {
@@ -589,6 +603,44 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       expect(result.newHref).toBe(
         `${navigationServer.baseUrl}/nav/pushed-by-click`
       );
+    }, 20_000);
+
+    it("settleActivePage (step barrier) waits for a slow in-flight navigation to commit", async () => {
+      const firstUrl = `${navigationServer.baseUrl}/nav/first`;
+      const slowUrl = `${navigationServer.baseUrl}/nav/slow`;
+      // Step 1: load /nav/first, then kick off a navigation to the slow route
+      // (600ms server delay) WITHOUT waiting — a step that ends mid-nav. The
+      // setTimeout(0) defers the assign until after evaluate returns so the
+      // script itself completes cleanly.
+      await harness.runJson(`
+        const page = await browser.getPage("settle-barrier");
+        await page.goto(${JSON.stringify(firstUrl)}, { waitUntil: "domcontentloaded" });
+        await page.evaluate((u) => {
+          setTimeout(() => window.location.assign(u), 0);
+        }, ${JSON.stringify(slowUrl)});
+        console.log(JSON.stringify({ kicked: true }));
+      `);
+      // The daemon-side barrier the step runner invokes at step end.
+      await manager.settleActivePage(browserName);
+      // Step 2 (fresh sandbox/proxy): the slow nav has committed, so the fresh
+      // page reads it with NO in-script wait. Without the barrier this would
+      // still be /nav/first (the 600ms response had not landed).
+      const result = await harness.runJson<{
+        url: string;
+        cached: string;
+        title: string;
+      }>(`
+        const page = await browser.getPage("settle-barrier");
+        console.log(JSON.stringify({
+          url: await page.evaluate(() => location.href),
+          cached: page.url(),
+          title: await page.title(),
+        }));
+      `);
+
+      expect(result.url).toBe(slowUrl);
+      expect(result.cached).toBe(slowUrl);
+      expect(result.title).toBe("Slow Page");
     }, 20_000);
 
     it("humanClickAndWaitForURL throws when the click does not navigate", async () => {
