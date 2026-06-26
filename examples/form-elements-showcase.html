@@ -1,0 +1,1633 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Form Elements Showcase</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8f4;
+      --ink: #17201b;
+      --muted: #61706a;
+      --line: #cbd4cc;
+      --panel: #ffffff;
+      --panel-soft: #eef3ef;
+      --field: #ffffff;
+      --field-strong: #f5faf7;
+      --blue: #1f6feb;
+      --blue-ink: #0b3a7a;
+      --green: #1c7c54;
+      --red: #bd3b36;
+      --amber: #b7791f;
+      --plum: #7d4e9d;
+      --teal: #087d8f;
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --shadow: 0 12px 30px rgb(23 32 27 / 0.08);
+      --focus: 0 0 0 4px rgb(31 111 235 / 0.16);
+      font-family:
+        Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, #f7f8f4 0, #edf3ee 440px, #f8f7f1 100%);
+      color: var(--ink);
+      font-size: 16px;
+      line-height: 1.5;
+    }
+
+    body[data-density="compact"] {
+      --row-gap: 10px;
+      --control-height: 36px;
+      font-size: 14px;
+    }
+
+    body[data-density="comfortable"] {
+      --row-gap: 16px;
+      --control-height: 44px;
+    }
+
+    a {
+      color: var(--blue-ink);
+      text-decoration-thickness: 0.08em;
+      text-underline-offset: 0.2em;
+    }
+
+    .page-shell {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid rgb(203 212 204 / 0.85);
+      background: rgb(247 248 244 / 0.9);
+      backdrop-filter: blur(14px);
+    }
+
+    .topbar-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      min-height: 64px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 180px;
+      font-weight: 800;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border: 1px solid #22483a;
+      border-radius: var(--radius-sm);
+      background: #d8ebe1;
+      color: #103526;
+      font-size: 15px;
+    }
+
+    .nav-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+
+    .nav-links a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 0 10px;
+      border-radius: var(--radius-sm);
+      color: #35423c;
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .nav-links a:hover {
+      background: #e2ece6;
+    }
+
+    main {
+      padding: 34px 0 72px;
+    }
+
+    .intro {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+      gap: 28px;
+      align-items: end;
+      min-height: 420px;
+      padding: 34px 0 42px;
+    }
+
+    .intro h1 {
+      max-width: 720px;
+      margin: 0 0 18px;
+      font-size: clamp(2.2rem, 5vw, 5.1rem);
+      line-height: 0.98;
+      letter-spacing: 0;
+    }
+
+    .intro p {
+      max-width: 700px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .status-panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 15px 16px;
+      border-bottom: 1px solid #e3e8e4;
+    }
+
+    .status-row:last-child {
+      border-bottom: 0;
+    }
+
+    .status-row span {
+      color: var(--muted);
+      font-size: 0.85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .status-row strong {
+      text-align: right;
+    }
+
+    .section-band {
+      margin: 28px 0;
+      padding: 28px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .section-band.tint {
+      margin-inline: calc((100vw - min(1180px, calc(100vw - 32px))) / -2);
+      padding-inline: max(16px, calc((100vw - 1180px) / 2));
+      background: #edf1e7;
+      border-block: 1px solid var(--line);
+    }
+
+    .section-header {
+      display: grid;
+      grid-template-columns: minmax(0, 0.65fr) minmax(0, 1fr);
+      gap: 28px;
+      align-items: start;
+      margin-bottom: 22px;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--green);
+      font-size: 0.75rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: clamp(1.5rem, 2vw, 2.1rem);
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 0 0 12px;
+      font-size: 1.02rem;
+      letter-spacing: 0;
+    }
+
+    .section-header p,
+    .copy {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel);
+      box-shadow: 0 1px 0 rgb(23 32 27 / 0.04);
+    }
+
+    .panel-header {
+      padding: 16px 18px 0;
+    }
+
+    .panel-body {
+      display: grid;
+      gap: var(--row-gap, 16px);
+      padding: 18px;
+    }
+
+    .panel-body.inline {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: end;
+      gap: 14px;
+    }
+
+    .field {
+      display: grid;
+      gap: 7px;
+      min-width: 0;
+    }
+
+    .field.inline {
+      grid-template-columns: 150px minmax(0, 1fr);
+      align-items: center;
+      gap: 12px;
+    }
+
+    .field-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    label,
+    legend,
+    .label {
+      color: #26342d;
+      font-size: 0.86rem;
+      font-weight: 750;
+    }
+
+    .hint {
+      color: #66736c;
+      font-size: 0.82rem;
+    }
+
+    input,
+    select,
+    textarea,
+    button {
+      font: inherit;
+    }
+
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+    select,
+    textarea {
+      width: 100%;
+      min-height: var(--control-height, 44px);
+      border: 1px solid #aebbb4;
+      border-radius: var(--radius-sm);
+      background: var(--field);
+      color: var(--ink);
+      padding: 10px 12px;
+      outline: none;
+      transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+    }
+
+    textarea {
+      min-height: 116px;
+      resize: vertical;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus,
+    button:focus-visible,
+    summary:focus-visible {
+      border-color: var(--blue);
+      box-shadow: var(--focus);
+      outline: none;
+    }
+
+    input::placeholder,
+    textarea::placeholder {
+      color: #8a9790;
+    }
+
+    input[disabled],
+    select[disabled],
+    textarea[disabled],
+    button[disabled] {
+      cursor: not-allowed;
+      opacity: 0.58;
+    }
+
+    input[readonly] {
+      background: #eef1ed;
+      color: #58645e;
+    }
+
+    .size-sm {
+      --control-height: 34px;
+      font-size: 0.86rem;
+    }
+
+    .size-lg {
+      --control-height: 56px;
+      font-size: 1.08rem;
+    }
+
+    .style-underlined input,
+    .style-underlined select,
+    .style-underlined textarea {
+      border-width: 0 0 2px;
+      border-radius: 0;
+      background: transparent;
+      padding-inline: 0;
+    }
+
+    .style-filled input,
+    .style-filled select,
+    .style-filled textarea {
+      border-color: #d5ded8;
+      background: var(--field-strong);
+    }
+
+    .style-dark {
+      background: #17201b;
+      color: #f4faf5;
+    }
+
+    .style-dark h3,
+    .style-dark label,
+    .style-dark legend,
+    .style-dark .label {
+      color: #f7fff9;
+    }
+
+    .style-dark .hint,
+    .style-dark .copy {
+      color: #c5d2ca;
+    }
+
+    .style-dark input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+    .style-dark select,
+    .style-dark textarea {
+      border-color: #596860;
+      background: #223028;
+      color: #f7fff9;
+    }
+
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 42px;
+      padding: 0 16px;
+      border: 1px solid #9aa8a1;
+      border-radius: var(--radius-sm);
+      background: #fff;
+      color: #1d2a23;
+      font-weight: 800;
+      line-height: 1;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform 120ms ease, background 140ms ease, border-color 140ms ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      background: #f3f8f4;
+    }
+
+    .btn.primary {
+      border-color: #165f42;
+      background: #1c7c54;
+      color: #fff;
+    }
+
+    .btn.primary:hover {
+      background: #176747;
+    }
+
+    .btn.danger {
+      border-color: #a82f2b;
+      background: #bd3b36;
+      color: #fff;
+    }
+
+    .btn.ghost {
+      border-color: transparent;
+      background: transparent;
+    }
+
+    .btn.pill {
+      border-radius: 999px;
+    }
+
+    .btn.icon {
+      width: 42px;
+      padding: 0;
+    }
+
+    .btn.sm {
+      min-height: 32px;
+      padding-inline: 11px;
+      font-size: 0.84rem;
+    }
+
+    .btn.lg {
+      min-height: 54px;
+      padding-inline: 22px;
+      font-size: 1.04rem;
+    }
+
+    .segmented {
+      display: inline-grid;
+      grid-auto-flow: column;
+      border: 1px solid #aebbb4;
+      border-radius: var(--radius-sm);
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .segmented input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .segmented label {
+      min-height: 40px;
+      padding: 10px 14px;
+      border-right: 1px solid #d7ded9;
+      cursor: pointer;
+      font-weight: 800;
+    }
+
+    .segmented label:last-child {
+      border-right: 0;
+    }
+
+    .segmented input:checked + label {
+      background: #183d5f;
+      color: #fff;
+    }
+
+    .choice-list,
+    .chip-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .choice {
+      display: inline-grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 9px;
+      align-items: center;
+      min-height: 40px;
+      padding: 8px 11px;
+      border: 1px solid #b8c5be;
+      border-radius: var(--radius-sm);
+      background: #fff;
+    }
+
+    .choice.full {
+      width: 100%;
+      align-items: start;
+      padding: 12px;
+    }
+
+    .choice strong {
+      display: block;
+    }
+
+    .choice small {
+      display: block;
+      color: var(--muted);
+    }
+
+    input[type="checkbox"],
+    input[type="radio"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--green);
+    }
+
+    .switch {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 34px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .switch input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .switch-track {
+      position: relative;
+      width: 50px;
+      height: 28px;
+      border-radius: 999px;
+      background: #a9b5ae;
+      transition: background 160ms ease;
+    }
+
+    .switch-track::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      left: 4px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 4px rgb(23 32 27 / 0.3);
+      transition: transform 160ms ease;
+    }
+
+    .switch input:checked + .switch-track {
+      background: var(--green);
+    }
+
+    .switch input:checked + .switch-track::after {
+      transform: translateX(22px);
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 6px 10px;
+      border: 1px solid #b8c5be;
+      border-radius: 999px;
+      background: #fff;
+      color: #243229;
+      font-size: 0.88rem;
+      font-weight: 750;
+    }
+
+    .chip input {
+      margin: 0;
+    }
+
+    .inline-stat {
+      display: grid;
+      gap: 4px;
+      padding: 14px;
+      border: 1px solid #d4dcd6;
+      border-radius: var(--radius-sm);
+      background: #f7faf7;
+    }
+
+    .inline-stat strong {
+      font-size: 1.35rem;
+      line-height: 1;
+    }
+
+    .inline-stat span {
+      color: var(--muted);
+      font-size: 0.82rem;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--teal);
+    }
+
+    input[type="color"] {
+      width: 52px;
+      height: 40px;
+      border: 1px solid #aebbb4;
+      border-radius: var(--radius-sm);
+      background: #fff;
+      padding: 4px;
+    }
+
+    progress,
+    meter {
+      width: 100%;
+      height: 18px;
+    }
+
+    .measure-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    fieldset {
+      min-width: 0;
+      margin: 0;
+      padding: 16px;
+      border: 1px solid #b8c5be;
+      border-radius: var(--radius-md);
+    }
+
+    legend {
+      padding: 0 6px;
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel);
+    }
+
+    table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+    }
+
+    th,
+    td {
+      padding: 12px;
+      border-bottom: 1px solid #e1e7e3;
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    th {
+      background: #eef4ef;
+      color: #334039;
+      font-size: 0.76rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .table-input {
+      min-width: 120px;
+    }
+
+    details {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel);
+    }
+
+    details + details {
+      margin-top: 10px;
+    }
+
+    summary {
+      cursor: pointer;
+      padding: 14px 16px;
+      font-weight: 800;
+    }
+
+    details .panel-body {
+      border-top: 1px solid #e1e7e3;
+    }
+
+    .callout {
+      display: grid;
+      gap: 10px;
+      padding: 18px;
+      border: 1px solid #b7c8dc;
+      border-left: 5px solid var(--blue);
+      border-radius: var(--radius-md);
+      background: #f2f7fc;
+    }
+
+    .callout.warn {
+      border-color: #dcc7a6;
+      border-left-color: var(--amber);
+      background: #fbf5ea;
+    }
+
+    .notice-strip {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px;
+      border: 1px solid #bad3c4;
+      border-radius: var(--radius-md);
+      background: #e9f6ed;
+    }
+
+    .file-drop {
+      display: grid;
+      place-items: center;
+      min-height: 144px;
+      border: 2px dashed #94a9a0;
+      border-radius: var(--radius-md);
+      background: #f6faf7;
+      text-align: center;
+    }
+
+    .file-drop input {
+      max-width: 280px;
+    }
+
+    .swatch-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .swatch {
+      display: grid;
+      place-items: center;
+      width: 44px;
+      height: 44px;
+      border: 1px solid rgb(23 32 27 / 0.25);
+      border-radius: var(--radius-sm);
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 800;
+    }
+
+    .form-footer {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-top: 18px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+    }
+
+    dialog {
+      width: min(520px, calc(100% - 32px));
+      border: 1px solid #aebbb4;
+      border-radius: var(--radius-md);
+      box-shadow: 0 30px 90px rgb(23 32 27 / 0.28);
+    }
+
+    dialog::backdrop {
+      background: rgb(20 30 24 / 0.45);
+    }
+
+    .dialog-title {
+      margin: 0;
+      font-size: 1.25rem;
+    }
+
+    .footer-note {
+      margin: 46px 0 0;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    @media (max-width: 880px) {
+      .intro,
+      .section-header,
+      .grid.two,
+      .grid.three,
+      .measure-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar {
+        position: static;
+      }
+
+      .topbar-inner {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 14px 0;
+      }
+
+      .nav-links {
+        justify-content: flex-start;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .page-shell {
+        width: min(100% - 22px, 1180px);
+      }
+
+      .field-row,
+      .field.inline {
+        grid-template-columns: 1fr;
+      }
+
+      .segmented {
+        width: 100%;
+        grid-auto-flow: row;
+      }
+
+      .segmented label {
+        border-right: 0;
+        border-bottom: 1px solid #d7ded9;
+      }
+
+      .segmented label:last-child {
+        border-bottom: 0;
+      }
+    }
+  </style>
+</head>
+<body data-density="comfortable">
+  <header class="topbar">
+    <div class="page-shell topbar-inner">
+      <div class="brand" aria-label="Form Elements Showcase">
+        <span class="brand-mark">FE</span>
+        <span>Form Elements</span>
+      </div>
+      <nav class="nav-links" aria-label="Page sections">
+        <a href="#text-inputs">Text</a>
+        <a href="#choices">Choices</a>
+        <a href="#scheduling">Scheduling</a>
+        <a href="#files">Files</a>
+        <a href="#tables">Tables</a>
+        <a href="#advanced">Advanced</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page-shell">
+    <section class="intro" aria-labelledby="page-title">
+      <div>
+        <p class="eyebrow">Static HTML sample</p>
+        <h1 id="page-title">A long form control gallery</h1>
+        <p>
+          This single file lays out native form controls in different sizes,
+          treatments, densities, and contexts. It includes practical filler
+          copy so the controls can be seen inside a longer page rather than a
+          compact component sheet.
+        </p>
+      </div>
+
+      <aside class="status-panel" aria-label="Showcase summary">
+        <div class="status-row">
+          <span>Format</span>
+          <strong>Self-contained HTML</strong>
+        </div>
+        <div class="status-row">
+          <span>Sections</span>
+          <strong>Text, choices, dates, files, tables</strong>
+        </div>
+        <div class="status-row">
+          <span>Controls</span>
+          <strong>Native and styled examples</strong>
+        </div>
+        <div class="status-row">
+          <span>Density</span>
+          <strong id="densityLabel">Comfortable</strong>
+        </div>
+      </aside>
+    </section>
+
+    <section class="section-band" id="text-inputs">
+      <div class="section-header">
+        <div>
+          <p class="eyebrow">Text fields</p>
+          <h2>Inputs in small, default, and large sizes</h2>
+        </div>
+        <p>
+          Fusce vitae justo a magna porttitor tristique. Sed non enim sit amet
+          lorem tempus dignissim. Integer posuere, sem vel dignissim finibus,
+          urna nibh ultricies augue, at rhoncus lacus nibh et mi.
+        </p>
+      </div>
+
+      <div class="grid three">
+        <article class="panel">
+          <div class="panel-header">
+            <h3>Compact profile</h3>
+          </div>
+          <div class="panel-body size-sm">
+            <label class="field">
+              First name
+              <input type="text" name="first_name" placeholder="Milo">
+            </label>
+            <label class="field">
+              Email address
+              <input type="email" name="email" placeholder="name@example.com" autocomplete="email">
+            </label>
+            <label class="field">
+              Phone
+              <input type="tel" name="phone" placeholder="(555) 014-2244">
+            </label>
+            <button class="btn sm primary" type="button">Save compact</button>
+          </div>
+        </article>
+
+        <article class="panel style-filled">
+          <div class="panel-header">
+            <h3>Filled account form</h3>
+          </div>
+          <div class="panel-body">
+            <label class="field">
+              Company
+              <input type="text" name="company" placeholder="Northstar Pictures">
+            </label>
+            <label class="field">
+              Website
+              <input type="url" name="website" placeholder="https://example.com">
+            </label>
+            <label class="field">
+              Password
+              <input type="password" name="password" value="sample-value">
+            </label>
+            <div class="button-row">
+              <button class="btn primary" type="button">Continue</button>
+              <button class="btn" type="button">Cancel</button>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel style-underlined">
+          <div class="panel-header">
+            <h3>Large editorial form</h3>
+          </div>
+          <div class="panel-body size-lg">
+            <label class="field">
+              Campaign title
+              <input type="text" name="campaign_title" placeholder="Spring location scout">
+            </label>
+            <label class="field">
+              Search query
+              <input type="search" name="search" placeholder="Search all controls">
+            </label>
+            <label class="field">
+              Read-only reference
+              <input type="text" value="REF-2749-A" readonly>
+            </label>
+            <button class="btn lg pill" type="button">Preview</button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section-band tint">
+      <div class="page-shell">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Layout variety</p>
+            <h2>Inline fields, grouped rows, selects, and text areas</h2>
+          </div>
+          <p>
+            Aenean interdum lacus sed lacus pulvinar, at luctus quam feugiat.
+            Donec id ante eleifend, ultrices metus a, maximus purus. Morbi
+            suscipit nibh non nisi tempor feugiat.
+          </p>
+        </div>
+
+        <div class="grid two">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Shipping details</h3>
+            </div>
+            <div class="panel-body">
+              <div class="field-row">
+                <label class="field">
+                  Address line 1
+                  <input type="text" placeholder="123 Sunset Avenue">
+                </label>
+                <label class="field">
+                  Address line 2
+                  <input type="text" placeholder="Suite 400">
+                </label>
+              </div>
+              <div class="field-row">
+                <label class="field">
+                  City
+                  <input type="text" placeholder="Los Angeles">
+                </label>
+                <label class="field">
+                  State
+                  <select>
+                    <option>California</option>
+                    <option>New York</option>
+                    <option>Georgia</option>
+                    <option>Illinois</option>
+                  </select>
+                </label>
+              </div>
+              <label class="field">
+                Delivery notes
+                <textarea placeholder="Gate code, access hours, or handling notes"></textarea>
+                <span class="hint">Textarea with resize support and helper text.</span>
+              </label>
+            </div>
+          </article>
+
+          <article class="panel style-dark">
+            <div class="panel-header">
+              <h3>Dark form surface</h3>
+            </div>
+            <div class="panel-body">
+              <label class="field inline">
+                Workspace
+                <input type="text" value="Production Studio">
+              </label>
+              <label class="field inline">
+                Role
+                <select>
+                  <option>Administrator</option>
+                  <option>Approver</option>
+                  <option>Contributor</option>
+                  <option>Read only</option>
+                </select>
+              </label>
+              <label class="field inline">
+                Access code
+                <input type="text" placeholder="Enter code">
+              </label>
+              <p class="copy">
+                Nulla facilisi. Praesent commodo, arcu vitae venenatis
+                faucibus, lectus justo luctus mauris, vel placerat lacus ipsum
+                vitae sem.
+              </p>
+              <div class="button-row">
+                <button class="btn primary" type="button">Apply</button>
+                <button class="btn ghost" type="button">Reset</button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-band" id="choices">
+      <div class="section-header">
+        <div>
+          <p class="eyebrow">Choices</p>
+          <h2>Checkboxes, radios, switches, chips, and segmented controls</h2>
+        </div>
+        <p>
+          Curabitur vitae turpis vel magna interdum pulvinar. Cras non pretium
+          nibh. Vestibulum ante ipsum primis in faucibus orci luctus et ultrices
+          posuere cubilia curae.
+        </p>
+      </div>
+
+      <div class="grid two">
+        <article class="panel">
+          <div class="panel-header">
+            <h3>Notification preferences</h3>
+          </div>
+          <div class="panel-body">
+            <ul class="choice-list">
+              <li class="choice full">
+                <input id="weekly-summary" type="checkbox" checked>
+                <label for="weekly-summary">
+                  <strong>Weekly summary</strong>
+                  <small>Send a digest every Friday afternoon.</small>
+                </label>
+              </li>
+              <li class="choice full">
+                <input id="approval-alerts" type="checkbox">
+                <label for="approval-alerts">
+                  <strong>Approval alerts</strong>
+                  <small>Notify me when a request needs review.</small>
+                </label>
+              </li>
+              <li class="choice full">
+                <input id="billing-copy" type="checkbox" checked>
+                <label for="billing-copy">
+                  <strong>Billing copies</strong>
+                  <small>Copy finance on paid invoice updates.</small>
+                </label>
+              </li>
+            </ul>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h3>Selection formats</h3>
+          </div>
+          <div class="panel-body">
+            <fieldset>
+              <legend>Plan interval</legend>
+              <ul class="choice-list">
+                <li class="choice">
+                  <input id="monthly" type="radio" name="interval" checked>
+                  <label for="monthly">Monthly</label>
+                </li>
+                <li class="choice">
+                  <input id="quarterly" type="radio" name="interval">
+                  <label for="quarterly">Quarterly</label>
+                </li>
+                <li class="choice">
+                  <input id="annual" type="radio" name="interval">
+                  <label for="annual">Annual</label>
+                </li>
+              </ul>
+            </fieldset>
+
+            <div class="field">
+              <span class="label">View mode</span>
+              <div class="segmented" role="radiogroup" aria-label="View mode">
+                <input id="view-list" type="radio" name="view_mode" checked>
+                <label for="view-list">List</label>
+                <input id="view-board" type="radio" name="view_mode">
+                <label for="view-board">Board</label>
+                <input id="view-calendar" type="radio" name="view_mode">
+                <label for="view-calendar">Calendar</label>
+              </div>
+            </div>
+
+            <label class="switch">
+              <input id="switch-archive" type="checkbox" checked>
+              <span class="switch-track" aria-hidden="true"></span>
+              <span>Archive completed items</span>
+            </label>
+          </div>
+        </article>
+      </div>
+
+      <div class="panel" style="margin-top: 16px;">
+        <div class="panel-header">
+          <h3>Filter chips</h3>
+        </div>
+        <div class="panel-body">
+          <ul class="chip-list" aria-label="Filter chips">
+            <li><label class="chip"><input type="checkbox" checked> Active</label></li>
+            <li><label class="chip"><input type="checkbox"> Draft</label></li>
+            <li><label class="chip"><input type="checkbox" checked> High priority</label></li>
+            <li><label class="chip"><input type="checkbox"> Needs review</label></li>
+            <li><label class="chip"><input type="checkbox"> Late</label></li>
+            <li><label class="chip"><input type="checkbox"> Archived</label></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-band" id="scheduling">
+      <div class="section-header">
+        <div>
+          <p class="eyebrow">Dates and numbers</p>
+          <h2>Calendars, ranges, color pickers, meters, and output</h2>
+        </div>
+        <p>
+          Pellentesque tempus odio at eros pretium, ut rutrum metus tincidunt.
+          Suspendisse ac turpis at turpis congue tincidunt in ut risus. Etiam
+          id arcu posuere, gravida odio et, aliquam massa.
+        </p>
+      </div>
+
+      <div class="grid two">
+        <article class="panel">
+          <div class="panel-header">
+            <h3>Schedule window</h3>
+          </div>
+          <div class="panel-body">
+            <div class="field-row">
+              <label class="field">
+                Date
+                <input type="date" value="2026-06-25">
+              </label>
+              <label class="field">
+                Time
+                <input type="time" value="09:30">
+              </label>
+            </div>
+            <div class="field-row">
+              <label class="field">
+                Month
+                <input type="month" value="2026-07">
+              </label>
+              <label class="field">
+                Week
+                <input type="week" value="2026-W27">
+              </label>
+            </div>
+            <label class="field">
+              Date and time
+              <input type="datetime-local" value="2026-06-25T14:00">
+            </label>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header">
+            <h3>Budget controls</h3>
+          </div>
+          <div class="panel-body">
+            <label class="field">
+              Amount
+              <input type="number" min="0" step="50" value="1250">
+            </label>
+            <label class="field">
+              Confidence
+              <input id="confidenceRange" type="range" min="0" max="100" value="64">
+              <span class="hint">Current value: <output id="confidenceOutput">64</output>%</span>
+            </label>
+            <label class="field">
+              Accent color
+              <span class="swatch-row">
+                <input id="accentColor" type="color" value="#087d8f" aria-label="Accent color">
+                <span class="swatch" id="accentSwatch" style="background: #087d8f;">64</span>
+              </span>
+            </label>
+          </div>
+        </article>
+      </div>
+
+      <div class="measure-grid" style="margin-top: 16px;">
+        <div class="inline-stat">
+          <span>Capacity</span>
+          <strong>78%</strong>
+          <meter min="0" max="100" value="78">78%</meter>
+        </div>
+        <div class="inline-stat">
+          <span>Progress</span>
+          <strong>42%</strong>
+          <progress max="100" value="42">42%</progress>
+        </div>
+        <div class="inline-stat">
+          <span>Open tasks</span>
+          <strong>18</strong>
+          <input type="range" min="0" max="30" value="18" aria-label="Open tasks">
+        </div>
+        <div class="inline-stat">
+          <span>Risk score</span>
+          <strong>Low</strong>
+          <meter min="0" max="100" low="35" high="70" optimum="12" value="22">22%</meter>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-band tint" id="files">
+      <div class="page-shell">
+        <div class="section-header">
+          <div>
+            <p class="eyebrow">Files and media</p>
+            <h2>File pickers, image fields, and supporting controls</h2>
+          </div>
+          <p>
+            Nunc condimentum leo nec metus porttitor, vitae malesuada leo
+            condimentum. Maecenas tristique porta arcu, eget cursus lorem
+            vulputate vitae.
+          </p>
+        </div>
+
+        <div class="grid two">
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Upload package</h3>
+            </div>
+            <div class="panel-body">
+              <div class="file-drop">
+                <label class="field">
+                  Select files
+                  <input type="file" multiple>
+                  <span class="hint">Multiple file input inside a dashed drop surface.</span>
+                </label>
+              </div>
+              <label class="field">
+                Category
+                <select>
+                  <optgroup label="Documents">
+                    <option>Contracts</option>
+                    <option>Invoices</option>
+                    <option>Releases</option>
+                  </optgroup>
+                  <optgroup label="Media">
+                    <option>Photos</option>
+                    <option>Audio</option>
+                    <option>Video</option>
+                  </optgroup>
+                </select>
+              </label>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <h3>Asset metadata</h3>
+            </div>
+            <div class="panel-body">
+              <label class="field">
+                Asset type
+                <input list="asset-types" placeholder="Start typing">
+                <datalist id="asset-types">
+                  <option value="Call sheet"></option>
+                  <option value="Location photo"></option>
+                  <option value="Talent release"></option>
+                  <option value="Insurance certificate"></option>
+                  <option value="Vendor invoice"></option>
+                </datalist>
+              </label>
+              <label class="field">
+                Short description
+                <textarea maxlength="220" placeholder="Describe the file in one or two sentences."></textarea>
+              </label>
+              <div class="button-row">
+                <button class="btn primary" type="button">Attach</button>
+                <button class="btn" type="reset">Clear</button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-band" id="tables">
+      <div class="section-header">
+        <div>
+          <p class="eyebrow">Dense forms</p>
+          <h2>Editable rows inside a table-like layout</h2>
+        </div>
+        <p>
+          Integer luctus ex velit, ac hendrerit metus fringilla vel. Duis
+          tempor ex id interdum dictum. Praesent accumsan, ligula vel placerat
+          sodales, lacus nibh luctus sapien, nec mattis augue justo eget justo.
+        </p>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Line item</th>
+              <th scope="col">Owner</th>
+              <th scope="col">Status</th>
+              <th scope="col">Amount</th>
+              <th scope="col">Approved</th>
+              <th scope="col">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><input class="table-input" type="text" value="Location scout"></td>
+              <td>
+                <select class="table-input">
+                  <option>Avery</option>
+                  <option>Jordan</option>
+                  <option>Taylor</option>
+                </select>
+              </td>
+              <td>
+                <select class="table-input">
+                  <option>Ready</option>
+                  <option>Draft</option>
+                  <option>Blocked</option>
+                </select>
+              </td>
+              <td><input class="table-input" type="number" value="850"></td>
+              <td><input type="checkbox" checked aria-label="Approved"></td>
+              <td><button class="btn sm" type="button">Edit</button></td>
+            </tr>
+            <tr>
+              <td><input class="table-input" type="text" value="Permit fees"></td>
+              <td>
+                <select class="table-input">
+                  <option>Jordan</option>
+                  <option>Avery</option>
+                  <option>Taylor</option>
+                </select>
+              </td>
+              <td>
+                <select class="table-input">
+                  <option>Draft</option>
+                  <option>Ready</option>
+                  <option>Blocked</option>
+                </select>
+              </td>
+              <td><input class="table-input" type="number" value="1400"></td>
+              <td><input type="checkbox" aria-label="Approved"></td>
+              <td><button class="btn sm" type="button">Edit</button></td>
+            </tr>
+            <tr>
+              <td><input class="table-input" type="text" value="Wardrobe rental"></td>
+              <td>
+                <select class="table-input">
+                  <option>Taylor</option>
+                  <option>Avery</option>
+                  <option>Jordan</option>
+                </select>
+              </td>
+              <td>
+                <select class="table-input">
+                  <option>Blocked</option>
+                  <option>Ready</option>
+                  <option>Draft</option>
+                </select>
+              </td>
+              <td><input class="table-input" type="number" value="620"></td>
+              <td><input type="checkbox" aria-label="Approved"></td>
+              <td><button class="btn sm" type="button">Edit</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section-band" id="advanced">
+      <div class="section-header">
+        <div>
+          <p class="eyebrow">Advanced controls</p>
+          <h2>Accordions, dialog, disabled states, validation, and density</h2>
+        </div>
+        <p>
+          Vivamus sit amet mi non turpis pellentesque suscipit. Aliquam sed
+          feugiat nunc. Proin a arcu sed lacus pulvinar congue in nec nibh.
+        </p>
+      </div>
+
+      <div class="grid two">
+        <div>
+          <details open>
+            <summary>Validation examples</summary>
+            <div class="panel-body">
+              <label class="field">
+                Required project name
+                <input type="text" required placeholder="Required field">
+              </label>
+              <label class="field">
+                Pattern input
+                <input type="text" pattern="[A-Z]{3}-[0-9]{3}" placeholder="ABC-123">
+                <span class="hint">Accepts three uppercase letters, a dash, and three numbers.</span>
+              </label>
+              <label class="field">
+                Disabled select
+                <select disabled>
+                  <option>Unavailable option</option>
+                </select>
+              </label>
+            </div>
+          </details>
+
+          <details>
+            <summary>Density and modal controls</summary>
+            <div class="panel-body">
+              <label class="field">
+                Page density
+                <select id="densitySelect">
+                  <option value="comfortable">Comfortable</option>
+                  <option value="compact">Compact</option>
+                </select>
+              </label>
+              <div class="button-row">
+                <button class="btn primary" id="openDialog" type="button">Open dialog</button>
+                <button class="btn icon" type="button" aria-label="Settings">...</button>
+                <button class="btn danger" type="button">Delete</button>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <div class="grid">
+          <div class="callout">
+            <h3>Grouped controls with explanatory copy</h3>
+            <p class="copy">
+              Etiam vitae nisl sit amet leo imperdiet fermentum. Quisque
+              placerat felis a posuere luctus. Phasellus non purus sapien.
+            </p>
+            <label class="switch">
+              <input type="checkbox">
+              <span class="switch-track" aria-hidden="true"></span>
+              <span>Enable secondary review</span>
+            </label>
+          </div>
+
+          <div class="callout warn">
+            <h3>Inline warning treatment</h3>
+            <p class="copy">
+              Mauris malesuada neque id ante ullamcorper, a porttitor est
+              vehicula. The buttons below show different weights in a compact
+              decision row.
+            </p>
+            <div class="button-row">
+              <button class="btn sm primary" type="button">Approve</button>
+              <button class="btn sm" type="button">Hold</button>
+              <button class="btn sm danger" type="button">Reject</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="notice-strip" style="margin-top: 16px;">
+        <div>
+          <strong>End-of-page form footer</strong>
+          <p class="copy">
+            Duis lobortis velit ut lectus consequat, a rhoncus lectus pretium.
+          </p>
+        </div>
+        <div class="button-row">
+          <button class="btn" type="button">Back</button>
+          <button class="btn primary" type="button">Submit all</button>
+        </div>
+      </div>
+    </section>
+
+    <p class="footer-note">
+      This file contains embedded CSS and JavaScript only; no external assets or
+      framework dependencies are required.
+    </p>
+  </main>
+
+  <dialog id="sampleDialog" aria-labelledby="dialogTitle">
+    <form method="dialog" class="panel-body">
+      <h2 class="dialog-title" id="dialogTitle">Dialog form</h2>
+      <p class="copy">
+        A native dialog can hold the same form controls while preserving focus
+        management in supported browsers.
+      </p>
+      <label class="field">
+        Dialog note
+        <textarea placeholder="Add a short note before closing."></textarea>
+      </label>
+      <label class="switch">
+        <input type="checkbox" checked>
+        <span class="switch-track" aria-hidden="true"></span>
+        <span>Send confirmation</span>
+      </label>
+      <div class="form-footer">
+        <button class="btn" value="cancel">Cancel</button>
+        <button class="btn primary" value="save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script>
+    const range = document.querySelector("#confidenceRange");
+    const output = document.querySelector("#confidenceOutput");
+    const color = document.querySelector("#accentColor");
+    const swatch = document.querySelector("#accentSwatch");
+    const densitySelect = document.querySelector("#densitySelect");
+    const densityLabel = document.querySelector("#densityLabel");
+    const dialog = document.querySelector("#sampleDialog");
+    const openDialog = document.querySelector("#openDialog");
+
+    range.addEventListener("input", () => {
+      output.value = range.value;
+      swatch.textContent = range.value;
+    });
+
+    color.addEventListener("input", () => {
+      swatch.style.background = color.value;
+    });
+
+    densitySelect.addEventListener("change", () => {
+      document.body.dataset.density = densitySelect.value;
+      densityLabel.textContent =
+        densitySelect.value.charAt(0).toUpperCase() + densitySelect.value.slice(1);
+    });
+
+    openDialog.addEventListener("click", () => {
+      if (typeof dialog.showModal === "function") {
+        dialog.showModal();
+      }
+    });
+  </script>
+</body>
+</html>
