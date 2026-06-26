@@ -23,10 +23,12 @@ act, adapt — not as a pre-written script.
   page), not by brute-forcing a hidden widget. If a step times out, STOP and take the obvious path
   instead of retrying the same dead end — and use `--timeout 10` so a wrong turn fails fast instead
   of burning 30s.
-- After a click that navigates (Turbo / SPA especially), `page.url()` and the new content lag until
-  the request lands — don't read them the instant the click returns. `await page.waitForURL(<url |
-  regex>)` or `await page.waitForSettled()`, then read. Canary does track the new URL; it just isn't
-  there immediately.
+- A click that navigates (Turbo / SPA especially) finishes asynchronously — the fetch lands, the DOM
+  swaps, the URL updates — so don't read `page.url()` the instant the click returns (it's client-
+  cached and lags a same-document Turbo nav until the nav commits). Use the one call that straddles the click:
+  `const href = await page.humanClickAndWaitForURL(link)`. Don't lean on `waitForSettled` to wait out
+  a nav — it watches DOM mutations, which fall quiet during the fetch gap, so it can return before the
+  nav commits and you read a stale page/URL.
 - A click returning is NOT success. Before you submit, confirm the submit control is enabled and
   every required field / checkbox is satisfied; afterward, verify the change actually persisted. A
   disabled or validation-blocked submit saved nothing — never report that run as passed.
@@ -92,15 +94,21 @@ into a few intent-named steps.
 - After a navigation the new page often renders asynchronously (client-side routing / SPAs swap
   content without a full document load). Don't snapshot or assert the instant a click returns.
   Prefer acting on or waiting for a KNOWN element on the destination (`getByRole`/`getByText`) —
-  Playwright auto-waits for it, which both confirms the navigation and avoids reading stale
-  content. When you must observe an unknown post-navigation page, `await page.waitForSettled()`
-  first — it waits (bounded) for the DOM to stop changing, framework-agnostically. Avoid fixed
-  `waitForTimeout`, and `waitForLoadState("networkidle")` (it can hang on apps with live connections).
+  Playwright auto-waits for it, which both confirms the navigation and avoids reading stale content.
+  Triggering the nav with a click? `await page.humanClickAndWaitForURL(link)` waits for the URL and
+  load in one call. Only AFTER the nav is confirmed, to observe an unknown page, `await
+  page.waitForSettled()` to let it quiesce — `waitForSettled` ALONE is not a nav-wait: its quiet
+  window can elapse during the fetch gap and return before the nav commits. Avoid fixed
+  `waitForTimeout`; `waitForLoadState("load")` / `"domcontentloaded"` are fine, but `"networkidle"`
+  can hang on apps with long-lived HTTP (SSE, long-polling, heartbeats) — an open WebSocket alone
+  does NOT block it.
 - `page.url()` is a cached value updated by an async event, so right after a client-side navigation
-  it can still read the OLD url — especially a Turbo/SPA visit, whose URL only changes once its
-  fetch lands. To read or assert the post-navigation URL, `await page.waitForURL(<url|regex|fn>)`,
-  or `await page.waitForSettled()` then read `page.url()`, or read the live value with
-  `await page.evaluate(() => location.href)`.
+  it can still read the OLD url — especially a Turbo/SPA visit, whose URL only changes once its fetch
+  lands and the nav commits. To get the post-nav URL,
+  prefer the helpers that read the live `location.href`: `page.humanClickAndWaitForURL(link)`
+  (returns the new href) or `page.waitForURLChange({ from })`; or `page.waitForURL(<url|regex|fn>)`
+  for a known destination; or read it directly with `await page.evaluate(() => location.href)`.
+  Never `waitForSettled()` then read `page.url()` — both can be stale.
 <!-- canary:end rule-observe-first -->
 
 <!-- canary:snippet rule-visible-interaction -->

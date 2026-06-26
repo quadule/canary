@@ -519,6 +519,101 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       expect(result.threw).toBe(true);
       expect(result.message).toContain("did not change");
     }, 15_000);
+
+    it("humanClickAndWaitForURL clicks a link and resolves on the loaded new page", async () => {
+      const firstUrl = `${navigationServer.baseUrl}/nav/first`;
+      const result = await harness.runJson<{
+        startHref: string;
+        newHref: string;
+        title: string;
+      }>(`
+        const page = await browser.getPage("navigation-human-click-wait");
+        await page.goto(${JSON.stringify(firstUrl)}, { waitUntil: "domcontentloaded" });
+        const startHref = await page.evaluate(() => location.href);
+        // One call: captures the URL before the click, clicks, waits for the
+        // URL to change AND the new document to load — then returns the href.
+        const newHref = await page.humanClickAndWaitForURL("#next-link");
+        console.log(JSON.stringify({
+          startHref,
+          newHref,
+          title: await page.title(),
+        }));
+      `);
+
+      expect(result.startHref).toBe(firstUrl);
+      expect(result.newHref).toBe(`${navigationServer.baseUrl}/nav/second`);
+      // page.title() reflects the NEW document, proving the load-state wait ran.
+      expect(result.title).toBe("Second Page");
+    }, 20_000);
+
+    it("humanClickAndWaitForURL accepts an explicit destination url", async () => {
+      const firstUrl = `${navigationServer.baseUrl}/nav/first`;
+      const result = await harness.runJson<{ newHref: string }>(`
+        const page = await browser.getPage("navigation-human-click-url");
+        await page.goto(${JSON.stringify(firstUrl)}, { waitUntil: "domcontentloaded" });
+        const newHref = await page.humanClickAndWaitForURL("#next-link", {
+          url: "**/nav/second",
+        });
+        console.log(JSON.stringify({ newHref }));
+      `);
+
+      expect(result.newHref).toBe(`${navigationServer.baseUrl}/nav/second`);
+    }, 20_000);
+
+    it("humanClickAndWaitForURL handles a same-document (Turbo-style) click nav", async () => {
+      const firstUrl = `${navigationServer.baseUrl}/nav/first`;
+      const result = await harness.runJson<{
+        startHref: string;
+        newHref: string;
+      }>(`
+        const page = await browser.getPage("navigation-human-click-pushstate");
+        await page.goto(${JSON.stringify(firstUrl)}, { waitUntil: "domcontentloaded" });
+        // Simulate Turbo/Hotwire: intercept the link click and pushState after a
+        // gap instead of a full document load (no new "load" fires). This is the
+        // case the old humanClick + waitForSettled + page.url() pattern lost —
+        // the DOM falls quiet during the gap, so waitForSettled returns before
+        // the pushState. humanClickAndWaitForURL polls location.href across it.
+        await page.evaluate(() => {
+          const link = document.getElementById("next-link");
+          link.addEventListener("click", (event) => {
+            event.preventDefault();
+            setTimeout(() => history.pushState({}, "", "/nav/pushed-by-click"), 150);
+          });
+        });
+        const startHref = await page.evaluate(() => location.href);
+        const newHref = await page.humanClickAndWaitForURL("#next-link");
+        console.log(JSON.stringify({ startHref, newHref }));
+      `);
+
+      expect(result.startHref).toBe(firstUrl);
+      expect(result.newHref).toBe(
+        `${navigationServer.baseUrl}/nav/pushed-by-click`
+      );
+    }, 20_000);
+
+    it("humanClickAndWaitForURL throws when the click does not navigate", async () => {
+      const thirdUrl = `${navigationServer.baseUrl}/nav/third`;
+      const result = await harness.runJson<{
+        threw: boolean;
+        message: string;
+      }>(`
+        const page = await browser.getPage("navigation-human-click-no-nav");
+        await page.goto(${JSON.stringify(thirdUrl)}, { waitUntil: "domcontentloaded" });
+        let threw = false;
+        let message = "";
+        try {
+          // On /nav/third, #next-link is a non-navigating <span>.
+          await page.humanClickAndWaitForURL("#next-link", { timeout: 600 });
+        } catch (error) {
+          threw = true;
+          message = String(error && error.message ? error.message : error);
+        }
+        console.log(JSON.stringify({ threw, message }));
+      `);
+
+      expect(result.threw).toBe(true);
+      expect(result.message).toContain("did not change");
+    }, 15_000);
   });
 
   describe.sequential("content and evaluation", () => {

@@ -725,14 +725,14 @@ export class QuickJSSandbox {
                 const locator = resolveLocator(page, target);
                 await revealAndGlide(page, locator);
                 await locator.click();
-                // Park the cursor just below the field so it doesn't sit on top
+                // Park the cursor just above the field so it doesn't sit on top
                 // of the text as it's typed.
                 await locator
                   .evaluate((el) => {
                     const r = el.getBoundingClientRect();
                     window.__canaryCursor?.park(
                       r.left + 8 + Math.random() * 16,
-                      r.bottom + 12 + Math.random() * 14
+                      r.top - 12 + Math.random() * 14
                     );
                   })
                   .catch(() => undefined);
@@ -1043,6 +1043,56 @@ export class QuickJSSandbox {
                   await page.waitForTimeout(intervalMs);
                   waited += intervalMs;
                 }
+              };
+              // Click a control that triggers a navigation and wait for it the
+              // race-free way, in one call. Reading the URL AFTER a click is
+              // racy: a Turbo/Hotwire/SPA visit fetches before it swaps the DOM
+              // and runs pushState, and page.url() is client-cached and lags a
+              // same-document nav until it commits — so humanClick +
+              // waitForSettled + page.url() reads the OLD url (waitForSettled
+              // watches DOM mutations, which go quiet during the fetch gap and
+              // let it return before the nav commits). This captures location.href BEFORE the
+              // click, clicks, then waits — under ONE shared timeout — for the
+              // live URL to settle AND the page to reach a load state. Returns
+              // the new href.
+              //   options.url       wait for this specific destination (glob /
+              //                     RegExp / predicate) instead of "any change".
+              //   options.loadState which load state to also await; default
+              //                     "load" (safe everywhere — and a harmless
+              //                     no-op for a same-document Turbo nav, where
+              //                     the URL wait is the real signal). Pass
+              //                     "networkidle" to also wait for the fetch and
+              //                     its sub-resources to go quiet — only on apps
+              //                     whose sole live connection is a WebSocket (an
+              //                     open WebSocket does NOT hold networkidle;
+              //                     long-poll / SSE / heartbeat HTTP does).
+              //   options.timeout   shared cap for both waits (default 15000).
+              //   options.clickOptions  passed through to the underlying click.
+              // For a click that should NOT navigate, use humanClick — this
+              // throws (the URL never changes) once the timeout elapses.
+              page.humanClickAndWaitForURL = async (target, options) => {
+                const opts = options || {};
+                const timeout =
+                  typeof opts.timeout === "number" ? opts.timeout : 15000;
+                const loadState = opts.loadState || "load";
+                // Capture BEFORE the click so the wait straddles the navigation.
+                const from = await page
+                  .evaluate(() => location.href)
+                  .catch(() => null);
+                await page.humanClick(target, opts.clickOptions);
+                const urlWait =
+                  opts.url !== undefined
+                    ? page.waitForURL(opts.url, { timeout })
+                    : page.waitForURLChange({ from, timeout });
+                // The URL wait is authoritative for "did it navigate"; a
+                // load-state timeout shouldn't reject the call, so swallow it.
+                await Promise.all([
+                  urlWait,
+                  page
+                    .waitForLoadState(loadState, { timeout })
+                    .catch(() => undefined),
+                ]);
+                return page.evaluate(() => location.href).catch(() => null);
               };
               // Reveal a region for the camera without acting on it: smooth-
               // scroll it into view and glide the virtual cursor onto it (the
