@@ -41,12 +41,12 @@ as it records.
   page), not by brute-forcing a hidden widget. If a step times out, STOP and take the obvious path
   instead of retrying the same dead end — and use `--timeout 10` so a wrong turn fails fast instead
   of burning 30s.
-- A click that navigates (Turbo / SPA especially) finishes asynchronously — the fetch lands, the DOM
-  swaps, the URL updates — so don't read `page.url()` the instant the click returns (it's client-
-  cached and lags a same-document Turbo nav until the nav commits). If you need the new URL in the
-  SAME step, use the call that straddles the click: `const href = await
-  page.humanClickAndWaitForURL(link)`. Otherwise you needn't wait — Canary settles the page at the
-  end of every step, so the next step's fresh page is already on the committed, quiet destination.
+- A click that navigates (Turbo / SPA especially) finishes asynchronously — `humanClick` returns
+  BEFORE the navigation commits, so do NOT read `page.url()` or `snapshotForAI()` on the next line
+  (you'll get the OLD page; `page.url()` is also client-cached and lags a Turbo nav). Two correct
+  options: (1) make the navigating click the LAST action of the step and observe at the start of the
+  next — Canary settles the page at each step boundary, so it's already on the committed destination;
+  or (2) to stay in the same step, `const href = await page.humanClickAndWaitForURL(link)`.
 - A click returning is NOT success. Before you submit, confirm the submit control is enabled and
   every required field / checkbox is satisfied; afterward, verify the change actually persisted. A
   disabled or validation-blocked submit saved nothing — never report that run as passed.
@@ -59,6 +59,25 @@ as it records.
   cursor, and the trace / video / HAR capture, so nothing is recorded or verifiable. If a step
   tempts you toward another browser tool, write a Canary script instead.
 <!-- canary:end rule-drive-with-canary -->
+
+<!-- canary:snippet rule-test-as-user -->
+- Drive the real user flow in the browser FIRST. Do NOT change the environment to set up or "fix" a
+  precondition before you've tried the flow as a user — no Rails/DB console, env vars, feature-flag
+  flips, seed scripts, or API calls to manufacture state. The thing you were asked to verify is
+  sacred: never reset, clear, bypass, or fake it. (Asked to show a Terms-of-Service prompt appears?
+  Do NOT clear the user's ToS acceptance — that prompt IS the point, and the environment was likely
+  prepared so it shows.) Reading the code or inspecting state to understand the flow is fine, but
+  only AFTER you've attempted to drive it from the browser, and strictly read-only — never mutate.
+- Blocked by something only an operator can do (no login credentials, a feature flag, manual setup)?
+  In an INTERACTIVE session, STOP and ask the user — they may have set it up already. In an
+  AUTONOMOUS / CI run, proceed carefully but never bypass or fake what's under test; if you're truly
+  blocked, end the session and report exactly what blocked you, with the evidence — never fabricate a
+  pass or quietly skip the step under test.
+- Weigh what you were asked. Verifying a change or feature → be conservative: the setup IS the test,
+  so touch nothing and drive exactly what a real user would. Only performing or recording a workflow
+  (no pass/fail claim) → more leeway to arrange incidental preconditions, but still drive as a real
+  user and never mutate what the run is meant to show.
+<!-- canary:end rule-test-as-user -->
 
 <!-- canary:snippet rule-scripting-reference cli=npx-cli -->
 - The canary-scripting skill is the full scripting reference — the custom page and locator API, the

@@ -19,7 +19,10 @@
   person for the recording: smooth-scroll the element into view, glide the on-screen cursor onto
   it and let it land, then click — or, for a fill, focus and type with real key events. `target` is
   a selector string or a locator. Prefer these for recorded interactions — they reveal the target
-  for you, so you don't call `scrollIntoViewIfNeeded` first.
+  for you, so you don't call `scrollIntoViewIfNeeded` first. NAVIGATING click (a link or a submit)?
+  `humanClick` returns BEFORE the navigation commits — a `page.url()` or `snapshotForAI()` on the
+  next line shows the OLD page. Either make that click the LAST action of the step (the step-end
+  settle commits it; observe in the next step) or use `humanClickAndWaitForURL` to stay in this step.
 - `page.humanClickAndWaitForURL(target, opts?)` — Canary helper: `humanClick` a control that
   NAVIGATES, then wait for it the race-free way. Captures `location.href` BEFORE the click and waits
   — under one `opts.timeout` (default 15000) — for the URL to settle AND `opts.loadState` (default
