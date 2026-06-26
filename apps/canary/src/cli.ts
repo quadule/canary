@@ -28,6 +28,7 @@ import { sessionEnd } from "./commands/session-end.js";
 import { sessionList } from "./commands/session-list.js";
 import { sessionStart } from "./commands/session-start.js";
 import { sessionTakeover } from "./commands/session-takeover.js";
+import { sessionUrl } from "./commands/session-url.js";
 import { statusCommand } from "./commands/status.js";
 import { uiCommand } from "./commands/ui.js";
 import { logger } from "./logger.js";
@@ -235,6 +236,17 @@ export function buildProgram(): CommandType {
     .description("List recorded sessions")
     .action(async () => {
       const code = await sessionList(isJson(program));
+      throw new ExitCodeError(code);
+    });
+
+  session
+    .command("url")
+    .description(
+      "Print a session's current page URL (read-only; records nothing) — use it between steps to check where you landed"
+    )
+    .argument("<id>", "Session id")
+    .action(async (id: string) => {
+      const code = await sessionUrl(id, isJson(program));
       throw new ExitCodeError(code);
     });
 

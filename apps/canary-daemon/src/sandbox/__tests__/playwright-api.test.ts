@@ -643,6 +643,20 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       expect(result.title).toBe("Slow Page");
     }, 20_000);
 
+    it("getActivePageInfo returns the active page's live url and title", async () => {
+      const secondUrl = `${navigationServer.baseUrl}/nav/second`;
+      await harness.runJson(`
+        const page = await browser.getPage("active-info");
+        await page.goto(${JSON.stringify(secondUrl)}, { waitUntil: "domcontentloaded" });
+        console.log(JSON.stringify({ ok: true }));
+      `);
+
+      const info = await manager.getActivePageInfo(browserName);
+      expect(info).not.toBeNull();
+      expect(info?.url).toBe(secondUrl);
+      expect(info?.title).toBe("Second Page");
+    }, 15_000);
+
     it("humanClickAndWaitForURL throws when the click does not navigate", async () => {
       const thirdUrl = `${navigationServer.baseUrl}/nav/third`;
       const result = await harness.runJson<{

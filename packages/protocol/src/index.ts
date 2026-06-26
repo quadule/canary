@@ -126,6 +126,14 @@ export const SessionStatusRequestSchema = RequestBaseSchema.extend({
   sessionId: SessionIdSchema,
 });
 
+// Read-only, fast peek at a session's active page — the live URL and title,
+// straight from the page (no client-cache lag, no settle, no recorded step).
+// Lets the agent decide its next move between steps without a bookkeeping run.
+export const SessionUrlRequestSchema = RequestBaseSchema.extend({
+  type: z.literal("session-url"),
+  sessionId: SessionIdSchema,
+});
+
 export const SessionListRequestSchema = RequestBaseSchema.extend({
   type: z.literal("session-list"),
 });
@@ -142,6 +150,7 @@ export const RequestSchema = z.discriminatedUnion("type", [
   SessionTakeoverStartRequestSchema,
   SessionTakeoverStopRequestSchema,
   SessionStatusRequestSchema,
+  SessionUrlRequestSchema,
   SessionListRequestSchema,
 ]);
 
@@ -161,6 +170,7 @@ export type SessionTakeoverStopRequest = z.infer<
   typeof SessionTakeoverStopRequestSchema
 >;
 export type SessionStatusRequest = z.infer<typeof SessionStatusRequestSchema>;
+export type SessionUrlRequest = z.infer<typeof SessionUrlRequestSchema>;
 export type SessionListRequest = z.infer<typeof SessionListRequestSchema>;
 export type CaptureOptions = z.infer<typeof CaptureOptionsSchema>;
 export type Viewport = z.infer<typeof ViewportSchema>;

@@ -662,6 +662,39 @@ async function handleRequest(socket: net.Socket, line: string): Promise<void> {
       return;
     }
 
+    case "session-url": {
+      if (!sessions.has(request.sessionId)) {
+        await writeMessage(socket, {
+          id: request.id,
+          type: "error",
+          message: `Session "${request.sessionId}" not found`,
+        });
+        return;
+      }
+      const info = await manager.getActivePageInfo(
+        sessionBrowserName(request.sessionId)
+      );
+      if (!info) {
+        await writeMessage(socket, {
+          id: request.id,
+          type: "error",
+          message: `Session "${request.sessionId}" has no open page yet`,
+        });
+        return;
+      }
+      await writeMessage(socket, {
+        id: request.id,
+        type: "result",
+        data: info,
+      });
+      await writeMessage(socket, {
+        id: request.id,
+        type: "complete",
+        success: true,
+      });
+      return;
+    }
+
     case "session-list":
       await writeMessage(socket, {
         id: request.id,

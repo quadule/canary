@@ -505,6 +505,32 @@ export class BrowserManager {
     await last.page.screenshot({ path: outPath });
   }
 
+  // Read-only, fast peek at the active page's live URL + title — straight from
+  // the page (location.href / document.title), so it reflects a committed
+  // Turbo/SPA nav with no client-cache lag, and never runs a settle. Returns
+  // null if the browser/page isn't there. Powers `canary session url`, which
+  // lets the agent check where it landed between steps without a recorded run.
+  async getActivePageInfo(
+    browserName: string
+  ): Promise<{ title: string; url: string } | null> {
+    const entry = this.browsers.get(browserName);
+    if (!entry?.browser.isConnected()) {
+      return null;
+    }
+
+    const last = this.getContextPages(entry).at(-1);
+    if (!last) {
+      return null;
+    }
+
+    // String-eval (the daemon's TS build has no DOM lib) of a single expression
+    // returning both values in one round-trip.
+    const info = await last.page
+      .evaluate("({ url: location.href, title: document.title })")
+      .catch(() => null);
+    return (info as { title: string; url: string } | null) ?? null;
+  }
+
   // Bounded, best-effort "let the page settle" run at the END of each session
   // step (daemon-side, on the REAL Playwright page — so it sees the true URL
   // with no client-cache lag). Lets a navigation or fetch the step triggered

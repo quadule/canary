@@ -28,7 +28,9 @@ act, adapt — not as a pre-written script.
   (you'll get the OLD page; `page.url()` is also client-cached and lags a Turbo nav). Two correct
   options: (1) make the navigating click the LAST action of the step and observe at the start of the
   next — Canary settles the page at each step boundary, so it's already on the committed destination;
-  or (2) to stay in the same step, `const href = await page.humanClickAndWaitForURL(link)`.
+  or (2) to stay in the same step, `const href = await page.humanClickAndWaitForURL(link)`. To check
+  where you landed between steps without a recorded run, `npx @usecanary/cli session url <id>` prints the live
+  committed URL (read-only, fast).
 - A click returning is NOT success. Before you submit, confirm the submit control is enabled and
   every required field / checkbox is satisfied; afterward, verify the change actually persisted. A
   disabled or validation-blocked submit saved nothing — never report that run as passed.
