@@ -71,13 +71,24 @@ const STEP_PAD_AFTER_SEC = 1.5;
 // Map each recorded step to a keep-window in video time. The video starts at the
 // session's createdAt, and each step is stamped with the same wall clock, so
 // (step.startedAt - createdAt) is the step's offset into the recording.
-function stepKeepWindows(record: SessionRecord): Segment[] {
+//
+// Failed steps (ok === false) are left out. A step that timed out or errored —
+// e.g. an agent stuck retrying the login page — records as a long, mostly frozen
+// stretch whose only value (the failure) is already captured in the report and
+// results.json. Keeping its window would pad the condensed cut (and the cinematic
+// demo) with dead air from attempts that didn't work; dropping it trims those
+// stuck retries out. If every step failed we return no windows and condenseVideo
+// falls back to whole-video freezedetect, so a wholly-failed run still trims.
+export function stepKeepWindows(record: SessionRecord): Segment[] {
   const t0 = Date.parse(record.createdAt);
   if (!Number.isFinite(t0)) {
     return [];
   }
   const windows: Segment[] = [];
   for (const step of record.steps) {
+    if (!step.ok) {
+      continue;
+    }
     const startMs = Date.parse(step.startedAt);
     if (!Number.isFinite(startMs)) {
       continue;
