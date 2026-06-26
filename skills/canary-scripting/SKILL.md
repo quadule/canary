@@ -166,8 +166,11 @@ console.log(snap.full); // aria outline — pick a role/text selector from this
   interaction a viewer is asked to trust. The helpers scroll to the target but cannot reveal an
   element hidden behind collapsed UI — if
   it lives inside a closed menu, dropdown, accordion, tab, or unopened modal, open that container
-  first (as its own action), then interact. Any `scrollIntoViewIfNeeded` / `page.isVisible(sel)`
-  checks fold into the interaction's own script — keep them out of the step list as bookkeeping.
+  first, then interact — in the SAME step. A toggle-opened container (a menu/dropdown) STAYS open
+  across steps, so if you opened it in an earlier step (e.g. to snapshot and find the item), do NOT
+  click the toggle again to "open" it — that CLOSES it; just click the item. Any
+  `scrollIntoViewIfNeeded` / `page.isVisible(sel)` checks fold into the interaction's own script —
+  keep them out of the step list as bookkeeping.
 - To bring something into view just to SHOW it (not act on it), use `page.reveal(target)` — never
   `window.scrollTo` or `page.evaluate(() => scrollTo(...))`, which move nothing the camera can see.
   Observing doesn't need scrolling at all: `snapshotForAI` reads the whole page regardless of scroll.
