@@ -21,6 +21,7 @@ import { existsSync } from "node:fs";
 import {
   access,
   copyFile,
+  readFile,
   rename,
   rm,
   stat,
@@ -2356,9 +2357,11 @@ export function planRetime(args: {
   return { starts, footage, holds, leadSec };
 }
 
-// A small still "beat" frozen before each step's action, and after it, so steps
-// don't start/end cold. Applied to narration; song mode uses its own pads.
-const STEP_START_PAD_SEC = 0.4;
+// Leading still pad before each step's action. DISABLED (0): freezing the first
+// frame of a step froze a mid-typing frame ("one character, then a pause"), since
+// a step's window often opens partway into its own keystrokes. End-freeze only —
+// exactly like cinematic/narration mode — keeps the motion clean.
+const STEP_START_PAD_SEC = 0;
 
 // Re-time the video so each step holds its frame long enough for its narration.
 // Returns the new video path and each step's new start (pre-title-card). Null if
@@ -2425,7 +2428,9 @@ async function retimeForNarration(args: {
 // steps, without the 6× slow-mo that a uniform full-length stretch produced.
 // Returns the re-timed path and each step's action start (after its lead still).
 const SONG_MAX_STRETCH = 2.2;
-const SONG_START_PAD_SEC = 0.5;
+// Start pad disabled (froze a mid-typing frame → "one char then pause"); a small
+// end still is fine.
+const SONG_START_PAD_SEC = 0;
 const SONG_END_PAD_SEC = 0.7;
 async function retimeSongBody(args: {
   ffmpeg: string;
@@ -2830,23 +2835,49 @@ export async function cinematicProcess(
         notes: [],
       };
 
-      // Re-timing gives each step its own readable hold (~4s nominal), so size the
-      // lyric word-budget to that re-timed body length, not the (often tiny)
-      // condensed input — one short, singable line per step.
-      const NOMINAL_HOLD_SEC = 4;
-      const videoSeconds = Math.max(8, narratableSteps.length * NOMINAL_HOLD_SEC);
-      progress("writing the lyrics…");
-      const planned = await planSong({
-        options,
-        narratableSteps,
-        videoSeconds,
-        log,
-        echo,
-      });
-      if (!planned) {
-        return notApplied("song lyrics generation failed");
+      // 0. Lyrics + direction: reuse a pinned song's saved lyrics when
+      // $CANARY_SONG_FILE points at an existing song (+ its .json), else plan
+      // fresh. Pinning lets an A/B reuse the SAME song + lyrics and vary only the
+      // re-timing (and avoids regenerating while iterating).
+      const pinnedSong = process.env.CANARY_SONG_FILE?.trim();
+      const songCache = pinnedSong ? `${pinnedSong}.json` : "";
+      let direction: ReturnType<typeof resolveDirection>;
+      let lyrics: Lyrics;
+      let repoDir: string;
+      let base: string;
+      const reusing = Boolean(
+        pinnedSong && existsSync(pinnedSong) && existsSync(songCache)
+      );
+      if (reusing) {
+        const saved = JSON.parse(await readFile(songCache, "utf8")) as {
+          direction: ReturnType<typeof resolveDirection>;
+          lyrics: Lyrics;
+        };
+        direction = saved.direction;
+        lyrics = saved.lyrics;
+        repoDir = options.repoDir ?? process.cwd();
+        base = await resolveBase(repoDir);
+        notes.push(`reusing pinned song (${pinnedSong})`);
+      } else {
+        // Size the lyric word-budget to the re-timed body length (steps × ~4s),
+        // not the (often tiny) condensed input — one short line per step.
+        const videoSeconds = Math.max(8, narratableSteps.length * 4);
+        progress("writing the lyrics…");
+        const planned = await planSong({
+          options,
+          narratableSteps,
+          videoSeconds,
+          log,
+          echo,
+        });
+        if (!planned) {
+          return notApplied("song lyrics generation failed");
+        }
+        direction = planned.direction;
+        lyrics = planned.lyrics;
+        repoDir = planned.repoDir;
+        base = planned.base;
       }
-      const { direction, lyrics, repoDir, base } = planned;
 
       // Lines in step order, and the lyric block the model sings (a [verse] tag
       // helps it; the words are the per-step lines in order).
@@ -2869,22 +2900,33 @@ export async function cinematicProcess(
       };
       log.info(meta, "cinematic: song parameters");
 
-      // 1. Generate the raw song. The model chooses the length (pinning it yields
-      // instrumental), so this is long with the vocals somewhere inside.
-      progress("composing the song…");
-      const rawSong = await generateRawSong({
-        provider: songMusic,
-        directionText: direction.text,
-        lyrics: lyricBlock,
-        videoPath,
-        temps,
-        notes,
-        log,
-      });
-      if (!rawSong) {
-        // No song audio means song mode produced nothing — skip and keep the plain
-        // condensed cut rather than ship a silent "song" video.
-        return notApplied("song audio could not be generated");
+      // 1. The raw song. Reuse the pinned file, or generate (the model chooses the
+      // length — pinning a duration yields instrumental) and persist when pinning.
+      let rawSong: string;
+      if (reusing && pinnedSong) {
+        rawSong = pinnedSong;
+      } else {
+        progress("composing the song…");
+        const generated = await generateRawSong({
+          provider: songMusic,
+          directionText: direction.text,
+          lyrics: lyricBlock,
+          videoPath,
+          temps,
+          notes,
+          log,
+        });
+        if (!generated) {
+          // No song audio means song mode produced nothing — skip and keep the
+          // plain condensed cut rather than ship a silent "song" video.
+          return notApplied("song audio could not be generated");
+        }
+        rawSong = generated;
+        if (pinnedSong) {
+          await copyFile(generated, pinnedSong);
+          await writeFile(songCache, JSON.stringify({ direction, lyrics }));
+          rawSong = pinnedSong;
+        }
       }
 
       // 2. Transcribe (best-effort) to find where the vocals actually are.
