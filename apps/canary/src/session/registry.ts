@@ -20,8 +20,14 @@ export interface SessionStep {
   startedAt: string;
   // Where this step lands in the CONDENSED video, in seconds. Set at session
   // end once the video has been trimmed, so the report/viewer timeline can seek
-  // the video to a step (and highlight the current step as it plays).
+  // the video to a step (and highlight the current step as it plays). The
+  // cinematic pass overwrites this with the step's position in the cinematic cut.
   videoTime?: number;
+  // The step's position in the PRE-cinematic (condensed) cut, preserved when the
+  // cinematic pass first runs so `session end --cinematic --prompt …` can be
+  // re-run with a different theme from the clean condensed source + its timings,
+  // without re-recording. Survives across cinematic re-runs (videoTime does not).
+  precinematicVideoTime?: number;
 }
 
 export interface SessionRecord {

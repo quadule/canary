@@ -11,6 +11,7 @@ import {
   customSaySynth,
   extractCaptions,
   parseFilterNames,
+  precinematicVideoPath,
   sayCommand,
   parseInstalledVoices,
   parseNarrationJson,
@@ -221,6 +222,17 @@ describe("buildNarrationPrompt", () => {
     expect(withChange).toContain("go expansive");
     const without = buildNarrationPrompt({ direction: "noir", steps });
     expect(without).not.toContain("change under review");
+  });
+});
+
+describe("precinematicVideoPath", () => {
+  it("inserts .precinematic before the extension", () => {
+    expect(precinematicVideoPath("/s/abc/video.webm")).toBe(
+      "/s/abc/video.precinematic.webm"
+    );
+    expect(precinematicVideoPath("/s/abc/clip.mp4")).toBe(
+      "/s/abc/clip.precinematic.mp4"
+    );
   });
 });
 

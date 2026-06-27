@@ -130,6 +130,8 @@ for HTTP TTS) is printed so a run is easy to reproduce and tweak.
 
   --prompt "<text>"   steer theme/tone/style in your own words (implies --cinematic);
                       omit for a random theme. e.g. --prompt "noir detective, as a haiku"
+                      Re-run --cinematic with a new --prompt anytime: the pre-cinematic cut is
+                      preserved beside the video, so a re-theme is fast and needs no re-recording.
   --no-captions       skip burning subtitles into the video (the .srt is still written)
   $CANARY_SAY_VOICE / $CANARY_SAY_RATE   pin the voice / words-per-minute
   $CANARY_SAY_COMMAND   replace 'say' with your own TTS command (run via the shell, so it may

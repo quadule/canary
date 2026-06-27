@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { formatDurationMs, requestId } from "@usecanary/cli-kit";
 import {
@@ -13,7 +14,9 @@ import { endResultFromDisk } from "../session/artifacts.js";
 import {
   readSessionRecord,
   type SessionRecord,
+  type SessionStep,
   updateSessionRecord,
+  writeSessionRecord,
 } from "../session/registry.js";
 import {
   condenseVideo,
@@ -21,7 +24,11 @@ import {
   remapToCondensed,
   type Segment,
 } from "../video/condense.js";
-import { type CinematicStep, cinematicProcess } from "../video/narrate.js";
+import {
+  type CinematicStep,
+  cinematicProcess,
+  precinematicVideoPath,
+} from "../video/narrate.js";
 import { stopDaemonIfIdle } from "./daemon-stop.js";
 
 interface SessionEndOpts {
@@ -206,12 +213,19 @@ async function cinematizeSessionVideo(
   // positions can be written straight back onto them in order. Use the SAME
   // finiteness predicate cinematicProcess uses internally, so the returned
   // stepTimes line up index-for-index with timedSteps (no off-by-one).
-  const timedSteps = record.steps.filter((s) => Number.isFinite(s.videoTime));
+  // Source each step's position from the preserved condensed time when present —
+  // a cinematic re-run reads the clean condensed cut, and videoTime has by then
+  // been overwritten with cinematic positions (precinematicVideoTime has not).
+  const sourceTimeOf = (s: SessionStep): number | undefined =>
+    s.precinematicVideoTime ?? s.videoTime;
+  const timedSteps = record.steps.filter((s) =>
+    Number.isFinite(sourceTimeOf(s))
+  );
   const steps: CinematicStep[] = timedSteps.map((s) => ({
     name: s.name,
     script: s.script,
     durationMs: s.durationMs,
-    videoTime: s.videoTime as number,
+    videoTime: sourceTimeOf(s) as number,
   }));
   if (steps.length === 0) {
     // Steps are only timed when the video was condensed; --no-condense leaves
@@ -241,6 +255,11 @@ async function cinematizeSessionVideo(
   outcome.stepTimes?.forEach((t, i) => {
     const step = timedSteps[i];
     if (step) {
+      // Persist the condensed source position on the first cinematic run (before
+      // videoTime is overwritten) so future --cinematic re-runs reuse it.
+      if (step.precinematicVideoTime === undefined) {
+        step.precinematicVideoTime = steps[i]?.videoTime;
+      }
       step.videoTime = t;
     }
   });
@@ -312,8 +331,21 @@ export async function sessionEnd(
   const endResult =
     code === 0 && result ? result : await endResultFromDisk(record);
 
-  if (opts.condense !== false) {
+  // A cinematic re-run (the preserved condensed cut already exists beside the
+  // video) skips condensing: the cinematic pass sources from that preserved cut
+  // and its preserved step timings, so re-condensing the prior cinematic output
+  // would be wasted work. First runs (and non-cinematic ends) condense normally.
+  const videoArtifact = endResult.artifacts.find((a) => a.kind === "video");
+  const cinematicRerun =
+    opts.cinematic === true &&
+    videoArtifact !== undefined &&
+    existsSync(precinematicVideoPath(videoArtifact.path));
+  if (opts.condense !== false && !cinematicRerun) {
     await condenseSessionVideos(endResult, record);
+  } else if (cinematicRerun) {
+    process.stderr.write(
+      "  ↻ re-running cinematic from the preserved condensed cut\n"
+    );
   }
 
   // Cinematic narration is opt-in and runs after condensing (it keys off the
@@ -331,6 +363,13 @@ export async function sessionEnd(
     await cinematizeSessionVideo(endResult, record, {
       prompt: opts.prompt,
       captions: opts.captions !== false,
+    });
+    // Persist the step timings the cinematic pass stamped — notably
+    // precinematicVideoTime (the condensed source positions). Step times are
+    // otherwise only in-memory at session end; without this a re-run would have
+    // no preserved timings to source from after we skip re-condensing.
+    await writeSessionRecord(record).catch((err) => {
+      logger.warn({ err, sessionId: id }, "could not persist cinematic timings");
     });
   }
 

@@ -18,7 +18,14 @@
 // all cleaned up in a finally, even on partial failure.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { access, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  access,
+  copyFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Logger } from "@usecanary/logger";
@@ -2025,6 +2032,16 @@ function srtPathFor(videoPath: string): string {
   return `${videoPath.slice(0, videoPath.length - ext.length)}.srt`;
 }
 
+// Sidecar path holding the pre-cinematic (condensed) cut, beside the video. The
+// cinematic pass preserves the condensed video here on its first run so it can be
+// re-run with a different prompt/theme from the clean source — never stacking a
+// title card / captions on a previous cinematic cut. Not a recorded artifact, so
+// condense (which works off the artifact list) never touches it.
+export function precinematicVideoPath(videoPath: string): string {
+  const ext = path.extname(videoPath);
+  return `${videoPath.slice(0, videoPath.length - ext.length)}.precinematic${ext}`;
+}
+
 function notApplied(reason: string): CinematicResult {
   return { applied: false, titleOffsetSec: 0, reason };
 }
@@ -2056,6 +2073,19 @@ export async function cinematicProcess(
       return notApplied("no steps with a known video position");
     }
     await access(videoPath);
+    // Preserve the pre-cinematic (condensed) cut so this pass can be re-run with
+    // a different prompt/theme without re-recording. First run: copy the
+    // condensed videoPath to the sidecar. Re-run: the sidecar already exists, so
+    // read FROM it — never stacking a title card / captions on a prior cinematic
+    // cut. The output still overwrites videoPath; the sidecar stays pristine.
+    const preserved = precinematicVideoPath(videoPath);
+    let input = videoPath;
+    try {
+      await access(preserved);
+      input = preserved;
+    } catch {
+      await copyFile(videoPath, preserved);
+    }
     if (!(await isOnPath("claude", ["--version"]))) {
       return notApplied("`claude` CLI not found on PATH");
     }
@@ -2149,7 +2179,7 @@ export async function cinematicProcess(
     // final body, each step's/clip's position, and the music tracks for the mix.
     const assembled = await assembleVideo({
       ffmpeg: ffmpegPath,
-      videoPath,
+      videoPath: input,
       narratableSteps,
       clips,
       title: narration.title,
@@ -2182,7 +2212,7 @@ export async function cinematicProcess(
     });
     // Size each caption line to the actual video width so it holds to two lines
     // on a narrow custom --viewport, not just the 1280px default.
-    const srtGeometry = await probeVideo(ffmpegPath, videoPath);
+    const srtGeometry = await probeVideo(ffmpegPath, input);
     await writeFile(
       srtPath,
       buildSrt(cues, captionLineMax(srtGeometry?.width))
