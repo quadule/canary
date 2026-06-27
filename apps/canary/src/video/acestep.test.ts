@@ -106,6 +106,31 @@ describe("audioFromResponse", () => {
   });
 });
 
+// Live integration: exercise the real provider against a running ACE-Step server
+// (heavy + slow), gated behind CANARY_TEST_ACESTEP=1 so it never runs in CI.
+describe.skipIf(process.env.CANARY_TEST_ACESTEP !== "1")("ACE-Step live", () => {
+  it("generates an instrumental bed via the provider", async () => {
+    const { resolveAceStepMusic } = await import("./acestep.js");
+    const { music } = await resolveAceStepMusic({
+      env: process.env,
+      // biome-ignore lint/suspicious/noExplicitAny: tiny test logger stub
+      log: { debug() {}, info() {}, warn() {}, error() {} } as any,
+    });
+    expect(music, "ACE-Step server should be reachable").toBeDefined();
+    const { readFile, rm } = await import("node:fs/promises");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const out = path.join(os.tmpdir(), `canary-acestep-${process.pid}.wav`);
+    try {
+      await music?.bed("calm ambient piano, gentle and cinematic", 8, out);
+      const bytes = await readFile(out);
+      expect(bytes.length).toBeGreaterThan(1000);
+    } finally {
+      await rm(out, { force: true });
+    }
+  }, 300_000);
+});
+
 describe("describeMusicCurl", () => {
   it("redacts the key and includes auth only when present", () => {
     const payload = buildMusicPayload({
