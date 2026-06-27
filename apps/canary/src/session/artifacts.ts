@@ -38,7 +38,11 @@ async function dirArtifacts(
   const files = await readdir(dir).catch(() => [] as string[]);
   const refs = await Promise.all(
     files
-      .filter((f) => f.endsWith(suffix))
+      // Skip the cinematic pass's preserved pre-cinematic cut (`*.precinematic.<ext>`,
+      // see precinematicVideoPath in video/narrate.ts) — it's a working copy for
+      // theme re-runs, not a session recording, so it must not be discovered as a
+      // second video (which would get condensed/reported alongside the real one).
+      .filter((f) => f.endsWith(suffix) && !/\.precinematic\.[^.]+$/.test(f))
       .map((f) => statRef(kind, path.join(dir, f)))
   );
   return refs.filter((r): r is ArtifactInfo => r !== undefined);

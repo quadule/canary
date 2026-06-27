@@ -1484,9 +1484,11 @@ async function resolveSpeech(
   let sayLabel = "";
   if (command !== "say") {
     // Custom command: it owns voice/rate, so we only feed it text + output. Works
-    // on any platform. $CANARY_SAY_VOICE is optional here (for the label only).
+    // on any platform. Prefer $CANARY_SAY_VOICE for the label (the command string
+    // itself — often a long shim with paths — is noise in credits/meta); the full
+    // command is still shown by the per-call echo for reproducibility.
     say = customSaySynth(command, echo);
-    sayLabel = voiceOverride ? `${command}:${voiceOverride}` : command;
+    sayLabel = voiceOverride || command;
   } else if (process.platform === "darwin") {
     const installed = await listSayVoices(command);
     // An explicit $CANARY_SAY_VOICE always wins and works even when listing
@@ -2202,10 +2204,12 @@ export async function cinematicProcess(
       notes: [],
     };
     notes.push(...omlx.notes, ...acestep.notes);
-    // Only surface Gemini's notes when Gemini is actually active, or when oMLX
-    // didn't cover TTS — otherwise its "no key → using say" note contradicts the
-    // oMLX-narration note above.
-    if (gemini.tts || !omlx.tts) {
+    // Surface Gemini's notes only when Gemini is actually active, or when there's
+    // genuinely no local alternative — otherwise its "no key → using say … and no
+    // music" note contradicts the oMLX/ACE-Step/archive providers above.
+    if (gemini.tts) {
+      notes.push(...gemini.notes);
+    } else if (!omlx.tts && !providers.music) {
       notes.push(...gemini.notes);
     }
 
