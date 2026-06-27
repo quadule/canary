@@ -1,0 +1,261 @@
+// Local music generation via an ACE-Step 1.5 server (Apple-Silicon MLX backend).
+// Additive provider mirroring omlx.ts / providers.ts: same contract (write a
+// finished audio file to `outPath` or throw), wrapped in the caller's try/catch
+// so a failure degrades to the Gemini music path or to no music.
+//
+// WHY SEPARATE FROM oMLX: oMLX serves TTS/LLM but rejects the ACE-Step model
+// ("Model type acestep not supported"), so music needs ACE-Step's own server. It
+// runs on its own port (8001 by default) and speaks an OpenAI chat-completions
+// dialect: the song request is encoded as <prompt>…</prompt><lyrics>…</lyrics> in
+// the user message, with a top-level `duration`, and the audio comes back as a
+// base64 data URL at choices[0].message.audio[0].audio_url.url.
+//
+// PRIVACY: directionText is sent only to the configured (local by default) ACE-
+// Step server. Any API key is read from env, never logged or echoed (the curl
+// preview uses a $CANARY_ACESTEP_API_KEY placeholder).
+import { rename, rm, writeFile } from "node:fs/promises";
+import type { Logger } from "@usecanary/logger";
+import type { MediaProviders, MusicProvider } from "./providers.js";
+
+const DEFAULT_URL = "http://127.0.0.1:8001";
+const MODELS_TIMEOUT_MS = 4000;
+// Music generation is slow (LM plan + diffusion); give it a generous budget.
+const GENERATE_TIMEOUT_MS = 600_000;
+
+type Echo = (line: string) => void;
+
+export interface AceStepConfig {
+  apiKey?: string;
+  baseUrl: string;
+  model?: string;
+}
+
+export function acestepBaseUrl(env: NodeJS.ProcessEnv): string {
+  return env.CANARY_ACESTEP_URL?.trim() || DEFAULT_URL;
+}
+
+// Build the user-message content. An instrumental BED uses ACE-Step's tagged
+// mode — <prompt> (style/caption) with "[instrumental]" lyrics. A SONG uses
+// natural-language sample mode (see buildMusicPayload), where the content is just
+// the plain creative direction and the model's LM planner writes the lyrics.
+// Pure → unit-tested.
+export function buildMusicContent(
+  directionText: string,
+  instrumental: boolean
+): string {
+  return instrumental
+    ? `<prompt>${directionText}</prompt><lyrics>[instrumental]</lyrics>`
+    : directionText;
+}
+
+// Build the chat-completions payload. CRITICAL: duration (and vocal_language)
+// live under `audio_config`, NOT at the top level — a top-level duration is
+// ignored and the server falls back to its default ceiling (minutes of audio).
+// A song additionally sets top-level `sample_mode` so the LM writes lyrics from
+// the natural-language content. Pure → unit-tested.
+export function buildMusicPayload(args: {
+  directionText: string;
+  seconds: number;
+  instrumental: boolean;
+  model?: string;
+}): Record<string, unknown> {
+  const audioConfig: Record<string, unknown> = {
+    duration: Math.max(1, Math.round(args.seconds)),
+  };
+  const payload: Record<string, unknown> = {
+    messages: [
+      {
+        role: "user",
+        content: buildMusicContent(args.directionText, args.instrumental),
+      },
+    ],
+    audio_config: audioConfig,
+  };
+  if (!args.instrumental) {
+    // Natural-language song: let the LM plan lyrics; pick an output language.
+    payload.sample_mode = true;
+    audioConfig.vocal_language = "en";
+  }
+  if (args.model) {
+    payload.model = args.model;
+  }
+  return payload;
+}
+
+// Extract audio bytes from a base64 data URL (data:audio/…;base64,<data>).
+// Returns null when the value isn't a base64 data URL. Pure → unit-tested.
+export function parseAudioDataUrl(url: unknown): Buffer | null {
+  if (typeof url !== "string" || !url.startsWith("data:")) {
+    return null;
+  }
+  const comma = url.indexOf(",");
+  if (comma < 0 || !/;base64/i.test(url.slice(0, comma))) {
+    return null;
+  }
+  const bytes = Buffer.from(url.slice(comma + 1), "base64");
+  return bytes.length > 0 ? bytes : null;
+}
+
+// Pull the first audio data URL out of a chat-completions response. Pure.
+export function audioFromResponse(body: unknown): Buffer | null {
+  const choice = (body as { choices?: Array<{ message?: unknown }> })
+    ?.choices?.[0];
+  const audio = (choice?.message as { audio?: Array<unknown> })?.audio?.[0];
+  const url = (audio as { audio_url?: { url?: unknown } })?.audio_url?.url;
+  return parseAudioDataUrl(url);
+}
+
+function sq(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+// Redacted, copy-pasteable curl preview (key shown as the env-var reference).
+export function describeMusicCurl(args: {
+  baseUrl: string;
+  payload: Record<string, unknown>;
+  hasKey: boolean;
+}): string {
+  const auth = args.hasKey
+    ? ['-H "Authorization: Bearer $CANARY_ACESTEP_API_KEY"']
+    : [];
+  return [
+    "curl -s -X POST",
+    `${args.baseUrl}/v1/chat/completions`,
+    ...auth,
+    "-H 'content-type: application/json'",
+    `-d ${sq(JSON.stringify(args.payload))}`,
+  ].join(" ");
+}
+
+async function writeFileAtomic(outPath: string, bytes: Buffer): Promise<void> {
+  if (bytes.length === 0) {
+    throw new Error("ACE-Step returned 0 audio bytes");
+  }
+  const tmp = `${outPath}.tmp-${process.pid}`;
+  try {
+    await writeFile(tmp, bytes);
+    await rename(tmp, outPath);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+}
+
+function authHeaders(config: AceStepConfig): Record<string, string> {
+  return config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {};
+}
+
+// Probe reachability + list model ids, or null if unreachable.
+async function listModelIds(config: AceStepConfig): Promise<string[] | null> {
+  try {
+    const res = await fetch(`${config.baseUrl}/v1/models`, {
+      headers: authHeaders(config),
+      signal: AbortSignal.timeout(MODELS_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
+    return (body.data ?? [])
+      .map((m) => m.id)
+      .filter((id): id is string => typeof id === "string");
+  } catch {
+    return null;
+  }
+}
+
+async function generate(args: {
+  config: AceStepConfig;
+  directionText: string;
+  seconds: number;
+  instrumental: boolean;
+  outPath: string;
+  echo?: Echo;
+}): Promise<void> {
+  const { config, directionText, seconds, instrumental, outPath, echo } = args;
+  const payload = buildMusicPayload({
+    directionText,
+    seconds,
+    instrumental,
+    model: config.model,
+  });
+  echo?.(
+    describeMusicCurl({
+      baseUrl: config.baseUrl,
+      payload,
+      hasKey: Boolean(config.apiKey),
+    })
+  );
+  let res: Response;
+  try {
+    res = await fetch(`${config.baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { ...authHeaders(config), "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(GENERATE_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`ACE-Step request failed: ${reason}`);
+  }
+  if (!res.ok) {
+    throw new Error(`ACE-Step returned HTTP ${res.status}`);
+  }
+  const bytes = audioFromResponse(await res.json());
+  if (!bytes) {
+    throw new Error("ACE-Step response had no audio");
+  }
+  await writeFileAtomic(outPath, bytes);
+}
+
+function createMusicProvider(config: AceStepConfig, echo?: Echo): MusicProvider {
+  return {
+    id: "acestep-music",
+    bed: (directionText, seconds, outPath) =>
+      generate({
+        config,
+        directionText,
+        seconds,
+        instrumental: true,
+        outPath,
+        echo,
+      }),
+    song: (directionText, seconds, outPath) =>
+      generate({
+        config,
+        directionText,
+        seconds,
+        instrumental: false,
+        outPath,
+        echo,
+      }),
+  };
+}
+
+// Resolve an ACE-Step music provider when its server is reachable, else just
+// notes. Auto-probes the local default; set $CANARY_ACESTEP_URL to point
+// elsewhere and $CANARY_ACESTEP_API_KEY / $CANARY_ACESTEP_MODEL as needed.
+export async function resolveAceStepMusic(opts: {
+  env: NodeJS.ProcessEnv;
+  log: Logger;
+  echo?: Echo;
+}): Promise<Pick<MediaProviders, "music" | "notes">> {
+  const { env, log, echo } = opts;
+  const config: AceStepConfig = {
+    baseUrl: acestepBaseUrl(env),
+    apiKey: env.CANARY_ACESTEP_API_KEY?.trim() || undefined,
+    model: env.CANARY_ACESTEP_MODEL?.trim() || undefined,
+  };
+  const models = await listModelIds(config);
+  if (!models) {
+    // Server not running — silent (it's an optional, heavy local service).
+    return { notes: [] };
+  }
+  log.debug({ url: config.baseUrl }, "ACE-Step music provider enabled");
+  return {
+    music: createMusicProvider(config, echo),
+    notes: [
+      `ACE-Step local music enabled (${config.baseUrl}) — generated on this machine.`,
+    ],
+  };
+}

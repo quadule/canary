@@ -37,6 +37,7 @@ import {
   type TitleBackgroundProvider,
   type TtsProvider,
 } from "./providers.js";
+import { resolveAceStepMusic } from "./acestep.js";
 import { resolveOmlxProviders } from "./omlx.js";
 import { formatCommand, shellQuote } from "./shell.js";
 import {
@@ -2110,14 +2111,15 @@ export async function cinematicProcess(
     // fallbacks. Each is best-effort — a failure degrades to the next. oMLX is
     // probed (it lists its loaded models) only when it's configured.
     const omlx = await resolveOmlxProviders({ env: process.env, log, echo });
+    const acestep = await resolveAceStepMusic({ env: process.env, log, echo });
     const gemini = resolveMediaProviders({ env: process.env, log });
     const providers: MediaProviders = {
       tts: omlx.tts ?? gemini.tts,
-      music: omlx.music ?? gemini.music,
+      music: acestep.music ?? gemini.music,
       titleBackground: gemini.titleBackground,
       notes: [],
     };
-    notes.push(...omlx.notes);
+    notes.push(...omlx.notes, ...acestep.notes);
     // Only surface Gemini's notes when Gemini is actually active, or when oMLX
     // didn't cover TTS — otherwise its "no key → using say" note contradicts the
     // oMLX-narration note above.

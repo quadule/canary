@@ -1,0 +1,130 @@
+import { describe, expect, it } from "vitest";
+import {
+  acestepBaseUrl,
+  audioFromResponse,
+  buildMusicContent,
+  buildMusicPayload,
+  describeMusicCurl,
+  parseAudioDataUrl,
+} from "./acestep.js";
+
+describe("acestepBaseUrl", () => {
+  it("defaults to :8001 and honors the override", () => {
+    expect(acestepBaseUrl({})).toBe("http://127.0.0.1:8001");
+    expect(acestepBaseUrl({ CANARY_ACESTEP_URL: "http://h:9" })).toBe(
+      "http://h:9"
+    );
+  });
+});
+
+describe("buildMusicContent", () => {
+  it("tags an instrumental bed and passes a song through as natural language", () => {
+    expect(buildMusicContent("noir jazz", true)).toBe(
+      "<prompt>noir jazz</prompt><lyrics>[instrumental]</lyrics>"
+    );
+    expect(buildMusicContent("upbeat pop", false)).toBe("upbeat pop");
+  });
+});
+
+describe("buildMusicPayload", () => {
+  it("nests duration under audio_config for an instrumental bed", () => {
+    expect(
+      buildMusicPayload({ directionText: "noir", seconds: 12.4, instrumental: true })
+    ).toEqual({
+      messages: [
+        {
+          role: "user",
+          content: "<prompt>noir</prompt><lyrics>[instrumental]</lyrics>",
+        },
+      ],
+      audio_config: { duration: 12 },
+    });
+  });
+
+  it("uses sample_mode + vocal_language for a song", () => {
+    const p = buildMusicPayload({
+      directionText: "upbeat pop",
+      seconds: 30,
+      instrumental: false,
+    });
+    expect(p.sample_mode).toBe(true);
+    expect(p.messages).toEqual([{ role: "user", content: "upbeat pop" }]);
+    expect(p.audio_config).toEqual({ duration: 30, vocal_language: "en" });
+  });
+
+  it("rounds duration up to >=1 and includes model only when set", () => {
+    expect(
+      (buildMusicPayload({ directionText: "x", seconds: 0, instrumental: true })
+        .audio_config as { duration: number }).duration
+    ).toBe(1);
+    expect(
+      buildMusicPayload({
+        directionText: "x",
+        seconds: 5,
+        instrumental: true,
+        model: "acestep/x",
+      }).model
+    ).toBe("acestep/x");
+  });
+});
+
+describe("parseAudioDataUrl", () => {
+  it("decodes a base64 audio data URL", () => {
+    const url = `data:audio/mpeg;base64,${Buffer.from("hi").toString("base64")}`;
+    expect(parseAudioDataUrl(url)?.toString()).toBe("hi");
+  });
+  it("rejects non-data / non-base64 / empty values", () => {
+    expect(parseAudioDataUrl("https://x/y.mp3")).toBeNull();
+    expect(parseAudioDataUrl("data:audio/mpeg,raw")).toBeNull();
+    expect(parseAudioDataUrl(undefined)).toBeNull();
+    expect(parseAudioDataUrl("data:audio/mpeg;base64,")).toBeNull();
+  });
+});
+
+describe("audioFromResponse", () => {
+  it("pulls audio bytes from the chat-completions shape", () => {
+    const body = {
+      choices: [
+        {
+          message: {
+            audio: [
+              {
+                audio_url: {
+                  url: `data:audio/mpeg;base64,${Buffer.from("song").toString("base64")}`,
+                },
+              },
+            ],
+          },
+        },
+      ],
+    };
+    expect(audioFromResponse(body)?.toString()).toBe("song");
+  });
+  it("returns null when there's no audio", () => {
+    expect(audioFromResponse({ choices: [{ message: { content: "hi" } }] })).toBeNull();
+    expect(audioFromResponse({})).toBeNull();
+  });
+});
+
+describe("describeMusicCurl", () => {
+  it("redacts the key and includes auth only when present", () => {
+    const payload = buildMusicPayload({
+      directionText: "c",
+      seconds: 10,
+      instrumental: true,
+    });
+    const withKey = describeMusicCurl({
+      baseUrl: "http://127.0.0.1:8001",
+      payload,
+      hasKey: true,
+    });
+    expect(withKey).toContain("$CANARY_ACESTEP_API_KEY");
+    expect(withKey).not.toMatch(/Bearer (?!\$)/);
+    const noKey = describeMusicCurl({
+      baseUrl: "http://127.0.0.1:8001",
+      payload,
+      hasKey: false,
+    });
+    expect(noKey).not.toContain("Authorization");
+  });
+});
