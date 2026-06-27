@@ -14,6 +14,7 @@ import {
   layoutSongCues,
   songHoldSec,
   songRetimeMode,
+  songTargetSec,
   extractCaptions,
   lyricsPathFor,
   parseFilterNames,
@@ -241,6 +242,15 @@ describe("precinematicVideoPath", () => {
     expect(precinematicVideoPath("/s/abc/clip.mp4")).toBe(
       "/s/abc/clip.precinematic.mp4"
     );
+  });
+});
+
+describe("songTargetSec", () => {
+  it("floors at 60s for short sessions and scales up for longer ones", () => {
+    expect(songTargetSec(0)).toBe(60);
+    expect(songTargetSec(5)).toBe(60); // 2.5 + 25 + 15 = 42.5 → floored
+    expect(songTargetSec(10)).toBe(68); // 2.5 + 50 + 15 = 67.5 → 68
+    expect(songTargetSec(20)).toBe(118); // 2.5 + 100 + 15 = 117.5 → 118
   });
 });
 

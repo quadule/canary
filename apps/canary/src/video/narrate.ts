@@ -1673,11 +1673,14 @@ async function assembleVideo(args: {
   return { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec, music };
 }
 
-// Nominal full-song length requested from a song provider. ACE-Step ignores it
-// (model picks the length); Gemini Lyria targets it. The result is trimmed to its
-// vocal region and capped to the video downstream, so this is just a floor that's
-// long enough to contain a sung section.
-const SONG_TARGET_SEC = 60;
+// Song length to request from a provider, scaled to the expected video so a Lyria
+// song doesn't run out before the end: title card + a per-step body (~5s each) +
+// credits, floored at 60s. ACE-Step ignores it (it picks its own length); the
+// result is trimmed to its vocal region and capped to the video either way, so
+// over-requesting only wastes generation we trim off. Pure → unit-tested.
+export function songTargetSec(stepCount: number): number {
+  return Math.max(60, Math.round(TITLE_SEC + Math.max(0, stepCount) * 5 + 15));
+}
 
 // Generate the raw SONG file (the model SINGS the supplied lyrics). Returns its
 // path, or null on failure. The length is the MODEL's choice (acestep omits the
@@ -1687,12 +1690,14 @@ async function generateRawSong(args: {
   provider: MusicProvider | undefined;
   directionText: string;
   lyrics: string;
+  targetSec: number;
   videoPath: string;
   temps: string[];
   notes: string[];
   log: Logger;
 }): Promise<string | null> {
-  const { provider, directionText, lyrics, videoPath, temps, notes, log } = args;
+  const { provider, directionText, lyrics, targetSec, videoPath, temps, notes, log } =
+    args;
   if (!provider) {
     return null;
   }
@@ -1700,10 +1705,9 @@ async function generateRawSong(args: {
   temps.push(songPath);
   try {
     // ACE-Step ignores `seconds` for a lyric song (it omits duration so the model
-    // sings); Gemini Lyria uses it as a target length. Pass a nominal full-song
-    // length so Lyria gets a real target — the pipeline transcribes, trims to the
-    // vocal region, and the mix caps it to the video either way.
-    await provider.song(directionText, SONG_TARGET_SEC, songPath, lyrics);
+    // sings); Gemini Lyria uses it as a target length. The pipeline transcribes,
+    // trims to the vocal region, and the mix caps it to the video either way.
+    await provider.song(directionText, targetSec, songPath, lyrics);
     return songPath;
   } catch (err) {
     log.debug({ err }, "cinematic: song generation failed");
@@ -2931,6 +2935,7 @@ export async function cinematicProcess(
           provider: songMusic,
           directionText: direction.text,
           lyrics: lyricBlock,
+          targetSec: songTargetSec(narratableSteps.length),
           videoPath,
           temps,
           notes,
