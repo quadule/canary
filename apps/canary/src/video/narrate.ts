@@ -246,12 +246,18 @@ interface Narration {
   title: string;
 }
 
-// Song-mode plan: one set of sung lyrics for the whole piece (ACE-Step sings
-// them) plus an opening title. Unlike narration there are no per-step lines —
-// generated vocals carry no alignment data, so we don't pretend to time-sync
-// them to the steps.
+// Song-mode plan: one short, singable lyric line PER STEP (so the song scales to
+// the session length) plus an opening title. The per-step structure lets the
+// captions reuse the narration timing (each line shown at its step's moment); the
+// sung vocals aren't frame-aligned to those captions (the model paces them), so
+// the captions follow the on-screen steps as a best-effort lyric sheet.
+interface LyricLine {
+  index: number;
+  text: string;
+}
+
 interface Lyrics {
-  lyrics: string;
+  lines: LyricLine[];
   title: string;
 }
 
@@ -491,15 +497,24 @@ export function buildNarrationPrompt(args: {
 }
 
 // Build the `claude -p` prompt for SONG mode: themed, singable lyrics ABOUT the
-// QA session (the comedic payoff — a checkout flow sung as a power ballad), plus
-// a title card. The lyrics use ACE-Step's structure tags ([verse]/[chorus]) and
-// stay short so they fit a brief score. Deterministic given its inputs (testable).
+// QA session (the comedic payoff — a checkout flow sung as a power ballad), ONE
+// short line per step plus a title. The line count and per-line length are scaled
+// to the video so the whole song fits (a short session got only its first line
+// sung before — now the lyrics are sized to the runtime). Deterministic given its
+// inputs (testable).
 export function buildLyricsPrompt(args: {
   direction: string;
   change?: ChangeContext;
   steps: { index: number; name: string; script?: string }[];
+  videoSeconds: number;
 }): string {
-  const { direction, change, steps } = args;
+  const { direction, change, steps, videoSeconds } = args;
+  const stepCount = Math.max(1, steps.length);
+  // Singing runs ~2.5 words/sec; give each step its share of the runtime and cap
+  // the line length to what can actually be sung in that window (floor of 4 words
+  // so a line is never trivially short).
+  const perStepSec = Math.max(1, videoSeconds / stepCount);
+  const wordsPerLine = Math.max(4, Math.round(perStepSec * 2.5));
   const stepLines = steps
     .map((step) => {
       const slice = step.script?.slice(0, SCRIPT_SLICE_CHARS).trim();
@@ -514,7 +529,7 @@ export function buildLyricsPrompt(args: {
 
   const changeLines = change
     ? [
-        `Sense of scale (use it only to size the song's length and energy, never to override the genre): the change under review is ${change.label}, so ${change.scaleHint}.`,
+        `Sense of scale (use it only for energy/tone, never to override the genre): the change under review is ${change.label}, so ${change.scaleHint}.`,
         "",
       ]
     : [];
@@ -526,18 +541,18 @@ export function buildLyricsPrompt(args: {
     `Creative direction (the song's genre, mood, and voice): ${direction}`,
     "",
     ...changeLines,
-    "What happens in the session, in order (let it shape the verses):",
+    `The video is about ${Math.round(videoSeconds)} seconds long. Write EXACTLY ONE singable lyric line for each step below — ${stepCount} line${stepCount === 1 ? "" : "s"} total, in order — so the song fits the runtime.`,
+    "Each step (one line of the song lands on each):",
     stepLines,
     "",
     "Rules:",
-    "- Write COMPLETE, singable lyrics: a short song of roughly one or two verses and a chorus — keep it tight (about 8–16 short lines total) so it fits a brief score.",
-    "- Use ACE-Step structure tags on their own lines: [verse], [chorus], and optionally [bridge] or [outro]. Put each lyric line on its own line under its tag.",
-    "- Make the lyrics ABOUT what happens in the session (the steps above), but commit hard to the genre — be playful and vivid, never a dry play-by-play.",
-    "- Keep lines short and rhythmic so they sing well; favor a memorable, repeatable chorus.",
-    "- Do NOT include chord names, timestamps, performance notes, or stage directions — only the structure tags and the words to sing.",
+    `- Write exactly one line per step (${stepCount} total). Each line must be SHORT and singable — at most ~${wordsPerLine} words — so it can be sung in roughly ${perStepSec.toFixed(1)}s, the time that step is on screen.`,
+    "- Each line is ABOUT its step (use the step's intent/what it does), but commit hard to the genre — be playful and vivid, never a dry play-by-play.",
+    "- Together the lines should read as one coherent song with a through-line; rhyme or repetition across lines is welcome, but keep the one-line-per-step mapping.",
+    "- Do NOT include section tags, chord names, timestamps, or stage directions — just the words to sing for each step.",
     '- Provide a punchy, dramatic, mostly-uppercase "title" for an opening title card. You may use a newline in the title to force a two-line layout.',
     "",
-    'Respond with STRICT JSON only — no prose, no markdown fences — exactly: {"title": string, "lyrics": string}. The lyrics string uses "\\n" for line breaks.',
+    'Respond with STRICT JSON only — no prose, no markdown fences — exactly: {"title": string, "steps": [{"index": number, "lyric": string}]}',
   ].join("\n");
 }
 
@@ -586,7 +601,9 @@ export function parseNarrationJson(raw: string): Narration | null {
 
 // Parse the SONG-mode LLM response into a validated Lyrics, or null on any
 // problem. Same lenient JSON handling as parseNarrationJson (strips fences, falls
-// back to brace extraction). Both fields must be non-empty strings.
+// back to brace extraction). Shape: {title, steps:[{index, lyric}]} — one sung
+// line per step. Empty-text lines are dropped; null only if the whole reply is
+// malformed or no usable line survives.
 export function parseLyricsJson(raw: string): Lyrics | null {
   const parsed = tryParseJson(raw);
   if (typeof parsed !== "object" || parsed === null) {
@@ -595,13 +612,29 @@ export function parseLyricsJson(raw: string): Lyrics | null {
   const record = parsed as Record<string, unknown>;
   if (
     typeof record.title !== "string" ||
-    typeof record.lyrics !== "string" ||
     record.title.trim() === "" ||
-    record.lyrics.trim() === ""
+    !Array.isArray(record.steps)
   ) {
     return null;
   }
-  return { title: record.title, lyrics: record.lyrics };
+  const lines: LyricLine[] = [];
+  for (const entry of record.steps) {
+    if (typeof entry !== "object" || entry === null) {
+      return null;
+    }
+    const e = entry as Record<string, unknown>;
+    if (typeof e.index !== "number" || typeof e.lyric !== "string") {
+      return null;
+    }
+    const text = e.lyric.trim();
+    if (text) {
+      lines.push({ index: e.index, text });
+    }
+  }
+  if (lines.length === 0) {
+    return null;
+  }
+  return { title: record.title, lines };
 }
 
 // Parse `say -v '?'` output into structured voices. Each line is
@@ -1183,6 +1216,7 @@ async function generateLyrics(
 async function planSong(args: {
   options: CinematicOptions;
   narratableSteps: CinematicStep[];
+  videoSeconds: number;
   log: Logger;
   echo?: Echo;
 }): Promise<{
@@ -1191,7 +1225,7 @@ async function planSong(args: {
   repoDir: string;
   base: string;
 } | null> {
-  const { options, narratableSteps, log, echo } = args;
+  const { options, narratableSteps, videoSeconds, log, echo } = args;
   const direction = resolveDirection(options.prompt, { song: true });
   const repoDir = options.repoDir ?? process.cwd();
   const base = await resolveBase(repoDir);
@@ -1199,6 +1233,7 @@ async function planSong(args: {
   const prompt = buildLyricsPrompt({
     direction: direction.text,
     change,
+    videoSeconds,
     steps: narratableSteps.map((step, index) => ({
       index,
       name: step.name,
@@ -2589,10 +2624,11 @@ export async function cinematicProcess(
       notes.push(...gemini.notes);
     }
 
-    // Song mode: instead of per-step spoken narration, the LLM writes themed
-    // lyrics ABOUT the session and a singing music model performs them as the
-    // whole soundtrack. No TTS, no per-step re-timing, no time-synced captions
-    // (generated vocals carry no alignment) — the lyrics go to a sidecar instead.
+    // Song mode: instead of per-step spoken narration, the LLM writes ONE short
+    // themed lyric line per step (scaled to the session length) and a singing
+    // music model performs them as the whole soundtrack. No TTS, no re-timing.
+    // The vocals aren't frame-aligned to the captions (the model paces them), so
+    // the captions reuse the narration timing — each line shown at its step.
     if (options.song) {
       // Pick a music provider that actually SINGS supplied lyrics (ACE-Step /
       // Lyria), ignoring stock music (archive.org) even if it won the normal
@@ -2611,12 +2647,31 @@ export async function cinematicProcess(
         notes: [],
       };
 
+      // Scale the lyrics to the condensed runtime so the whole song fits (a short
+      // video was getting only its first line sung). Fall back to a nominal length
+      // if the probe fails.
+      const songSeconds = (await audioDurationSec(ffmpegPath, input)) ?? 20;
       progress("writing the lyrics…");
-      const planned = await planSong({ options, narratableSteps, log, echo });
+      const planned = await planSong({
+        options,
+        narratableSteps,
+        videoSeconds: songSeconds,
+        log,
+        echo,
+      });
       if (!planned) {
         return notApplied("song lyrics generation failed");
       }
       const { direction, lyrics, repoDir, base } = planned;
+
+      // Lines in step order, and the lyric block ACE-Step sings (a [verse] tag
+      // helps the model; the words are the per-step lines in order).
+      const byIndex = new Map(lyrics.lines.map((l) => [l.index, l.text]));
+      const ordered = narratableSteps
+        .map((_, i) => ({ i, text: byIndex.get(i) }))
+        .filter((x): x is { i: number; text: string } => Boolean(x.text));
+      const lyricBlock = `[verse]\n${ordered.map((x) => x.text).join("\n")}`;
+
       const musicLabel =
         (await songMusic.credit?.(direction.text).catch(() => undefined)) ??
         songMusic.id;
@@ -2636,7 +2691,7 @@ export async function cinematicProcess(
         title: lyrics.title,
         category: direction.category,
         directionText: direction.text,
-        lyrics: lyrics.lyrics,
+        lyrics: lyricBlock,
         providers: songProviders,
         hasDrawtext,
         repoDir,
@@ -2656,18 +2711,39 @@ export async function cinematicProcess(
         return notApplied("song audio could not be generated");
       }
 
-      // Remove any sibling .srt left by a prior NARRATION run on this session
-      // (song mode burns no captions and writes no .srt). A re-run flips
-      // narration → song on the same video, so without this a soft-sub player
-      // would auto-load the stale narration captions over the song.
-      await rm(srtPathFor(videoPath), { force: true });
+      // Captions reuse the narration timing: each lyric line is shown at its
+      // step's position and held until the next step (the last line gets a short
+      // fixed hold). These follow the on-screen steps, not the sung vocals.
+      const cues = ordered.map((x, k) => {
+        const start = stepTimes[x.i] ?? 0;
+        const next = ordered[k + 1];
+        const end = next ? (stepTimes[next.i] ?? start + 4) : start + 4;
+        return { start, end: Math.max(end, start + 1), text: x.text };
+      });
+      const srtPath = srtPathFor(videoPath);
+      temps.push(srtPath);
+      const srtGeometry = await probeVideo(ffmpegPath, input);
+      await writeFile(srtPath, buildSrt(cues, captionLineMax(srtGeometry?.width)));
 
-      // Write the lyrics sidecar (the honest artifact — no faked caption sync).
+      // Write the full lyrics sidecar too (one line per step, in order).
       const lyricsPath = lyricsPathFor(videoPath);
       temps.push(lyricsPath);
-      await writeFile(lyricsPath, `${lyrics.title}\n\n${lyrics.lyrics}\n`);
+      await writeFile(
+        lyricsPath,
+        `${lyrics.title}\n\n${ordered.map((x) => x.text).join("\n")}\n`
+      );
 
-      progress("mixing the song…");
+      const burnCaptions = options.captions && hasSubtitles;
+      if (options.captions && !hasSubtitles) {
+        const note =
+          "captions not burned — this ffmpeg has no `subtitles` filter; wrote a soft-sub .srt instead";
+        notes.push(note);
+        log.warn({ ffmpeg: ffmpegPath }, `cinematic: ${note}`);
+      }
+
+      progress(
+        burnCaptions ? "mixing the song and burning captions…" : "mixing the song…"
+      );
       const finalPath = `${videoPath}.cinematic.webm`;
       temps.push(finalPath);
       await mixAudioAndCaptions({
@@ -2676,8 +2752,8 @@ export async function cinematicProcess(
         clips: [],
         offsetsSec: [],
         music,
-        srtPath: "",
-        burnCaptions: false,
+        srtPath,
+        burnCaptions,
         outPath: finalPath,
         echo,
       });
@@ -2686,9 +2762,10 @@ export async function cinematicProcess(
         return notApplied("encoder produced an empty file");
       }
       await rename(finalPath, videoPath);
-      // The final video is the original path now; the lyrics sidecar is a
-      // deliverable — drop both from the cleanup list.
+      // The final video is the original path now; the .srt and lyrics sidecar are
+      // deliverables — drop all three from the cleanup list.
       temps.splice(temps.indexOf(finalPath), 1);
+      temps.splice(temps.indexOf(srtPath), 1);
       temps.splice(temps.indexOf(lyricsPath), 1);
       return { applied: true, titleOffsetSec, stepTimes, notes, meta };
     }

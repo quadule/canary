@@ -338,50 +338,65 @@ describe("buildModelCredits", () => {
 });
 
 describe("parseLyricsJson", () => {
-  it("parses a valid {title, lyrics} object", () => {
-    const raw = '{"title":"THE BUILD","lyrics":"[verse]\\nwe ship it green"}';
+  it("parses {title, steps:[{index, lyric}]} into ordered lines", () => {
+    const raw =
+      '{"title":"THE BUILD","steps":[{"index":0,"lyric":"we open the door"},{"index":1,"lyric":"we ship it green"}]}';
     expect(parseLyricsJson(raw)).toEqual({
       title: "THE BUILD",
-      lyrics: "[verse]\nwe ship it green",
+      lines: [
+        { index: 0, text: "we open the door" },
+        { index: 1, text: "we ship it green" },
+      ],
     });
   });
 
-  it("strips code fences and tolerates a chatty preamble", () => {
+  it("strips code fences, tolerates a preamble, and drops blank lines", () => {
     const fence = "```";
-    const body = '{"title":"X","lyrics":"[chorus]\\nla"}';
-    expect(parseLyricsJson(`${fence}json\n${body}\n${fence}`)).not.toBeNull();
+    const body =
+      '{"title":"X","steps":[{"index":0,"lyric":"la"},{"index":1,"lyric":"  "}]}';
+    expect(parseLyricsJson(`${fence}json\n${body}\n${fence}`)).toEqual({
+      title: "X",
+      lines: [{ index: 0, text: "la" }],
+    });
     expect(parseLyricsJson(`Here you go: ${body}`)).toEqual({
       title: "X",
-      lyrics: "[chorus]\nla",
+      lines: [{ index: 0, text: "la" }],
     });
   });
 
-  it("rejects missing, empty, or non-string fields", () => {
+  it("rejects a bad title, a missing/empty steps array, or malformed entries", () => {
     expect(parseLyricsJson('{"title":"x"}')).toBeNull();
-    expect(parseLyricsJson('{"lyrics":"x"}')).toBeNull();
-    expect(parseLyricsJson('{"title":"","lyrics":"x"}')).toBeNull();
-    expect(parseLyricsJson('{"title":"x","lyrics":"   "}')).toBeNull();
-    expect(parseLyricsJson('{"title":1,"lyrics":"x"}')).toBeNull();
+    expect(parseLyricsJson('{"steps":[{"index":0,"lyric":"a"}]}')).toBeNull();
+    expect(parseLyricsJson('{"title":"","steps":[{"index":0,"lyric":"a"}]}')).toBeNull();
+    // All lines blank → no usable line survives.
+    expect(parseLyricsJson('{"title":"x","steps":[{"index":0,"lyric":"  "}]}')).toBeNull();
+    expect(parseLyricsJson('{"title":"x","steps":[{"index":0}]}')).toBeNull();
+    expect(parseLyricsJson('{"title":"x","steps":"nope"}')).toBeNull();
     expect(parseLyricsJson("not json")).toBeNull();
     expect(parseLyricsJson("")).toBeNull();
   });
 });
 
 describe("buildLyricsPrompt", () => {
-  it("asks for a song about the steps and a strict-JSON {title, lyrics} reply", () => {
+  it("asks for one line per step, scaled to length, as strict per-step JSON", () => {
     const prompt = buildLyricsPrompt({
       direction: "80s power ballad",
+      videoSeconds: 12,
       steps: [
         { index: 0, name: "open", script: "await page.goto('/')" },
         { index: 1, name: "login" },
       ],
     });
     expect(prompt).toContain("80s power ballad");
-    expect(prompt).toContain("[verse]");
-    expect(prompt).toContain('{"title": string, "lyrics": string}');
-    // The steps drive the verses.
+    expect(prompt).toContain(
+      '{"title": string, "steps": [{"index": number, "lyric": string}]}'
+    );
+    // One line per step, count called out.
+    expect(prompt).toContain("2 lines total");
     expect(prompt).toContain("0. open");
     expect(prompt).toContain("1. login");
+    // Scales to the runtime.
+    expect(prompt).toContain("12 seconds");
     // No spoken narration in song mode.
     expect(prompt).toContain("there is no spoken narration");
   });

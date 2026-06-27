@@ -365,14 +365,11 @@ export async function sessionEnd(
   // (it keys off the stamped step.videoTime and the trimmed video). Default output
   // is unchanged.
   if (cinematicRequested) {
-    // The double-caption warning only applies to NARRATION mode, which burns
-    // captions. Song mode burns none — the page.showCaption overlays are the only
-    // on-screen labels and are meant to stay — so it never warns.
-    if (!opts.song && !record.cinematic) {
-      // The session wasn't recorded with --cinematic, so any page.showCaption
-      // overlays are already baked into the video; the burned captions land on
-      // top of them. Still run the pass (handy for testing the pipeline) but
-      // warn so the double captions aren't a surprise.
+    // Both narration and song mode BURN captions (song shows the per-step lyric
+    // lines), so either way page.showCaption overlays baked into the recording
+    // would double up. Warn when the session wasn't started --cinematic (which
+    // suppresses the overlays); still run the pass (handy for testing).
+    if (!record.cinematic) {
       process.stderr.write(
         "  ⚠ this session was not started with --cinematic, so any page.showCaption overlays are baked into the video; the burned captions will be added on top (possible double captions). Start with `canary session start --cinematic` to suppress the overlays.\n"
       );
