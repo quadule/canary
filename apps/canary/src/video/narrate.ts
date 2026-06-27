@@ -1758,33 +1758,22 @@ async function assembleSongVideo(args: {
   const geometry = await probeVideo(ffmpeg, videoPath);
   const frameRate = geometry?.frameRate ?? 30;
 
-  // Re-time by UNIFORMLY slowing the whole condensed body to span the song — no
-  // per-step still-frame freezes (which read as a "pause" mid-step). The target
-  // length is the sum of the per-step budgets.
+  // Re-time per step: a small still at the start/end of each step and a CAPPED
+  // stretch of its footage (no extreme slow-mo, no whole-step freezes). The target
+  // is the sum of the per-step budgets (the vocal span); the cap keeps it watchable
+  // even when that's much longer than the source.
   progress("re-timing the video to the song…");
-  const srcSec = await audioDurationSec(ffmpeg, videoPath);
-  if (!srcSec) {
+  const retimed = await retimeSongBody({
+    ffmpeg,
+    videoPath,
+    steps: narratableSteps,
+    targetSec: holdDurSec.reduce((a, b) => a + b, 0),
+    frameRate,
+    temps,
+  });
+  if (!retimed) {
     return null;
   }
-  const targetSec = Math.max(
-    srcSec,
-    holdDurSec.reduce((a, b) => a + b, 0)
-  );
-  const stretchedPath = `${videoPath}.songbody.webm`;
-  temps.push(stretchedPath);
-  const factor = await stretchVideo({
-    ffmpeg,
-    src: videoPath,
-    srcSec,
-    targetSec,
-    frameRate,
-    outPath: stretchedPath,
-  });
-  // Each step's new position scales with the uniform stretch.
-  const retimed = {
-    path: stretchedPath,
-    starts: narratableSteps.map((s) => s.videoTime * factor),
-  };
 
   const background =
     hasDrawtext && geometry
@@ -2215,16 +2204,39 @@ async function encodeSlice(args: {
   holdSec: number;
   frameRate: number;
   outPath: string;
+  // Optional: freeze the FIRST frame for this long before the footage plays (a
+  // "beat" before the action — frames both narration and song steps).
+  startHoldSec?: number;
+  // Optional: slow the footage by this factor (>1 = slower). Song mode uses a
+  // small capped stretch; narration leaves it 1 (it holds frames instead).
+  stretchFactor?: number;
 }): Promise<void> {
   const { ffmpeg, src, startSec, durSec, holdSec, frameRate, outPath } = args;
+  const startHold = args.startHoldSec ?? 0;
+  const stretch = args.stretchFactor ?? 1;
   // Force constant frame rate the way condense.ts does (fps + setpts), so each
   // slice's actual duration matches `-t`/`tpad` exactly. Without this, libvpx
   // slices come up tens of ms short and the per-segment error ACCUMULATES across
   // the concat, drifting narration/captions off the picture on long sessions.
   const fps = frameRate > 0 ? frameRate : 30;
-  const chain = [`fps=${fps}`];
-  if (holdSec > 0) {
-    chain.push(`tpad=stop_mode=clone:stop_duration=${holdSec.toFixed(3)}`);
+  const chain: string[] = [];
+  // Slow the footage first (on the extracted slice), then pin CFR, then pad with
+  // frozen frames at the head/tail, then reset PTS for an exact-duration segment.
+  if (stretch > 1.001) {
+    chain.push(`setpts=${stretch.toFixed(6)}*PTS`);
+  }
+  chain.push(`fps=${fps}`);
+  if (startHold > 0 || holdSec > 0) {
+    const parts = ["tpad"];
+    if (startHold > 0) {
+      parts.push(
+        `start_mode=clone:start_duration=${startHold.toFixed(3)}`
+      );
+    }
+    if (holdSec > 0) {
+      parts.push(`stop_mode=clone:stop_duration=${holdSec.toFixed(3)}`);
+    }
+    chain.push(parts.join(":"));
   }
   chain.push("setpts=N/FRAME_RATE/TB");
   await run(
@@ -2252,46 +2264,6 @@ async function encodeSlice(args: {
     ],
     ENCODE_TIMEOUT_MS
   );
-}
-
-// Uniformly time-stretch (or compress) a video to `targetSec`, re-encoded to CFR
-// libvpx. Used by song mode instead of per-step freezes: the whole condensed body
-// plays continuously, slowed to span the song — no still-frame "pause" mid-step.
-// `setpts=factor*PTS` rescales every timestamp; the fps filter then re-samples to
-// constant frame rate over the new duration. Returns the stretch factor used.
-async function stretchVideo(args: {
-  ffmpeg: string;
-  src: string;
-  srcSec: number;
-  targetSec: number;
-  frameRate: number;
-  outPath: string;
-}): Promise<number> {
-  const { ffmpeg, src, srcSec, targetSec, frameRate, outPath } = args;
-  const fps = frameRate > 0 ? frameRate : 30;
-  const factor = srcSec > 0 && targetSec > 0 ? targetSec / srcSec : 1;
-  await run(
-    ffmpeg,
-    [
-      "-hide_banner",
-      "-nostats",
-      "-y",
-      "-i",
-      src,
-      "-vf",
-      `setpts=${factor.toFixed(6)}*PTS,fps=${fps},setpts=N/FRAME_RATE/TB`,
-      "-r",
-      String(fps),
-      "-an",
-      "-c:v",
-      "libvpx",
-      "-b:v",
-      "1M",
-      outPath,
-    ],
-    ENCODE_TIMEOUT_MS
-  );
-  return factor;
 }
 
 // Concat N stream-copyable segments (all libvpx/webm here) in order.
@@ -2329,13 +2301,18 @@ async function concatSegments(
 // the re-timed video and how long to freeze its tail. A step's natural footage
 // is [videoTime, nextVideoTime) (last step runs to the end); when its narration
 // is longer than that, the difference is added as a freeze hold so narration
-// never bleeds into the next step. Pure → unit-tested.
+// never bleeds into the next step. `startPadSec` freezes the first frame for a
+// beat BEFORE each step's footage (so the action doesn't start cold); the
+// returned `starts` point at the action (after that pad), where narration/captions
+// land. Pure → unit-tested.
 export function planRetime(args: {
   stepTimes: number[];
   clipDurSec: number[];
   totalSec: number;
+  startPadSec?: number;
 }): { starts: number[]; footage: number[]; holds: number[]; leadSec: number } {
   const { stepTimes, clipDurSec, totalSec } = args;
+  const startPad = Math.max(0, args.startPadSec ?? 0);
   const n = stepTimes.length;
   const starts: number[] = [];
   const footage: number[] = [];
@@ -2347,13 +2324,18 @@ export function planRetime(args: {
     const next = i < n - 1 ? (stepTimes[i + 1] ?? totalSec) : totalSec;
     const f = Math.max(0.1, next - start);
     const hold = Math.max(0, (clipDurSec[i] ?? 0) - f);
-    starts.push(acc);
+    // The action (and its narration) starts after the leading still.
+    starts.push(acc + startPad);
     footage.push(f);
     holds.push(hold);
-    acc += f + hold;
+    acc += startPad + f + hold;
   }
   return { starts, footage, holds, leadSec };
 }
+
+// A small still "beat" frozen before each step's action, and after it, so steps
+// don't start/end cold. Applied to narration; song mode uses its own pads.
+const STEP_START_PAD_SEC = 0.4;
 
 // Re-time the video so each step holds its frame long enough for its narration.
 // Returns the new video path and each step's new start (pre-title-card). Null if
@@ -2375,6 +2357,7 @@ async function retimeForNarration(args: {
     stepTimes: steps.map((s) => s.videoTime),
     clipDurSec,
     totalSec,
+    startPadSec: STEP_START_PAD_SEC,
   });
   const segs: string[] = [];
   if (plan.leadSec > 0.01) {
@@ -2400,6 +2383,7 @@ async function retimeForNarration(args: {
       startSec: steps[i]?.videoTime ?? 0,
       durSec: plan.footage[i] ?? 0.1,
       holdSec: plan.holds[i] ?? 0,
+      startHoldSec: STEP_START_PAD_SEC,
       frameRate,
       outPath: segPath,
     });
@@ -2410,6 +2394,78 @@ async function retimeForNarration(args: {
   temps.push(outPath, listPath);
   await concatSegments(ffmpeg, segs, outPath, listPath);
   return { path: outPath, starts: plan.starts };
+}
+
+// Song-mode re-timing: stretch each step's footage by a CAPPED factor (toward the
+// target length but never into extreme slow-motion) and frame it with a small
+// still at the start and end. This fills the song far better than freezing whole
+// steps, without the 6× slow-mo that a uniform full-length stretch produced.
+// Returns the re-timed path and each step's action start (after its lead still).
+const SONG_MAX_STRETCH = 2.2;
+const SONG_START_PAD_SEC = 0.5;
+const SONG_END_PAD_SEC = 0.7;
+async function retimeSongBody(args: {
+  ffmpeg: string;
+  videoPath: string;
+  steps: CinematicStep[];
+  targetSec: number;
+  frameRate: number;
+  temps: string[];
+}): Promise<{ path: string; starts: number[] } | null> {
+  const { ffmpeg, videoPath, steps, targetSec, frameRate, temps } = args;
+  const totalSec = await audioDurationSec(ffmpeg, videoPath);
+  if (totalSec === undefined || totalSec <= 0) {
+    return null;
+  }
+  const n = steps.length;
+  // Stretch toward the target, capped so it never becomes extreme slow-motion.
+  const factor = Math.min(SONG_MAX_STRETCH, Math.max(1, targetSec / totalSec));
+  const segs: string[] = [];
+  const starts: number[] = [];
+  let acc = 0;
+  const leadSec = n > 0 ? Math.max(0, steps[0]?.videoTime ?? 0) : 0;
+  if (leadSec > 0.01) {
+    const leadPath = `${videoPath}.lead.webm`;
+    temps.push(leadPath);
+    await encodeSlice({
+      ffmpeg,
+      src: videoPath,
+      startSec: 0,
+      durSec: leadSec,
+      holdSec: 0,
+      stretchFactor: factor,
+      frameRate,
+      outPath: leadPath,
+    });
+    segs.push(leadPath);
+    acc += leadSec * factor;
+  }
+  for (let i = 0; i < n; i++) {
+    const start = steps[i]?.videoTime ?? 0;
+    const next = i < n - 1 ? (steps[i + 1]?.videoTime ?? totalSec) : totalSec;
+    const f = Math.max(0.1, next - start);
+    const segPath = `${videoPath}.rseg${i}.webm`;
+    temps.push(segPath);
+    await encodeSlice({
+      ffmpeg,
+      src: videoPath,
+      startSec: start,
+      durSec: f,
+      holdSec: SONG_END_PAD_SEC,
+      startHoldSec: SONG_START_PAD_SEC,
+      stretchFactor: factor,
+      frameRate,
+      outPath: segPath,
+    });
+    starts.push(acc + SONG_START_PAD_SEC);
+    acc += SONG_START_PAD_SEC + f * factor + SONG_END_PAD_SEC;
+    segs.push(segPath);
+  }
+  const outPath = `${videoPath}.retimed.webm`;
+  const listPath = `${videoPath}.retime.txt`;
+  temps.push(outPath, listPath);
+  await concatSegments(ffmpeg, segs, outPath, listPath);
+  return { path: outPath, starts };
 }
 
 // Build the title card matched to the source geometry and concat it ahead of the

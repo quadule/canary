@@ -764,4 +764,19 @@ describe("planRetime", () => {
     expect(plan.holds[0]).toBe(0);
     expect(plan.holds[1]).toBe(2); // 6 - (8-4)=2
   });
+
+  it("inserts a leading still pad before each step's action", () => {
+    // Same as the first case but with a 0.5s start pad before each step.
+    const plan = planRetime({
+      stepTimes: [1, 4],
+      clipDurSec: [12, 11],
+      totalSec: 8,
+      startPadSec: 0.5,
+    });
+    expect(plan.footage).toEqual([3, 4]);
+    expect(plan.holds).toEqual([9, 7]);
+    // step0 action starts after the lead + its pad; step1 after step0's full slot
+    // (pad + footage + hold) + its own pad.
+    expect(plan.starts).toEqual([1 + 0.5, 1 + 0.5 + 3 + 9 + 0.5]);
+  });
 });
