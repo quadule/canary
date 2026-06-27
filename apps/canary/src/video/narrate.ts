@@ -2227,16 +2227,15 @@ async function encodeSlice(args: {
   }
   chain.push(`fps=${fps}`);
   if (startHold > 0 || holdSec > 0) {
-    const parts = ["tpad"];
+    const opts: string[] = [];
     if (startHold > 0) {
-      parts.push(
-        `start_mode=clone:start_duration=${startHold.toFixed(3)}`
-      );
+      opts.push(`start_mode=clone:start_duration=${startHold.toFixed(3)}`);
     }
     if (holdSec > 0) {
-      parts.push(`stop_mode=clone:stop_duration=${holdSec.toFixed(3)}`);
+      opts.push(`stop_mode=clone:stop_duration=${holdSec.toFixed(3)}`);
     }
-    chain.push(parts.join(":"));
+    // Filter args: name=opt1:opt2 (the FIRST separator is '=', not ':').
+    chain.push(`tpad=${opts.join(":")}`);
   }
   chain.push("setpts=N/FRAME_RATE/TB");
   await run(
