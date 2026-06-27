@@ -38,6 +38,7 @@ import {
   type TtsProvider,
 } from "./providers.js";
 import { resolveAceStepMusic } from "./acestep.js";
+import { resolveArchiveMusic } from "./archive.js";
 import { resolveOmlxProviders } from "./omlx.js";
 import { formatCommand, shellQuote } from "./shell.js";
 import {
@@ -2116,10 +2117,21 @@ export async function cinematicProcess(
     // probed (it lists its loaded models) only when it's configured.
     const omlx = await resolveOmlxProviders({ env: process.env, log, echo });
     const acestep = await resolveAceStepMusic({ env: process.env, log, echo });
+    // Stock music from archive.org (opt-in): pushes a per-track attribution note
+    // into `notes` at fetch time, so it takes the shared array by reference.
+    const archive = resolveArchiveMusic({
+      env: process.env,
+      ffmpeg: ffmpegPath,
+      log,
+      notes,
+      echo,
+    });
     const gemini = resolveMediaProviders({ env: process.env, log });
     const providers: MediaProviders = {
       tts: omlx.tts ?? gemini.tts,
-      music: acestep.music ?? gemini.music,
+      // Prefer stock (archive.org) when opted in, then generated (ACE-Step),
+      // then Gemini Lyria.
+      music: archive.music ?? acestep.music ?? gemini.music,
       titleBackground: gemini.titleBackground,
       notes: [],
     };

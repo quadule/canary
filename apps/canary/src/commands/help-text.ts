@@ -142,6 +142,8 @@ for HTTP TTS) is printed so a run is easy to reproduce and tweak.
                         "$CANARY_SAY_VOICE" -o "$CANARY_SAY_OUTPUT" "$1")
   $CANARY_OMLX_URL / $CANARY_OMLX_API_KEY / $CANARY_OMLX_TTS_MODEL   use a local oMLX server for
                         TTS (narration stays on your machine); key also read from ~/.omlx
+  $CANARY_ARCHIVE_MUSIC=1   score the video with free Creative-Commons music from archive.org
+                        (attribution is added to the run notes); needs ffmpeg, no model download
 
   canary session end "$id"
   canary session end "$id" --cinematic
