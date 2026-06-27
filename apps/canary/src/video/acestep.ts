@@ -56,12 +56,18 @@ export function buildMusicContent(
   return directionText;
 }
 
-// Build the chat-completions payload. CRITICAL: duration (and vocal_language)
-// live under `audio_config`, NOT at the top level — a top-level duration is
-// ignored and the server falls back to its default ceiling (minutes of audio).
-// A song WITHOUT supplied lyrics sets top-level `sample_mode` so the LM writes
-// lyrics from the natural-language content; a song WITH lyrics stays in tagged
-// mode (no sample_mode) so the model sings the exact words. Pure → unit-tested.
+// Build the chat-completions payload. CRITICAL nuances learned from live runs:
+//   - duration (and vocal_language) live under `audio_config`, NOT top level — a
+//     top-level duration is ignored (server falls back to a multi-minute ceiling).
+//   - A song WITH explicit lyrics (song mode) must OMIT duration entirely so the
+//     model chooses the length: pinning a duration on a tagged-lyric song makes it
+//     come out INSTRUMENTAL (verified — fixed 19/25/33/60s requests sang nothing,
+//     while the same lyrics with no duration produced vocals). The caller caps the
+//     long result (~60–250s) down to the video length in the mix.
+//   - A song WITHOUT lyrics uses top-level `sample_mode` (LM writes its own lyrics)
+//     and keeps a duration (it's background, e.g. the credits bed).
+//   - An instrumental bed keeps its duration (it must match a target length).
+// Pure → unit-tested.
 export function buildMusicPayload(args: {
   directionText: string;
   seconds: number;
@@ -69,9 +75,13 @@ export function buildMusicPayload(args: {
   lyrics?: string;
   model?: string;
 }): Record<string, unknown> {
-  const audioConfig: Record<string, unknown> = {
-    duration: Math.max(1, Math.round(args.seconds)),
-  };
+  const hasLyrics = !args.instrumental && !!args.lyrics?.trim();
+  const audioConfig: Record<string, unknown> = {};
+  // Omit duration ONLY for a lyric song (so the model sings); everything else
+  // pins it.
+  if (!hasLyrics) {
+    audioConfig.duration = Math.max(1, Math.round(args.seconds));
+  }
   const payload: Record<string, unknown> = {
     messages: [
       {

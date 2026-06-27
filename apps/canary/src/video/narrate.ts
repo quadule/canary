@@ -2775,21 +2775,32 @@ export async function cinematicProcess(
         return notApplied("song audio could not be generated");
       }
 
-      // Captions reuse the narration timing: each lyric line appears at its step's
-      // position, laid out so bunched steps (condense can collapse a static stretch
-      // to one instant) don't stack captions on top of each other. These follow the
-      // on-screen steps, not the sung vocals.
-      const bodyEndSec = (await audioDurationSec(ffmpegPath, finalBody)) ?? 0;
-      const cues = layoutSongCues(
-        ordered.map((x) => ({ start: stepTimes[x.i] ?? 0, text: x.text })),
-        bodyEndSec
-      );
+      // Song-mode captions are SOFT (a sibling .srt the player overlays), never
+      // burned: the sung vocals don't follow our written lines or their pacing, so
+      // baking captions in would lock in a guess — a soft .srt can be re-timed
+      // later by editing the text, with no re-render. Each lyric line appears at
+      // its step's position, laid out so bunched steps don't stack. --no-captions
+      // skips the .srt entirely.
+      const wantCaptions = options.captions !== false;
       const srtPath = srtPathFor(videoPath);
-      temps.push(srtPath);
-      const srtGeometry = await probeVideo(ffmpegPath, input);
-      await writeFile(srtPath, buildSrt(cues, captionLineMax(srtGeometry?.width)));
+      if (wantCaptions) {
+        const bodyEndSec = (await audioDurationSec(ffmpegPath, finalBody)) ?? 0;
+        const cues = layoutSongCues(
+          ordered.map((x) => ({ start: stepTimes[x.i] ?? 0, text: x.text })),
+          bodyEndSec
+        );
+        temps.push(srtPath);
+        const srtGeometry = await probeVideo(ffmpegPath, input);
+        await writeFile(
+          srtPath,
+          buildSrt(cues, captionLineMax(srtGeometry?.width))
+        );
+      } else {
+        // No captions: drop any stale .srt from a prior run beside the video.
+        await rm(srtPath, { force: true });
+      }
 
-      // Write the full lyrics sidecar too (one line per step, in order).
+      // Write the full lyrics sidecar (one line per step, in order).
       const lyricsPath = lyricsPathFor(videoPath);
       temps.push(lyricsPath);
       await writeFile(
@@ -2797,17 +2808,7 @@ export async function cinematicProcess(
         `${lyrics.title}\n\n${ordered.map((x) => x.text).join("\n")}\n`
       );
 
-      const burnCaptions = options.captions && hasSubtitles;
-      if (options.captions && !hasSubtitles) {
-        const note =
-          "captions not burned — this ffmpeg has no `subtitles` filter; wrote a soft-sub .srt instead";
-        notes.push(note);
-        log.warn({ ffmpeg: ffmpegPath }, `cinematic: ${note}`);
-      }
-
-      progress(
-        burnCaptions ? "mixing the song and burning captions…" : "mixing the song…"
-      );
+      progress("mixing the song…");
       const finalPath = `${videoPath}.cinematic.webm`;
       temps.push(finalPath);
       await mixAudioAndCaptions({
@@ -2816,8 +2817,8 @@ export async function cinematicProcess(
         clips: [],
         offsetsSec: [],
         music,
-        srtPath,
-        burnCaptions,
+        srtPath: "",
+        burnCaptions: false, // soft subs only — the .srt sidecar carries them
         outPath: finalPath,
         echo,
       });
@@ -2827,9 +2828,11 @@ export async function cinematicProcess(
       }
       await rename(finalPath, videoPath);
       // The final video is the original path now; the .srt and lyrics sidecar are
-      // deliverables — drop all three from the cleanup list.
+      // deliverables — drop them from the cleanup list.
       temps.splice(temps.indexOf(finalPath), 1);
-      temps.splice(temps.indexOf(srtPath), 1);
+      if (wantCaptions) {
+        temps.splice(temps.indexOf(srtPath), 1);
+      }
       temps.splice(temps.indexOf(lyricsPath), 1);
       return { applied: true, titleOffsetSec, stepTimes, notes, meta };
     }

@@ -131,10 +131,10 @@ for HTTP TTS) is printed so a run is easy to reproduce and tweak.
 SONG MODE (--song): score the whole video with ONE original song instead of spoken narration.
 An LLM writes ONE short, singable lyric line PER STEP and a music model sings them. Like narration,
 each step's frame is held for a readable beat (re-timing) so the body outlasts the song's short
-instrumental intro and the vocals play across it; an opening title card and credits are added. Each
-lyric line is burned in as a caption at its step (and a sibling .lyrics.txt + .srt are written) —
-the sung vocals aren't frame-aligned to the captions (the model paces them), so the captions track
-the on-screen steps. Use --no-captions to skip the burn. Needs the 'claude' CLI plus a lyrics-capable
+instrumental intro and the vocals play across it; an opening title card and credits are added.
+Captions are SOFT subs — a sibling .srt (plus a .lyrics.txt) the player overlays, NOT burned in:
+the sung vocals don't follow the written lines or their pacing, so a soft .srt can be re-timed later
+without re-rendering. Use --no-captions to skip the .srt. Needs the 'claude' CLI plus a lyrics-capable
 music model: the local ACE-Step server (see $CANARY_ACESTEP_URL) or a Gemini key (Lyria). Combine
 with --prompt to steer the genre.
 
