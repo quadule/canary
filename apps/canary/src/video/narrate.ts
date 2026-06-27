@@ -2058,6 +2058,13 @@ async function mixAudioAndCaptions(args: {
     ? ["-c:v", "libvpx", "-b:v", "1M"]
     : ["-c:v", "copy"];
 
+  // Bound the output to the video's length. amix uses duration=longest, and a
+  // music provider may return a track far longer than the video (e.g. ACE-Step
+  // ignores the requested duration and returns minutes of audio) — without this
+  // cap that music keeps playing for minutes after the credits end.
+  const videoDurSec = await audioDurationSec(ffmpeg, videoPath);
+  const durationCap = videoDurSec ? ["-t", videoDurSec.toFixed(3)] : [];
+
   await run(
     ffmpeg,
     [
@@ -2077,6 +2084,7 @@ async function mixAudioAndCaptions(args: {
       // here. The per-step .m4a transcode stays AAC: that's an MP4 container.
       "-c:a",
       "libopus",
+      ...durationCap,
       outPath,
     ],
     ENCODE_TIMEOUT_MS,
