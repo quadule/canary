@@ -11,6 +11,7 @@ import {
   buildModelCredits,
   changeScaleHint,
   customSaySynth,
+  layoutSongCues,
   extractCaptions,
   lyricsPathFor,
   parseFilterNames,
@@ -238,6 +239,58 @@ describe("precinematicVideoPath", () => {
     expect(precinematicVideoPath("/s/abc/clip.mp4")).toBe(
       "/s/abc/clip.precinematic.mp4"
     );
+  });
+});
+
+describe("layoutSongCues", () => {
+  it("leaves well-spread lines at their natural times", () => {
+    const cues = layoutSongCues(
+      [
+        { start: 2, text: "a" },
+        { start: 6, text: "b" },
+        { start: 10, text: "c" },
+      ],
+      30
+    );
+    expect(cues.map((c) => c.start)).toEqual([2, 6, 10]);
+    // Non-last hold to the next start; last gets the tail (3s default).
+    expect(cues[0]?.end).toBe(6);
+    expect(cues[2]?.end).toBe(13);
+  });
+
+  it("pushes bunched lines apart so they never overlap", () => {
+    const cues = layoutSongCues(
+      [
+        { start: 2, text: "a" },
+        { start: 9, text: "b" },
+        { start: 9.1, text: "c" },
+        { start: 9.2, text: "d" },
+      ],
+      40,
+      { minDurSec: 1.4 }
+    );
+    // Each cue starts at or after the previous end — no overlap.
+    for (let i = 1; i < cues.length; i++) {
+      expect(cues[i]?.start).toBeGreaterThanOrEqual(cues[i - 1]?.end ?? 0);
+    }
+    // The bunched trio is spaced by the minimum display duration.
+    expect(cues[2]?.start).toBeCloseTo(10.4, 5);
+    expect(cues[3]?.start).toBeCloseTo(11.8, 5);
+  });
+
+  it("clamps to the video end and drops lines with no room left", () => {
+    const cues = layoutSongCues(
+      [
+        { start: 1, text: "a" },
+        { start: 1.1, text: "b" },
+        { start: 1.2, text: "c" },
+      ],
+      3,
+      { minDurSec: 1.4, tailSec: 3 }
+    );
+    expect(cues.every((c) => c.end <= 3)).toBe(true);
+    // Only the lines that fit before the 3s end survive.
+    expect(cues.length).toBeLessThan(3);
   });
 });
 

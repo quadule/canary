@@ -367,6 +367,53 @@ export function wrapCaption(
   return lines.join("\n");
 }
 
+// Lay out song-mode caption cues so they never overlap. Each lyric line wants to
+// appear at its step's time, but condense can bunch several steps into the same
+// instant (a static stretch trimmed to one point), which would stack captions on
+// top of each other. This walks the lines in order and pushes each start to at
+// least the previous cue's end, giving every line a readable minimum on screen;
+// a line whose step has real spacing keeps its natural time (no-op for a flow
+// whose steps are already spread out). The last line holds `tailSec`. Cues are
+// clamped to end by `videoEndSec`. Pure → unit-tested.
+export function layoutSongCues(
+  items: { start: number; text: string }[],
+  videoEndSec: number,
+  opts: { minDurSec?: number; maxDurSec?: number; tailSec?: number } = {}
+): { start: number; end: number; text: string }[] {
+  const minDur = opts.minDurSec ?? 1.4;
+  const maxDur = opts.maxDurSec ?? 5;
+  const tail = opts.tailSec ?? 3;
+  const cues: { start: number; end: number; text: string }[] = [];
+  let cursor = 0;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (!item) {
+      continue;
+    }
+    const start = Math.max(item.start, cursor);
+    if (videoEndSec > 0 && start >= videoEndSec) {
+      break; // no room left on the timeline
+    }
+    const nextRaw = items[i + 1]?.start ?? Number.POSITIVE_INFINITY;
+    const isLast = i === items.length - 1;
+    // Hold until the next line wants to start, bounded by [minDur, maxDur]; the
+    // last line gets the tail hold.
+    let end = isLast ? start + tail : Math.min(Math.max(nextRaw, start + minDur), start + maxDur);
+    if (!isLast) {
+      end = Math.max(end, start + minDur);
+    }
+    if (videoEndSec > 0) {
+      end = Math.min(end, videoEndSec);
+    }
+    if (end <= start) {
+      continue; // clamped to nothing at the very end of the video
+    }
+    cues.push({ start, end, text: item.text });
+    cursor = end;
+  }
+  return cues;
+}
+
 // One audio input to the mix: where it starts (ms) and an optional volume scale
 // (narration plays at 1.0; a music bed sits low, e.g. 0.18).
 export interface AudioTrack {
@@ -2711,15 +2758,15 @@ export async function cinematicProcess(
         return notApplied("song audio could not be generated");
       }
 
-      // Captions reuse the narration timing: each lyric line is shown at its
-      // step's position and held until the next step (the last line gets a short
-      // fixed hold). These follow the on-screen steps, not the sung vocals.
-      const cues = ordered.map((x, k) => {
-        const start = stepTimes[x.i] ?? 0;
-        const next = ordered[k + 1];
-        const end = next ? (stepTimes[next.i] ?? start + 4) : start + 4;
-        return { start, end: Math.max(end, start + 1), text: x.text };
-      });
+      // Captions reuse the narration timing: each lyric line appears at its step's
+      // position, laid out so bunched steps (condense can collapse a static stretch
+      // to one instant) don't stack captions on top of each other. These follow the
+      // on-screen steps, not the sung vocals.
+      const bodyEndSec = (await audioDurationSec(ffmpegPath, finalBody)) ?? 0;
+      const cues = layoutSongCues(
+        ordered.map((x) => ({ start: stepTimes[x.i] ?? 0, text: x.text })),
+        bodyEndSec
+      );
       const srtPath = srtPathFor(videoPath);
       temps.push(srtPath);
       const srtGeometry = await probeVideo(ffmpegPath, input);
