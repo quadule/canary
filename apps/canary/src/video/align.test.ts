@@ -1,11 +1,32 @@
 import { describe, expect, it } from "vitest";
 import {
   alignLyricsToSegments,
+  mainCluster,
   parseWhisperSrt,
   similarity,
   tokenize,
   vocalRegion,
 } from "./align.js";
+
+describe("mainCluster", () => {
+  it("drops an isolated early blip before a long gap, keeping the dominant run", () => {
+    const segs = [
+      { start: 0, end: 8, text: "we rise the text field" }, // early blip
+      { start: 30, end: 37, text: "the email at-sign" },
+      { start: 37, end: 44, text: "passwords guard the gate" },
+      { start: 44, end: 49, text: "five five five" },
+    ];
+    expect(mainCluster(segs)).toEqual(segs.slice(1));
+  });
+  it("returns all segments when they're contiguous, and [] for none", () => {
+    const segs = [
+      { start: 1, end: 3, text: "a" },
+      { start: 4, end: 6, text: "b" },
+    ];
+    expect(mainCluster(segs)).toEqual(segs);
+    expect(mainCluster([])).toEqual([]);
+  });
+});
 
 describe("parseWhisperSrt", () => {
   it("parses cues, strips ♪, and drops music/filler cues", () => {

@@ -187,6 +187,36 @@ export function alignLyricsToSegments(
   return out;
 }
 
+// Group segments into runs separated by gaps larger than `maxGapSec`, and return
+// the run with the most total sung time. ACE-Step sometimes sings one line early,
+// then leaves a long instrumental gap before the main run — anchoring the trim on
+// that early blip leaves a 20s+ intro. Trimming to the dominant cluster instead
+// starts the video on the real singing (dropping the stray early line). Pure.
+export function mainCluster(segments: Segment[], maxGapSec = 6): Segment[] {
+  if (segments.length === 0) {
+    return [];
+  }
+  const runs: Segment[][] = [];
+  for (const seg of segments) {
+    const run = runs.at(-1);
+    const prev = run?.at(-1);
+    if (run && prev && seg.start - prev.end <= maxGapSec) {
+      run.push(seg);
+    } else {
+      runs.push([seg]);
+    }
+  }
+  const sung = (run: Segment[]) =>
+    run.reduce((acc, s) => acc + (s.end - s.start), 0);
+  let best = runs[0] ?? [];
+  for (const run of runs) {
+    if (sung(run) > sung(best)) {
+      best = run;
+    }
+  }
+  return best;
+}
+
 // The span of the sung region: from a little before the first cue to a little
 // after the last, clamped to >= 0. Returns null for no cues (caller then keeps
 // the whole song / falls back). `lead`/`tail` pad so a word isn't clipped.

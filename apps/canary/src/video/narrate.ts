@@ -43,7 +43,7 @@ import {
   type TtsProvider,
 } from "./providers.js";
 import { resolveAceStepMusic } from "./acestep.js";
-import { alignLyricsToSegments, vocalRegion } from "./align.js";
+import { alignLyricsToSegments, mainCluster, vocalRegion } from "./align.js";
 import { resolveArchiveMusic } from "./archive.js";
 import { resolveOmlxProviders } from "./omlx.js";
 import { transcribeSong } from "./transcribe.js";
@@ -367,6 +367,19 @@ export function wrapCaption(
     lines[lines.length - 1] = truncateWithEllipsis(lines.at(-1) ?? "", limit);
   }
   return lines.join("\n");
+}
+
+// Song-mode re-timing approach. "freeze" (default) plays each step at natural
+// speed then freezes its last frame to fill the time — like cinematic/narration
+// mode; preserves motion and image quality. "stretch" slows the footage (capped)
+// instead. Override with $CANARY_SONG_RETIME.
+export type SongRetimeMode = "freeze" | "stretch";
+export function songRetimeMode(
+  env: NodeJS.ProcessEnv = process.env
+): SongRetimeMode {
+  return env.CANARY_SONG_RETIME?.trim().toLowerCase() === "stretch"
+    ? "stretch"
+    : "freeze";
 }
 
 // How long to hold a step's frame for its sung lyric line (song-mode re-timing).
@@ -1721,6 +1734,7 @@ async function assembleSongVideo(args: {
   videoPath: string;
   narratableSteps: CinematicStep[];
   holdDurSec: number[];
+  retimeMode: SongRetimeMode;
   title: string;
   category: ThemeCategory | undefined;
   directionText: string;
@@ -1742,6 +1756,7 @@ async function assembleSongVideo(args: {
     videoPath,
     narratableSteps,
     holdDurSec,
+    retimeMode,
     title,
     category,
     directionText,
@@ -1758,19 +1773,28 @@ async function assembleSongVideo(args: {
   const geometry = await probeVideo(ffmpeg, videoPath);
   const frameRate = geometry?.frameRate ?? 30;
 
-  // Re-time per step: a small still at the start/end of each step and a CAPPED
-  // stretch of its footage (no extreme slow-mo, no whole-step freezes). The target
-  // is the sum of the per-step budgets (the vocal span); the cap keeps it watchable
-  // even when that's much longer than the source.
+  // Re-time the body so it spans the vocals. "freeze" (default) plays each step at
+  // natural speed then freezes its last frame to fill its budget — like narration
+  // mode, preserving motion + quality. "stretch" slows the footage (capped).
   progress("re-timing the video to the song…");
-  const retimed = await retimeSongBody({
-    ffmpeg,
-    videoPath,
-    steps: narratableSteps,
-    targetSec: holdDurSec.reduce((a, b) => a + b, 0),
-    frameRate,
-    temps,
-  });
+  const retimed =
+    retimeMode === "stretch"
+      ? await retimeSongBody({
+          ffmpeg,
+          videoPath,
+          steps: narratableSteps,
+          targetSec: holdDurSec.reduce((a, b) => a + b, 0),
+          frameRate,
+          temps,
+        })
+      : await retimeForNarration({
+          ffmpeg,
+          videoPath,
+          steps: narratableSteps,
+          clipDurSec: holdDurSec,
+          frameRate,
+          temps,
+        });
   if (!retimed) {
     return null;
   }
@@ -2879,9 +2903,13 @@ export async function cinematicProcess(
         null;
       let holdDurSec: number[];
       if (segments) {
+        // Focus on the dominant vocal cluster — ACE-Step may sing one line early
+        // then leave a long instrumental gap; trimming to the cluster starts the
+        // video on the real singing instead of a 20s+ intro.
+        const cluster = mainCluster(segments);
         // Trim the instrumental intro so the vocals start near the body; size the
         // re-timed body to the vocal region so the singing plays across it.
-        const region = vocalRegion(segments, {
+        const region = vocalRegion(cluster, {
           lead: TITLE_SEC + 0.5,
           tail: 1.5,
         }) ?? { start: 0, end: 0 };
@@ -2902,7 +2930,7 @@ export async function cinematicProcess(
         // Cap each cue's on-screen time (a long sustained/mis-merged note shouldn't
         // hold a caption for half a minute).
         const MAX_CUE_SEC = 8;
-        alignedCues = alignLyricsToSegments(orderedTexts, segments).map((c) => {
+        alignedCues = alignLyricsToSegments(orderedTexts, cluster).map((c) => {
           const start = Math.max(0, c.start - trimStart);
           const end = Math.max(0.5, c.end - trimStart);
           return { start, end: Math.min(end, start + MAX_CUE_SEC), text: c.text };
@@ -2930,6 +2958,7 @@ export async function cinematicProcess(
         videoPath: input,
         narratableSteps,
         holdDurSec,
+        retimeMode: songRetimeMode(process.env),
         title: lyrics.title,
         category: direction.category,
         directionText: direction.text,

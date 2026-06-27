@@ -13,6 +13,7 @@ import {
   customSaySynth,
   layoutSongCues,
   songHoldSec,
+  songRetimeMode,
   extractCaptions,
   lyricsPathFor,
   parseFilterNames,
@@ -240,6 +241,15 @@ describe("precinematicVideoPath", () => {
     expect(precinematicVideoPath("/s/abc/clip.mp4")).toBe(
       "/s/abc/clip.precinematic.mp4"
     );
+  });
+});
+
+describe("songRetimeMode", () => {
+  it("defaults to freeze and honors the stretch override", () => {
+    expect(songRetimeMode({})).toBe("freeze");
+    expect(songRetimeMode({ CANARY_SONG_RETIME: "freeze" })).toBe("freeze");
+    expect(songRetimeMode({ CANARY_SONG_RETIME: "STRETCH" })).toBe("stretch");
+    expect(songRetimeMode({ CANARY_SONG_RETIME: "nonsense" })).toBe("freeze");
   });
 });
 
