@@ -223,6 +223,15 @@ last-opened tab and binds it to that step in the report. So:
   then suppressed (the themed captions burned in by `session end --cinematic` replace it), but the
   text you pass still feeds the narration as your stated intent — so keep writing captions exactly
   as you would otherwise; they're the clearest signal of WHY each step matters.
+- Want a music video instead of spoken narration? `session end --song` scores the whole run with
+  one AI-generated song whose lyrics are written about the steps, captions timed to the singing
+  (still record with `session start --cinematic` to suppress overlays). Steer it with
+  `--prompt "<genre/vibe>"`; `--no-captions` drops the burned lyric subtitles. Needs the `claude`
+  CLI plus a lyrics-capable music model — a local/remote ACE-Step server (`$CANARY_ACESTEP_URL`) or
+  a Gemini key. Optional: `$CANARY_WHISPER_MODEL` (a whisper.cpp ggml model) times captions to the
+  actual vocals; `$CANARY_SONG_RETIME=freeze|stretch` (default freeze); `$CANARY_SONG_FILE` reuses a
+  generated song. The voice/music env vars ($CANARY_SAY_COMMAND, $CANARY_OMLX_URL, …) are listed in
+  `canary session end --help`.
 <!-- canary:end rule-caption -->
 
 <!-- canary:snippet rule-pass-fail -->
