@@ -211,6 +211,10 @@ async function generate(args: {
 function createMusicProvider(config: AceStepConfig, echo?: Echo): MusicProvider {
   return {
     id: "acestep-music",
+    credit: () =>
+      Promise.resolve(
+        `ACE-Step 1.5${config.model ? ` (${config.model})` : ""} — generated locally`
+      ),
     bed: (directionText, seconds, outPath) =>
       generate({
         config,
@@ -251,11 +255,22 @@ export async function resolveAceStepMusic(opts: {
     // Server not running — silent (it's an optional, heavy local service).
     return { notes: [] };
   }
-  log.debug({ url: config.baseUrl }, "ACE-Step music provider enabled");
+  // The server REQUIRES a `model` field, so resolve one: an explicit
+  // $CANARY_ACESTEP_MODEL wins, else the first model it has loaded.
+  const model = config.model ?? models[0];
+  if (!model) {
+    return {
+      notes: [
+        `ACE-Step reachable at ${config.baseUrl} but has no model loaded; skipping music.`,
+      ],
+    };
+  }
+  const resolved: AceStepConfig = { ...config, model };
+  log.debug({ url: config.baseUrl, model }, "ACE-Step music provider enabled");
   return {
-    music: createMusicProvider(config, echo),
+    music: createMusicProvider(resolved, echo),
     notes: [
-      `ACE-Step local music enabled (${config.baseUrl}) — generated on this machine.`,
+      `ACE-Step local music enabled (${model} @ ${config.baseUrl}) — generated on this machine.`,
     ],
   };
 }

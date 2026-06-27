@@ -62,6 +62,11 @@ export interface MusicProvider {
   id: string;
   // Write a themed full song (may have vocals) of ~`seconds` to `outPath`. Throws on failure.
   song(directionText: string, seconds: number, outPath: string): Promise<void>;
+  // Optional: a human credit line for the score (e.g. an archive.org track's
+  // title/artist/license, or a model name), resolved WITHOUT producing audio so
+  // it can go in the credits roll before generation. Implementations that select
+  // a specific asset should cache it so bed/song reuse the credited one.
+  credit?(directionText: string): Promise<string | undefined>;
 }
 
 export interface MediaProviders {
@@ -544,6 +549,9 @@ function createMusicProvider(apiKey: string): MusicProvider {
   };
   return {
     id: "gemini-music",
+    credit(): Promise<string | undefined> {
+      return Promise.resolve("Lyria (Google Gemini)");
+    },
     bed(
       directionText: string,
       seconds: number,

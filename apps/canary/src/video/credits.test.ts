@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { creditsDurationSec, parseContributors } from "./credits.js";
+import {
+  buildCreditSections,
+  creditsDurationSec,
+  creditsLines,
+  parseContributors,
+} from "./credits.js";
 
 describe("parseContributors", () => {
   it("returns [] for empty input", () => {
@@ -35,6 +40,64 @@ describe("parseContributors", () => {
       { name: "Alice", commits: 1 },
       { name: "Bob", commits: 1 },
     ]);
+  });
+});
+
+describe("buildCreditSections", () => {
+  it("caps named contributors and collapses the rest into 'and N more'", () => {
+    const contributors = Array.from({ length: 23 }, (_, i) => ({
+      name: `Dev ${i}`,
+      commits: 1,
+    }));
+    const [featuring] = buildCreditSections({
+      contributors,
+      models: [],
+    });
+    expect(featuring?.title).toBe("Featuring");
+    expect(featuring?.entries).toHaveLength(21); // 20 named + "and N more"
+    expect(featuring?.entries.at(-1)).toBe("and 3 more");
+  });
+
+  it("includes music and tools, and drops empty sections", () => {
+    const sections = buildCreditSections({
+      contributors: [],
+      music: 'music: "X" by Y (cc) — url',
+      models: ["Narration — Claude (Anthropic)"],
+    });
+    expect(sections.map((s) => s.title)).toEqual(["Music", "Made with"]);
+    expect(sections[0]?.entries).toEqual(['music: "X" by Y (cc) — url']);
+  });
+
+  it("returns [] when there's nothing to credit", () => {
+    expect(buildCreditSections({ contributors: [], models: [] })).toEqual([]);
+  });
+});
+
+describe("creditsLines", () => {
+  it("renders heading, then each section with a blank separator and its title", () => {
+    const lines = creditsLines(
+      [
+        { title: "Featuring", entries: ["Alice", "Bob"] },
+        { title: "Music", entries: ["a song"] },
+      ],
+      "THE FILM"
+    );
+    expect(lines).toEqual([
+      "THE FILM",
+      "",
+      "Featuring",
+      "Alice",
+      "Bob",
+      "",
+      "Music",
+      "a song",
+    ]);
+  });
+
+  it("skips empty sections and works with no heading", () => {
+    expect(
+      creditsLines([{ title: "Made with", entries: ["Claude"] }], undefined)
+    ).toEqual(["Made with", "Claude"]);
   });
 });
 

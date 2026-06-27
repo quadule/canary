@@ -202,43 +202,46 @@ async function trimTo(
   });
 }
 
-// Fetch a themed track and write `seconds` of it to `outPath`. Surfaces the
-// track's attribution in `notes` once.
-async function fetchTrack(args: {
-  deps: ArchiveDeps;
-  directionText: string;
-  seconds: number;
-  instrumental: boolean;
-  outPath: string;
-}): Promise<void> {
-  const { deps, directionText, seconds, instrumental, outPath } = args;
-  const { ffmpeg, echo } = deps;
-  const random = deps.random ?? Math.random;
-
+// Search and pick one track (no download), for crediting or fetching.
+async function selectTrack(
+  deps: ArchiveDeps,
+  directionText: string,
+  instrumental: boolean
+): Promise<ArchiveTrack> {
   const searchUrl = buildSearchUrl(directionText, instrumental);
-  echo?.(`$ curl -s ${sq(searchUrl)}`);
+  deps.echo?.(`$ curl -s ${sq(searchUrl)}`);
   const tracks = parseSearchDocs(await getJson(searchUrl, SEARCH_TIMEOUT_MS));
   if (tracks.length === 0) {
     throw new Error("no archive.org tracks matched");
   }
   // Pick among the top hits for a little variety run-to-run.
+  const random = deps.random ?? Math.random;
   const track = tracks[Math.floor(random() * tracks.length)] ?? tracks[0];
   if (!track) {
     throw new Error("no archive.org track selected");
   }
+  return track;
+}
 
+// Download `track`, trim `seconds` of it to `outPath`, and record its
+// attribution in `notes`.
+async function downloadAndTrim(
+  deps: ArchiveDeps,
+  track: ArchiveTrack,
+  seconds: number,
+  outPath: string
+): Promise<void> {
   const metaUrl = `${META_BASE}/${track.identifier}`;
   const file = pickAudioFile(await getJson(metaUrl, SEARCH_TIMEOUT_MS));
   if (!file) {
     throw new Error(`no audio file in ${track.identifier}`);
   }
-
   const dlUrl = `${DL_BASE}/${track.identifier}/${encodeURIComponent(file)}`;
   const raw = `${outPath}.src`;
-  echo?.(`$ curl -sL ${sq(dlUrl)} -o ${sq(raw)}`);
+  deps.echo?.(`$ curl -sL ${sq(dlUrl)} -o ${sq(raw)}`);
   try {
     await downloadTo(dlUrl, raw, DOWNLOAD_TIMEOUT_MS);
-    await trimTo(ffmpeg, raw, seconds, outPath, echo);
+    await trimTo(deps.ffmpeg, raw, seconds, outPath, deps.echo);
     deps.notes.push(attributionFor(track));
   } finally {
     await rm(raw, { force: true });
@@ -246,12 +249,24 @@ async function fetchTrack(args: {
 }
 
 function createMusicProvider(deps: ArchiveDeps): MusicProvider {
+  // The bed track, pre-selected by credit() so the credits roll names the exact
+  // track the bed will use.
+  let cachedBed: ArchiveTrack | undefined;
   return {
     id: "archive-music",
-    bed: (directionText, seconds, outPath) =>
-      fetchTrack({ deps, directionText, seconds, instrumental: true, outPath }),
-    song: (directionText, seconds, outPath) =>
-      fetchTrack({ deps, directionText, seconds, instrumental: false, outPath }),
+    async credit(directionText) {
+      cachedBed = await selectTrack(deps, directionText, true);
+      return attributionFor(cachedBed);
+    },
+    async bed(directionText, seconds, outPath) {
+      const track =
+        cachedBed ?? (await selectTrack(deps, directionText, true));
+      await downloadAndTrim(deps, track, seconds, outPath);
+    },
+    async song(directionText, seconds, outPath) {
+      const track = await selectTrack(deps, directionText, false);
+      await downloadAndTrim(deps, track, seconds, outPath);
+    },
   };
 }
 

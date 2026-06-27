@@ -29,7 +29,12 @@ import {
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Logger } from "@usecanary/logger";
-import { branchContributors, buildCreditsRoll } from "./credits.js";
+import {
+  branchContributors,
+  buildCreditSections,
+  buildCreditsRoll,
+  type CreditSection,
+} from "./credits.js";
 import {
   type MediaProviders,
   type MusicProvider,
@@ -1045,41 +1050,85 @@ async function planNarration(args: {
   return narration ? { direction, narration, repoDir, base } : null;
 }
 
-// Append a scrolling end-credits roll (this branch's contributors) after the body.
-// Best-effort: returns the body unchanged on no contributors or any failure.
-// Credits sit at the very end, so they don't shift any step's videoTime.
+// A friendly source name for the music provider, for the "Made with" block.
+function musicToolName(id: string | undefined): string | undefined {
+  switch (id) {
+    case "archive-music":
+      return "Music — archive.org (Creative Commons)";
+    case "acestep-music":
+      return "Music — ACE-Step 1.5 (local)";
+    case "gemini-music":
+      return "Music — Lyria (Google Gemini)";
+    default:
+      return undefined;
+  }
+}
+
+// A friendly voice credit from the TTS provider id + its reproducibility label
+// (the label already encodes the model/voice, e.g. "omlx:<model>" or a `say`
+// voice like "Ava (Premium)" or "<command>:<voice>"). Pure → unit-tested.
+export function voiceCredit(
+  ttsId: string | undefined,
+  voiceLabel: string
+): string {
+  const label = voiceLabel.trim();
+  if (ttsId === "omlx-tts") {
+    return `Voice — oMLX ${label.replace(/^omlx:/, "")}`.trim();
+  }
+  if (ttsId === "gemini-tts") {
+    return `Voice — ${label.replace(/^gemini:/, "")} (Google Gemini)`;
+  }
+  // macOS `say` (or a $CANARY_SAY_COMMAND override): the label is the voice/command.
+  return label ? `Voice — ${label}` : "Voice — system speech";
+}
+
+// The "Made with" tool credits actually used this run. Narration always runs via
+// the `claude` CLI; voice/music/title-art depend on what was resolved. Pure →
+// unit-tested.
+export function buildModelCredits(args: {
+  voiceLabel: string;
+  ttsId: string | undefined;
+  musicId: string | undefined;
+  titleArt: boolean;
+}): string[] {
+  const models = ["Narration — Claude (Anthropic)"];
+  models.push(voiceCredit(args.ttsId, args.voiceLabel));
+  const music = musicToolName(args.musicId);
+  if (music) {
+    models.push(music);
+  }
+  if (args.titleArt) {
+    models.push("Title art — Nano Banana (Google Gemini)");
+  }
+  return models;
+}
+
+// Append a scrolling end-credits roll after the body. The caller assembles the
+// sections (contributors + music + tools), so this just renders and concatenates.
+// Best-effort: returns the body unchanged when there's nothing to credit or on
+// any failure. Credits sit at the very end, so they don't shift any step's
+// videoTime.
 async function appendCredits(args: {
   ffmpeg: string;
   body: string;
   videoPath: string;
   heading: string;
-  repoDir: string;
-  base: string;
+  sections: CreditSection[];
   geometry: ProbedVideo;
   temps: string[];
   log: Logger;
 }): Promise<string> {
-  const {
-    ffmpeg,
-    body,
-    videoPath,
-    heading,
-    repoDir,
-    base,
-    geometry,
-    temps,
-    log,
-  } = args;
+  const { ffmpeg, body, videoPath, heading, sections, geometry, temps, log } =
+    args;
+  if (!sections.some((s) => s.entries.length > 0)) {
+    return body;
+  }
   try {
-    const contributors = await branchContributors(repoDir, base);
-    if (contributors.length === 0) {
-      return body;
-    }
     const creditsPath = `${videoPath}.credits.webm`;
     temps.push(creditsPath);
     await buildCreditsRoll({
       ffmpeg,
-      contributors,
+      sections,
       heading,
       geometry,
       outPath: creditsPath,
@@ -1203,6 +1252,7 @@ async function assembleVideo(args: {
   category: ThemeCategory | undefined;
   directionText: string;
   providers: MediaProviders;
+  voiceLabel: string;
   hasDrawtext: boolean;
   repoDir: string;
   base: string;
@@ -1226,6 +1276,7 @@ async function assembleVideo(args: {
     category,
     directionText,
     providers,
+    voiceLabel,
     hasDrawtext,
     repoDir,
     base,
@@ -1295,13 +1346,28 @@ async function assembleVideo(args: {
   let finalBody = body;
   if (hasDrawtext && geometry) {
     progress("rolling the credits…");
+    // Resolve the music credit WITHOUT generating audio (the provider caches its
+    // pick so generateMusic below reuses the credited track), then assemble the
+    // sections: people, music, and the tools actually used this run.
+    const musicCredit = await providers.music
+      ?.credit?.(directionText)
+      .catch(() => undefined);
+    const sections = buildCreditSections({
+      contributors: await branchContributors(repoDir, base),
+      music: musicCredit,
+      models: buildModelCredits({
+        voiceLabel,
+        ttsId: providers.tts?.id,
+        musicId: providers.music?.id,
+        titleArt: Boolean(background),
+      }),
+    });
     finalBody = await appendCredits({
       ffmpeg,
       body,
       videoPath,
       heading: title,
-      repoDir,
-      base,
+      sections,
       geometry,
       temps,
       log,
@@ -2204,6 +2270,7 @@ export async function cinematicProcess(
       category: direction.category,
       directionText: direction.text,
       providers,
+      voiceLabel: speech.label,
       hasDrawtext,
       repoDir,
       base,

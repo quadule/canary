@@ -51,6 +51,12 @@ export interface Contributor {
   name: string;
 }
 
+// A titled block in the credits roll (e.g. "Featuring", "Music", "Made with").
+export interface CreditSection {
+  title?: string;
+  entries: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested). No I/O, no subprocesses.
 // ---------------------------------------------------------------------------
@@ -117,11 +123,38 @@ function escapeDrawText(text: string): string {
     .replace(/%/g, "\\%");
 }
 
-// The roll's raw (unescaped, unwrapped) text lines: optional heading, then up to
-// MAX_NAMED names, then an "and N more" line when the list was truncated.
-// buildCreditsRoll word-wraps these to the frame and escapes them before drawing.
-function creditsLines(
-  contributors: Contributor[],
+// Assemble the credit sections shown in the roll, in order: the people, the
+// music, then the tools. Caps the named contributors (the rest collapse into an
+// "and N more" line) and drops empty sections. Pure → unit-tested.
+export function buildCreditSections(args: {
+  contributors: Contributor[];
+  music?: string;
+  models: string[];
+}): CreditSection[] {
+  const sections: CreditSection[] = [];
+  if (args.contributors.length > 0) {
+    const named = args.contributors.slice(0, MAX_NAMED).map((c) => c.name);
+    const extra = args.contributors.length - named.length;
+    if (extra > 0) {
+      named.push(`and ${extra} more`);
+    }
+    sections.push({ title: "Featuring", entries: named });
+  }
+  if (args.music?.trim()) {
+    sections.push({ title: "Music", entries: [args.music.trim()] });
+  }
+  if (args.models.length > 0) {
+    sections.push({ title: "Made with", entries: args.models });
+  }
+  return sections;
+}
+
+// The roll's raw (unescaped, unwrapped) text lines: an optional heading (the film
+// title), then each non-empty section separated by a blank line, its title (when
+// set) above its entries. buildCreditsRoll word-wraps these to the frame and
+// escapes them before drawing. Pure → unit-tested.
+export function creditsLines(
+  sections: CreditSection[],
   heading: string | undefined
 ): string[] {
   const lines: string[] = [];
@@ -129,13 +162,17 @@ function creditsLines(
   if (headingText) {
     lines.push(headingText);
   }
-  const named = contributors.slice(0, MAX_NAMED);
-  for (const contributor of named) {
-    lines.push(contributor.name);
-  }
-  const extra = contributors.length - named.length;
-  if (extra > 0) {
-    lines.push(`and ${extra} more`);
+  for (const section of sections) {
+    if (section.entries.length === 0) {
+      continue;
+    }
+    if (lines.length > 0) {
+      lines.push(""); // blank separator between blocks
+    }
+    if (section.title?.trim()) {
+      lines.push(section.title.trim());
+    }
+    lines.push(...section.entries);
   }
   return lines;
 }
@@ -218,12 +255,12 @@ export async function branchContributors(
 // every line passes through regardless of how many names there are.
 export async function buildCreditsRoll(args: {
   ffmpeg: string;
-  contributors: Contributor[];
+  sections: CreditSection[];
   heading?: string;
   geometry: ProbedVideo;
   outPath: string;
 }): Promise<number> {
-  const { ffmpeg, contributors, heading, geometry, outPath } = args;
+  const { ffmpeg, sections, heading, geometry, outPath } = args;
   const fontSize = creditsLineHeight(geometry.height);
   // Wrap each raw line to the frame width (so a long heading/name doesn't spill
   // off both edges), THEN escape for drawtext. Wrapping before escaping keeps a
@@ -232,7 +269,7 @@ export async function buildCreditsRoll(args: {
     8,
     Math.floor((geometry.width * 0.85) / (fontSize * 0.52))
   );
-  const rawLines = creditsLines(contributors, heading).flatMap((line) =>
+  const rawLines = creditsLines(sections, heading).flatMap((line) =>
     wrapLine(line, maxChars)
   );
   // Always render at least one line so a contributor-less branch still produces

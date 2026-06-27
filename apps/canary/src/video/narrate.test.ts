@@ -7,12 +7,14 @@ import {
   buildNarrationPrompt,
   buildSrt,
   captionLineMax,
+  buildModelCredits,
   changeScaleHint,
   customSaySynth,
   extractCaptions,
   parseFilterNames,
   precinematicVideoPath,
   sayCommand,
+  voiceCredit,
   parseInstalledVoices,
   parseNarrationJson,
   pickVoice,
@@ -263,6 +265,50 @@ describe("customSaySynth", () => {
     } finally {
       rmSync(out, { force: true });
     }
+  });
+});
+
+describe("voiceCredit", () => {
+  it("formats the oMLX, Gemini, and say/custom cases", () => {
+    expect(voiceCredit("omlx-tts", "omlx:Qwen3-TTS")).toBe(
+      "Voice — oMLX Qwen3-TTS"
+    );
+    expect(voiceCredit("gemini-tts", "gemini:Charon")).toBe(
+      "Voice — Charon (Google Gemini)"
+    );
+    expect(voiceCredit(undefined, "Ava (Premium)")).toBe(
+      "Voice — Ava (Premium)"
+    );
+    expect(voiceCredit(undefined, "")).toBe("Voice — system speech");
+  });
+});
+
+describe("buildModelCredits", () => {
+  it("always credits narration, then voice, then any music/title art used", () => {
+    expect(
+      buildModelCredits({
+        voiceLabel: "omlx:M",
+        ttsId: "omlx-tts",
+        musicId: "archive-music",
+        titleArt: true,
+      })
+    ).toEqual([
+      "Narration — Claude (Anthropic)",
+      "Voice — oMLX M",
+      "Music — archive.org (Creative Commons)",
+      "Title art — Nano Banana (Google Gemini)",
+    ]);
+  });
+
+  it("omits music and title art when none were used", () => {
+    expect(
+      buildModelCredits({
+        voiceLabel: "Samantha",
+        ttsId: undefined,
+        musicId: undefined,
+        titleArt: false,
+      })
+    ).toEqual(["Narration — Claude (Anthropic)", "Voice — Samantha"]);
   });
 });
 
