@@ -319,6 +319,15 @@ export async function sessionEnd(
   // Cinematic narration is opt-in and runs after condensing (it keys off the
   // stamped step.videoTime and the trimmed video). Default output is unchanged.
   if (opts.cinematic) {
+    if (!record.cinematic) {
+      // The session wasn't recorded with --cinematic, so any page.showCaption
+      // overlays are already baked into the video; the burned captions land on
+      // top of them. Still run the pass (handy for testing the pipeline) but
+      // warn so the double captions aren't a surprise.
+      process.stderr.write(
+        "  ⚠ this session was not started with --cinematic, so any page.showCaption overlays are baked into the video; the burned captions will be added on top (possible double captions). Start with `canary session start --cinematic` to suppress the overlays.\n"
+      );
+    }
     await cinematizeSessionVideo(endResult, record, {
       prompt: opts.prompt,
       captions: opts.captions !== false,

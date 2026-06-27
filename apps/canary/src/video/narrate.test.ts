@@ -6,6 +6,7 @@ import {
   buildSrt,
   captionLineMax,
   changeScaleHint,
+  extractCaptions,
   parseFilterNames,
   parseInstalledVoices,
   parseNarrationJson,
@@ -185,6 +186,23 @@ describe("buildNarrationPrompt", () => {
     expect(prompt).toContain("page.open('/login')");
   });
 
+  it("surfaces showCaption text as an intent note, even past the slice", () => {
+    // The caption sits far beyond SCRIPT_SLICE_CHARS (200) so the script slice
+    // alone would drop it — extractCaptions reads the full script.
+    const pad = "// filler ".repeat(40);
+    const prompt = buildNarrationPrompt({
+      direction: "noir",
+      steps: [
+        {
+          index: 0,
+          name: "Submit the form",
+          script: `${pad}\nawait page.showCaption("Verifying the discount applies");`,
+        },
+      ],
+    });
+    expect(prompt).toContain('intent: "Verifying the discount applies"');
+  });
+
   it("embeds the change scale as a SECONDARY cue when provided", () => {
     const withChange = buildNarrationPrompt({
       direction: "noir",
@@ -199,6 +217,31 @@ describe("buildNarrationPrompt", () => {
     expect(withChange).toContain("go expansive");
     const without = buildNarrationPrompt({ direction: "noir", steps });
     expect(without).not.toContain("change under review");
+  });
+});
+
+describe("extractCaptions", () => {
+  it("returns [] for empty or caption-free scripts", () => {
+    expect(extractCaptions(undefined)).toEqual([]);
+    expect(extractCaptions("await page.humanClick('#go')")).toEqual([]);
+  });
+
+  it("pulls text from every showCaption call, across quote styles", () => {
+    const script = [
+      `await page.showCaption("double quoted");`,
+      `await page.showCaption('single quoted');`,
+      "await page.showCaption(`template literal`);",
+    ].join("\n");
+    expect(extractCaptions(script)).toEqual([
+      "double quoted",
+      "single quoted",
+      "template literal",
+    ]);
+  });
+
+  it("unescapes embedded quotes and ignores the durationMs option", () => {
+    const script = `await page.showCaption("she said \\"hi\\"", { durationMs: 5000 });`;
+    expect(extractCaptions(script)).toEqual(['she said "hi"']);
   });
 });
 

@@ -77,10 +77,13 @@ Use --headless for unattended runs; omit it to watch the browser window.
 The page records at a fixed 1280x720 desktop viewport — override with --viewport WxH.
 A virtual cursor + click animation is drawn into the recording so interactions are visible
 in video and screenshots; disable it with --no-cursor.
+Planning a cinematic edit? Pass --cinematic so page.showCaption overlays are suppressed (their
+text still feeds the narration) and won't double up with the captions burned in by
+\`session end --cinematic\`.
 
   id=$(canary session start --name "checkout")
   id=$(canary session start --name "smoke" --headless --no-video)
-  id=$(canary session start --name "laptop" --viewport 1440x900)`;
+  id=$(canary session start --name "demo" --cinematic)`;
 
 export const RUN_LONG_ABOUT = `Run a script as one step inside a session.
 

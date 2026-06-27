@@ -107,6 +107,10 @@ You turn a code change into a prioritized Canary QA plan, then — on approval �
 - Keep each caption to ONE short sentence — it must fit two lines on screen (~100 characters);
   anything longer is clamped and the overflow is lost. Split a longer thought across captions on
   successive steps. They fade after a few seconds (pass `{ durationMs }` to adjust).
+- Recording for a cinematic edit? Start with `canary session start --cinematic`. The overlay is
+  then suppressed (the themed captions burned in by `session end --cinematic` replace it), but the
+  text you pass still feeds the narration as your stated intent — so keep writing captions exactly
+  as you would otherwise; they're the clearest signal of WHY each step matters.
 <!-- canary:end rule-caption -->
 - In a verify recording, lean especially hard on captions to explain the **why relative to the
   change under test** — "checking the redirect the PR changed lands on /dashboard", "this is the

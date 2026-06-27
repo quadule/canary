@@ -89,6 +89,7 @@ async function readScriptFromStdin(): Promise<string> {
 }
 
 interface SessionStartOpts {
+  cinematic?: boolean;
   console: boolean;
   cursor: boolean;
   har: boolean;
@@ -164,6 +165,10 @@ export function buildProgram(): CommandType {
       "--no-cursor",
       "Disable the virtual cursor / click animation overlay in recordings"
     )
+    .option(
+      "--cinematic",
+      "Record for a cinematic edit: suppress page.showCaption overlays (their text still feeds the narration) so the burned captions added by `session end --cinematic` don't double up"
+    )
     .action(async (opts: SessionStartOpts) => {
       const code = await sessionStart({
         name: opts.name,
@@ -176,6 +181,7 @@ export function buildProgram(): CommandType {
         },
         viewport: opts.viewport,
         cursor: opts.cursor,
+        cinematic: opts.cinematic === true,
         json: isJson(program),
       });
       throw new ExitCodeError(code);

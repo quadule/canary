@@ -12,6 +12,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { BrowserManager } from "../../browser-manager.js";
+import { SESSION_CURSOR_SCRIPT } from "../../session-cursor.js";
 import { removeDirectoryWithRetries } from "../../test-cleanup.js";
 import { QuickJSSandbox } from "../quickjs-sandbox.js";
 import { ensureSandboxClientBundle } from "./bundle-test-helpers.js";
@@ -214,6 +215,15 @@ function withTestPage(pageName: string, body: string): string {
     ${body}
   `;
 }
+
+// The virtual cursor is injected by the session manager during a real session,
+// not by the bare BrowserManager the sandbox harness uses. Tests that exercise
+// the cursor (glide duration, gestures, text highlight) evaluate the same script
+// onto the loaded page first — exactly as session-manager does for already-open
+// pages.
+const INJECT_CURSOR = `await page.evaluate(${JSON.stringify(
+  SESSION_CURSOR_SCRIPT
+)});`;
 
 async function createSandboxHarness(
   manager: BrowserManager,
@@ -1284,6 +1294,29 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       );
     }, 15_000);
 
+    it("showCaption skips the overlay in a cinematic session", async () => {
+      // In a real cinematic session the daemon sets this via an init script;
+      // set it directly here to prove the overlay render is gated on it. The
+      // call must still succeed (its text is the narration context) — it just
+      // paints nothing.
+      const result = await harness.runJson<{ exists: boolean }>(
+        withTestPage(
+          "caption-cinematic",
+          `
+          await page.evaluate(() => {
+            window.__canaryCinematic = true;
+          });
+          await page.showCaption("Should not paint over the burned captions");
+          const exists = await page.evaluate(
+            () => document.querySelector("canary-caption") !== null
+          );
+          console.log(JSON.stringify({ exists }));
+        `
+        )
+      );
+      expect(result.exists).toBe(false);
+    }, 15_000);
+
     it("humanClick glides the pointer onto the target before pressing", async () => {
       // Record every pointer event the page sees so we can prove a mousemove
       // arrived at the element's centre BEFORE the mousedown — i.e. the cursor
@@ -1411,6 +1444,161 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       // reveal shows the element; it must not click anything.
       expect(result.mouseResult).toBeNull();
     }, 15_000);
+
+    it("glide picks a distance-scaled duration within bounds", async () => {
+      // The cursor's glide duration now scales with travel distance (Fitts's
+      // law) instead of a fixed 600ms, and is returned to the host so the click
+      // waits for the cursor to actually land. A long reach must take longer
+      // than a short hop, and both stay within the clamp.
+      const result = await harness.runJson<{
+        shortMs: number;
+        longMs: number;
+      }>(
+        withTestPage(
+          "glide-duration",
+          `
+          ${INJECT_CURSOR}
+          const durs = await page.evaluate(() => {
+            const c = window.__canaryCursor;
+            c.glide(50, 50, document.body);
+            const shortMs = c.glide(90, 80, document.body);
+            c.glide(50, 50, document.body);
+            const longMs = c.glide(900, 650, document.body);
+            return { shortMs, longMs };
+          });
+          console.log(JSON.stringify(durs));
+        `
+        )
+      );
+
+      expect(result.longMs).toBeGreaterThan(result.shortMs);
+      expect(result.shortMs).toBeGreaterThanOrEqual(220); // GLIDE_MIN_MS
+      expect(result.longMs).toBeLessThanOrEqual(1100); // GLIDE_MAX_MS
+    }, 15_000);
+
+    it("highlightText drag-selects the element's text", async () => {
+      // The I-beam sweeps across while a real DOM Selection grows in lockstep,
+      // so the browser paints its native highlight. The selection must end up
+      // covering the element's full text.
+      const result = await harness.runJson<{
+        selected: string;
+        mouseResult: string | null;
+      }>(
+        withTestPage(
+          "highlight-text",
+          `
+          ${INJECT_CURSOR}
+          await page.highlightText("#text");
+          console.log(JSON.stringify({
+            selected: await page.evaluate(() =>
+              window.getSelection().toString().replace(/\\s+/g, " ").trim()
+            ),
+            mouseResult: await page.getAttribute("#result", "data-mouse"),
+          }));
+        `
+        )
+      );
+
+      expect(result.selected).toBe("Some text");
+      // A gesture never clicks.
+      expect(result.mouseResult).toBeNull();
+    }, 15_000);
+
+    it("circle / underline / pointAt move the cursor without clicking", async () => {
+      const result = await harness.runJson<{
+        moved: boolean;
+        mouseResult: string | null;
+      }>(
+        withTestPage(
+          "gestures",
+          `
+          ${INJECT_CURSOR}
+          const before = await page.evaluate(() => ({
+            x: window.__canaryCursor.x,
+            y: window.__canaryCursor.y,
+          }));
+          await page.circle("#submit");
+          await page.underline("#text");
+          await page.pointAt("#mouse-target");
+          const after = await page.evaluate(() => ({
+            x: window.__canaryCursor.x,
+            y: window.__canaryCursor.y,
+          }));
+          console.log(JSON.stringify({
+            moved: before.x !== after.x || before.y !== after.y,
+            mouseResult: await page.getAttribute("#result", "data-mouse"),
+          }));
+        `
+        )
+      );
+
+      expect(result.moved).toBe(true);
+      // None of the gestures dispatch input — the mouse-target stays unclicked.
+      expect(result.mouseResult).toBeNull();
+    }, 20_000);
+
+    it("humanFill keeps the value exact and input count monotonic", async () => {
+      // Even with the typo-and-correct and burst-rhythm additions, the final
+      // value must match exactly and every keystroke (including a correction)
+      // only ADDS input events.
+      const text = "hello there friend";
+      const result = await harness.runJson<{
+        value: string;
+        inputCount: number;
+      }>(
+        withTestPage(
+          "human-fill-rhythm",
+          `
+          await page.evaluate(() => { window.events.inputCount = 0; });
+          await page.humanFill("#name", ${JSON.stringify(text)});
+          console.log(JSON.stringify({
+            value: await page.inputValue("#name"),
+            inputCount: await page.evaluate(() => window.events.inputCount),
+          }));
+        `
+        )
+      );
+
+      expect(result.value).toBe(text);
+      expect(result.inputCount).toBeGreaterThanOrEqual(text.length);
+    }, 20_000);
+
+    it("humanFill { click: false } types without clicking the field", async () => {
+      // For an already-active field (e.g. an open combobox), a click would
+      // dismiss it. { click: false } must type without dispatching a click;
+      // { clear: false } must append rather than replace.
+      const result = await harness.runJson<{
+        noClickValue: string;
+        clicks: number;
+        appended: string;
+      }>(
+        withTestPage(
+          "human-fill-no-click",
+          `
+          await page.evaluate(() => {
+            window.__nameClicks = 0;
+            document
+              .getElementById("name")
+              .addEventListener("click", () => { window.__nameClicks += 1; });
+          });
+          await page.humanFill("#name", "Bob", { click: false });
+          const noClickValue = await page.inputValue("#name");
+          const clicks = await page.evaluate(() => window.__nameClicks);
+          // clear:false appends to the existing value instead of replacing it.
+          await page.humanFill("#name", "by", { click: false, clear: false });
+          console.log(JSON.stringify({
+            noClickValue,
+            clicks,
+            appended: await page.inputValue("#name"),
+          }));
+        `
+        )
+      );
+
+      expect(result.noClickValue).toBe("Bob");
+      expect(result.clicks).toBe(0);
+      expect(result.appended).toBe("Bobby");
+    }, 20_000);
   });
 
   describe.sequential("dialogs", () => {

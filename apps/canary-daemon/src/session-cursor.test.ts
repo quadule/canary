@@ -121,4 +121,19 @@ describe("session cursor", () => {
       await context.close();
     }
   }, 30_000);
+
+  it("starts parked off-screen so it glides in on the first interaction", async () => {
+    const { context, page } = await pageWithCursor();
+    try {
+      const start = await page.evaluate(() => ({
+        x: window.__canaryCursor.x,
+        y: window.__canaryCursor.y,
+        width: window.innerWidth,
+      }));
+      // Parked past the right edge — out of frame until the first glide.
+      expect(start.x).toBeGreaterThanOrEqual(start.width);
+    } finally {
+      await context.close();
+    }
+  }, 30_000);
 });

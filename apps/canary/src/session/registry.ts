@@ -28,6 +28,10 @@ export interface SessionRecord {
   artifactsDir: string;
   browser: string;
   capture: CaptureOptions;
+  // Recorded for a cinematic edit (page.showCaption overlays were suppressed).
+  // `session end --cinematic` reads this to detect a mismatch — running the
+  // cinematic pass on a non-cinematic recording risks double captions.
+  cinematic?: boolean;
   createdAt: string;
   endedAt?: string;
   headless: boolean;

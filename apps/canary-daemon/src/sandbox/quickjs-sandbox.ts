@@ -21,6 +21,10 @@ const WAIT_FOR_OBJECT_ATTEMPTS = 1000;
 // then visibly rests on the target for a beat before the click — rather than
 // teleporting. The cursor's glide duration plus a 200ms post-arrival pause.
 const CURSOR_SETTLE_MS = CURSOR_GLIDE_MS + 200;
+// Extra beat added to a glide's own (distance-scaled) duration when that exceeds
+// the baseline settle, so a long move still visibly rests on the target before
+// the click rather than being pressed the instant it lands.
+const SETTLE_BUFFER_MS = 150;
 
 // Upper bound on the animated scroll that reveals an off-screen target. Playwright's
 // scrollIntoViewIfNeeded jumps instantly (invisible on camera), so before it we
@@ -44,7 +48,7 @@ function findBundlePath(): string {
     }
   }
   throw new Error(
-    `Failed to find sandbox-client.js. Searched:\n${candidates.map((c) => `  - ${c}`).join("\n")}`
+    `Failed to find sandbox-client.js. Searched:\n${candidates.map((c) => `  - ${c}`).join("\n")}`,
   );
 }
 const BUNDLE_PATH = findBundlePath();
@@ -62,7 +66,7 @@ function formatArgs(args: unknown[]): string {
             depth: 6,
             compact: 3,
             breakLength: Number.POSITIVE_INFINITY,
-          })
+          }),
     )
     .join(" ");
 }
@@ -84,9 +88,9 @@ function getSandboxClientBundleCode(): Promise<string> {
           ? error.message
           : "Sandbox client bundle could not be read";
       throw new Error(
-        `Failed to load sandbox client bundle at ${BUNDLE_PATH}: ${message}`
+        `Failed to load sandbox client bundle at ${BUNDLE_PATH}: ${message}`,
       );
-    }
+    },
   );
   return bundleCodePromise;
 }
@@ -101,7 +105,7 @@ function formatTimeoutDuration(timeoutMs: number): string {
 
 function createScriptTimeoutError(timeoutMs: number): Error {
   const error = new Error(
-    `Script timed out after ${formatTimeoutDuration(timeoutMs)} and was terminated.`
+    `Script timed out after ${formatTimeoutDuration(timeoutMs)} and was terminated.`,
   );
   error.name = "ScriptTimeoutError";
   return error;
@@ -118,7 +122,7 @@ function createGuestScriptTimeoutErrorSource(timeoutMs: number): string {
 
 function wrapScriptWithWallClockTimeout(
   script: string,
-  timeoutMs?: number
+  timeoutMs?: number,
 ): string {
   if (timeoutMs === undefined) {
     return script;
@@ -217,7 +221,7 @@ function extractGuid(page: Page): string {
 
 function decodeSandboxFilePayload(
   value: unknown,
-  label: string
+  label: string,
 ): string | Uint8Array {
   if (typeof value !== "object" || value === null) {
     throw new TypeError(`${label} must be an object`);
@@ -230,7 +234,7 @@ function decodeSandboxFilePayload(
     typeof data !== "string"
   ) {
     throw new TypeError(
-      `${label} must include a valid encoding and string data`
+      `${label} must include a valid encoding and string data`,
     );
   }
 
@@ -437,12 +441,12 @@ export class QuickJSSandbox {
         `,
         {
           filename: "quickjs-runtime.js",
-        }
+        },
       );
 
       const bundleCode = await getSandboxClientBundleCode();
       const bundleFactorySource = JSON.stringify(
-        `${bundleCode}\nreturn __PlaywrightClient;`
+        `${bundleCode}\nreturn __PlaywrightClient;`,
       );
       this.#host.executeScriptSync(
         `
@@ -452,15 +456,15 @@ export class QuickJSSandbox {
         `,
         {
           filename: "sandbox-client.js",
-        }
+        },
       );
 
       const browserEntry = this.#options.manager.getBrowser(
-        this.#options.browserName
+        this.#options.browserName,
       );
       if (!browserEntry) {
         throw new Error(
-          `Browser "${this.#options.browserName}" not found. It should have been created before script execution.`
+          `Browser "${this.#options.browserName}" not found. It should have been created before script execution.`,
         );
       }
       this.#hostBridge = new HostBridge({
@@ -469,7 +473,7 @@ export class QuickJSSandbox {
         },
         preLaunchedBrowser: toServerImpl(
           browserEntry.browser,
-          "Playwright browser"
+          "Playwright browser",
         ),
         sharedBrowser: true,
         denyLaunch: true,
@@ -656,24 +660,33 @@ export class QuickJSSandbox {
               // flag and no extra mouse.move/boundingBox — so the cursor never
               // chases the user's real pointer and the trace isn't cluttered with
               // cursor bookkeeping. The CSS transform transition animates the move.
-              const glided = await target
+              const glideMs = await target
                 .evaluate((el) => {
                   const r = el.getBoundingClientRect();
                   if (r.width === 0 && r.height === 0) {
-                    return false;
+                    return null;
                   }
-                  window.__canaryCursor?.glide(
+                  // glide returns the distance-scaled duration it picked.
+                  const ms = window.__canaryCursor?.glide(
                     r.left + r.width / 2,
                     r.top + r.height / 2,
                     el,
                   );
-                  return true;
+                  return typeof ms === "number" ? ms : 0;
                 })
-                .catch(() => false);
-              if (!glided) {
+                .catch(() => null);
+              if (glideMs === null) {
                 return false;
               }
-              await page.waitForTimeout(${CURSOR_SETTLE_MS});
+              // Wait for the cursor to actually land before the click fires.
+              // The glide duration now scales with distance, so a long move can
+              // outlast the old fixed settle — and armPress would then teleport
+              // the cursor to the click point on mousedown (the very teleport
+              // this feature exists to prevent). Wait the longer of the visible
+              // rest beat and the move's own duration plus a small buffer.
+              await page.waitForTimeout(
+                Math.max(${CURSOR_SETTLE_MS}, glideMs + ${SETTLE_BUFFER_MS}),
+              );
               return true;
             };
 
@@ -723,10 +736,17 @@ export class QuickJSSandbox {
               };
               page.humanFill = async (target, text, options) => {
                 const locator = resolveLocator(page, target);
+                // Skip the click/clear when typing into a field that's already
+                // active — e.g. an open combobox (TomSelect) whose dropdown a
+                // second click would dismiss, or a focused search box you want to
+                // append to. The cursor still glides over for the recording.
+                const shouldClick = !(options && options.click === false);
+                const shouldClear = !(options && options.clear === false);
                 await revealAndGlide(page, locator);
-                await locator.click();
+                if (shouldClick) await locator.click();
                 // Park the cursor just above the field so it doesn't sit on top
-                // of the text as it's typed.
+                // of the text as it's typed. Visual only (no DOM interaction), so
+                // it's safe even when the click is skipped.
                 await locator
                   .evaluate((el) => {
                     const r = el.getBoundingClientRect();
@@ -736,16 +756,62 @@ export class QuickJSSandbox {
                     );
                   })
                   .catch(() => undefined);
-                await locator.fill("");
+                if (shouldClear) await locator.fill("");
                 // Type with variable per-character timing for a natural human rhythm.
                 const chars = Array.from(String(text));
                 const fixedDelay = options && 'delay' in options ? options.delay : null;
-                for (const ch of chars) {
+                // Always pause between landing on the field and the first
+                // keystroke — a person never clicks and types in the same
+                // instant, and typing onto a field that hasn't visibly focused
+                // reads as a glitch. A presenter's natural beat by default; a
+                // short floor even in fixed-delay (deterministic) mode.
+                const preType =
+                  options && typeof options.preTypeMs === 'number'
+                    ? options.preTypeMs
+                    : fixedDelay === null
+                      ? 250 + Math.random() * 250
+                      : 120;
+                if (preType > 0) await page.waitForTimeout(preType);
+                // QWERTY neighbours for the occasional fat-finger typo.
+                const NEIGHBORS = { a:'sq', s:'ad', d:'sf', f:'dg', g:'fh', h:'gj', j:'hk', k:'jl', l:'k', e:'rw', r:'et', t:'ry', i:'ou', o:'ip', u:'yi', n:'mb', m:'n' };
+                let didTypo = false;
+                for (let i = 0; i < chars.length; i++) {
+                  const ch = chars[i];
+                  // Rare typo-and-correct: hit a neighbouring key, pause, backspace,
+                  // then the right one. Only ADDS key/input events (the count
+                  // assertion stays valid) and never changes the final value. Once
+                  // per fill, never on the last char, and not in fixed-delay mode.
+                  if (
+                    fixedDelay === null &&
+                    !didTypo &&
+                    i < chars.length - 1 &&
+                    /[a-z]/i.test(ch) &&
+                    Math.random() < 0.02
+                  ) {
+                    const lower = ch.toLowerCase();
+                    const near = NEIGHBORS[lower];
+                    if (near) {
+                      didTypo = true;
+                      const w = near[Math.floor(Math.random() * near.length)];
+                      const wrong = ch === lower ? w : w.toUpperCase();
+                      await locator.pressSequentially(wrong, { delay: 0 });
+                      await page.waitForTimeout(120 + Math.random() * 180);
+                      await locator.press('Backspace');
+                      await page.waitForTimeout(80 + Math.random() * 120);
+                    }
+                  }
                   await locator.pressSequentially(ch, { delay: 0 });
-                  let delay = fixedDelay !== null ? fixedDelay : 70 + Math.random() * 50;
-                  if (fixedDelay === null) {
-                    if (ch === ' ' || /[.!?,;:]/.test(ch)) delay += 100 + Math.random() * 200;
-                    if (Math.random() < 0.02) delay += 400 + Math.random() * 300;
+                  let delay;
+                  if (fixedDelay !== null) {
+                    delay = fixedDelay;
+                  } else {
+                    // Bursts of fluent typing separated by short thinking pauses.
+                    delay = 45 + Math.random() * 35;
+                    if (ch === ' ' || /[.!?,;:]/.test(ch)) {
+                      delay += 80 + Math.random() * 160;
+                      // Small chance of a longer pause at a word break.
+                      if (Math.random() < 0.15) delay += 250 + Math.random() * 350;
+                    }
                   }
                   if (delay > 0) await page.waitForTimeout(delay);
                 }
@@ -811,6 +877,14 @@ export class QuickJSSandbox {
                 await page
                   .evaluate(
                     (arg) => {
+                      // In a cinematic recording the themed captions are burned
+                      // in by the session-end pass; painting this overlay too
+                      // would double-caption. The call still runs (its text
+                      // stays in the recorded script as narration context); we
+                      // just skip drawing the on-page overlay.
+                      if (window.__canaryCinematic) {
+                        return;
+                      }
                       const host = document.documentElement;
                       if (!host) {
                         return;
@@ -830,7 +904,7 @@ export class QuickJSSandbox {
                       el.style.cssText =
                         "position:fixed;left:50%;bottom:36px;" +
                         "transform:translateX(-50%) translateY(8px);" +
-                        "max-width:min(72vw,720px);padding:12px 20px;border-radius:10px;" +
+                        "max-width:85vw;padding:12px 20px;border-radius:10px;" +
                         "background:rgba(17,17,17,0.86);color:#fff;" +
                         "font:500 18px/1.45 system-ui,-apple-system,sans-serif;" +
                         "z-index:2147483646;pointer-events:none;white-space:pre-wrap;" +
@@ -858,8 +932,8 @@ export class QuickJSSandbox {
                           // Whole-box opacity breathing — enough changing area
                           // per frame to clear the freeze-detector's threshold.
                           const breathe = el.animate(
-                            [{ opacity: 1 }, { opacity: 0.78 }, { opacity: 1 }],
-                            { duration: 1400, iterations: Number.POSITIVE_INFINITY }
+                            [{ opacity: 1 }, { opacity: 0.85 }, { opacity: 1 }],
+                            { duration: 2000, iterations: Number.POSITIVE_INFINITY }
                           );
                           setTimeout(() => {
                             breathe.cancel();
@@ -1030,6 +1104,106 @@ export class QuickJSSandbox {
               page.reveal = async (target) => {
                 await revealAndGlide(page, resolveLocator(page, target));
               };
+              // Look at an element: reveal + glide the cursor onto it WITHOUT
+              // clicking, then rest a beat longer than reveal so the viewer's eye
+              // settles on it. A deliberate "now look here".
+              page.lookAt = async (target) => {
+                await revealAndGlide(page, resolveLocator(page, target));
+                await page.waitForTimeout(400);
+              };
+              // Demonstrative cursor gestures that draw a viewer's eye to an
+              // element. Each reveals the element, hands the in-page cursor the
+              // element's viewport rect (boundingBox is viewport-relative, like
+              // getBoundingClientRect — same space the fixed-position cursor uses
+              // after scrollIntoViewIfNeeded), and waits the duration the gesture
+              // reports back. Cosmetic only — the cursor is a visual overlay that
+              // dispatches no input, so these never click, type, or change focus.
+              const revealForGesture = async (locator) => {
+                await smoothReveal(locator);
+                await locator.scrollIntoViewIfNeeded().catch(() => undefined);
+                const box = await locator.boundingBox().catch(() => null);
+                if (!box) {
+                  return null;
+                }
+                return {
+                  left: box.x,
+                  top: box.y,
+                  width: box.width,
+                  height: box.height,
+                  right: box.x + box.width,
+                  bottom: box.y + box.height,
+                };
+              };
+              // Trace a hand-drawn ellipse around the element. opts.loops (default
+              // 1) circles more than once.
+              page.circle = async (target, options) => {
+                const rect = await revealForGesture(resolveLocator(page, target));
+                if (!rect) {
+                  return;
+                }
+                const ms = await page
+                  .evaluate(
+                    (arg) =>
+                      window.__canaryCursor?.circleAround?.(arg.rect, arg.opts) || 0,
+                    { rect, opts: options || {} },
+                  )
+                  .catch(() => 0);
+                await page.waitForTimeout(typeof ms === "number" ? ms : 0);
+              };
+              // Sweep the cursor under the element; short elements get a second,
+              // reverse pass (double underline).
+              page.underline = async (target) => {
+                const rect = await revealForGesture(resolveLocator(page, target));
+                if (!rect) {
+                  return;
+                }
+                const ms = await page
+                  .evaluate(
+                    (arg) => window.__canaryCursor?.underlineAcross?.(arg) || 0,
+                    rect,
+                  )
+                  .catch(() => 0);
+                await page.waitForTimeout(typeof ms === "number" ? ms : 0);
+              };
+              // Two small nudges toward the element — a "look here" tap.
+              page.pointAt = async (target) => {
+                const rect = await revealForGesture(resolveLocator(page, target));
+                if (!rect) {
+                  return;
+                }
+                const ms = await page
+                  .evaluate(
+                    (arg) => window.__canaryCursor?.pointAt?.(arg) || 0,
+                    rect,
+                  )
+                  .catch(() => 0);
+                await page.waitForTimeout(typeof ms === "number" ? ms : 0);
+              };
+              // Drag-select the element's text so the browser paints its native
+              // highlight while the I-beam sweeps across. opts.clearAfterMs
+              // collapses the selection that long after the sweep finishes.
+              page.highlightText = async (target, options) => {
+                const locator = resolveLocator(page, target);
+                await smoothReveal(locator);
+                await locator.scrollIntoViewIfNeeded().catch(() => undefined);
+                const ms = await locator
+                  .evaluate((el, opts) => {
+                    const b = el.getBoundingClientRect();
+                    const rect = {
+                      left: b.left,
+                      top: b.top,
+                      width: b.width,
+                      height: b.height,
+                      right: b.right,
+                      bottom: b.bottom,
+                    };
+                    return (
+                      window.__canaryCursor?.highlightText?.(el, rect, opts) || 0
+                    );
+                  }, options || {})
+                  .catch(() => 0);
+                await page.waitForTimeout(typeof ms === "number" ? ms : 0);
+              };
               // Tell Canary how to answer browser dialogs (alert/confirm/prompt)
               // on this page. By default an unanswered dialog FAILS the step (it
               // blocks the page and silently cancels the action that opened it),
@@ -1131,7 +1305,7 @@ export class QuickJSSandbox {
         `,
         {
           filename: "sandbox-init.js",
-        }
+        },
       );
 
       await this.#flushTransportQueue();
@@ -1154,7 +1328,7 @@ export class QuickJSSandbox {
         wrapScriptWithWallClockTimeout(script, this.#options.timeoutMs),
         {
           filename: "user-script.js",
-        }
+        },
       );
 
       await this.#flushTransportQueue();
@@ -1316,7 +1490,7 @@ export class QuickJSSandbox {
   async #getPage(name: unknown): Promise<string> {
     const page = await this.#options.manager.getPage(
       this.#options.browserName,
-      requireString(name, "Page name or targetId")
+      requireString(name, "Page name or targetId"),
     );
     const guid = extractGuid(page);
     this.#guardDialogs(page, guid);
@@ -1405,14 +1579,14 @@ export class QuickJSSandbox {
   async #closePage(name: unknown): Promise<void> {
     await this.#options.manager.closePage(
       this.#options.browserName,
-      requireString(name, "Page name")
+      requireString(name, "Page name"),
     );
   }
 
   async #writeTempFile(name: unknown, payload: unknown): Promise<string> {
     return await writeCanaryTempFile(
       requireString(name, "File name"),
-      decodeSandboxFilePayload(payload, "File data")
+      decodeSandboxFilePayload(payload, "File data"),
     );
   }
 
@@ -1427,7 +1601,7 @@ export class QuickJSSandbox {
   // only upload files it (or the user, via takeover) first wrote there — so the
   // page never gains access to arbitrary host paths.
   async #readUploadFile(
-    name: unknown
+    name: unknown,
   ): Promise<{ name: string; mimeType: string; base64: string }> {
     const fileName = requireString(name, "File name");
     const bytes = await readCanaryTempFileBytes(fileName);
@@ -1440,7 +1614,7 @@ export class QuickJSSandbox {
   }
 
   async #cleanupAnonymousPages(
-    options: { suppressErrors?: boolean } = {}
+    options: { suppressErrors?: boolean } = {},
   ): Promise<void> {
     const anonymousPages = [...this.#anonymousPages];
     this.#anonymousPages.clear();

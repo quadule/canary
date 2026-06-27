@@ -385,6 +385,29 @@ export function wrapTitle(title: string, maxChars: number): string[] {
 // strict-JSON output contract. The `direction` is the already-composed steering
 // text (a random theme+style draw, or the user's verbatim --prompt). Deterministic
 // given its inputs (testable).
+// Pull the text out of any page.showCaption("…") calls in a step's script.
+// In a cinematic recording these overlays aren't drawn (the burned captions
+// replace them), but the operator's own caption is the clearest statement of
+// what the step is about — so it's fed to the narration LLM as intent context,
+// in full (captions are short) rather than risking the truncated script slice.
+// Handles single, double, and template-literal quotes and basic escapes.
+export function extractCaptions(script: string | undefined): string[] {
+  if (!script) {
+    return [];
+  }
+  const captions: string[] = [];
+  const re = /showCaption\s*\(\s*(["'`])((?:\\.|(?!\1)[\s\S])*?)\1/g;
+  let match: RegExpExecArray | null = re.exec(script);
+  while (match !== null) {
+    const text = (match[2] ?? "").replace(/\\(["'`\\])/g, "$1").trim();
+    if (text) {
+      captions.push(text);
+    }
+    match = re.exec(script);
+  }
+  return captions;
+}
+
 export function buildNarrationPrompt(args: {
   direction: string;
   change?: ChangeContext;
@@ -395,7 +418,11 @@ export function buildNarrationPrompt(args: {
     .map((step) => {
       const slice = step.script?.slice(0, SCRIPT_SLICE_CHARS).trim();
       const scriptPart = slice ? ` — does: ${slice}` : "";
-      return `  ${step.index}. ${step.name}${scriptPart}`;
+      const captions = extractCaptions(step.script);
+      const intentPart = captions.length
+        ? ` — intent: ${captions.map((c) => `"${c}"`).join(" ")}`
+        : "";
+      return `  ${step.index}. ${step.name}${scriptPart}${intentPart}`;
     })
     .join("\n");
 
@@ -420,6 +447,7 @@ export function buildNarrationPrompt(args: {
     "- Write one narration entry per step: SHORT and PUNCHY — ideally ONE sentence, never more than two, and at most ~18 words / ~95 characters so it fits two on-screen caption lines and reads aloud within the step's brief window. A longer line is truncated on screen. Favor brevity over flourish.",
     "- Stay in character for the creative direction throughout; commit to the bit.",
     "- Never repeat the literal step name; describe what is happening in that voice.",
+    '- A step may carry an "intent:" note — the operator\'s own caption for that moment, the clearest signal of WHY it matters. Let it guide your narration, but rewrite it fully in character; never quote it verbatim.',
     "- If the direction calls for a verse form (poem/limerick/haiku/song), write the narration in that form.",
     '- Provide a punchy, dramatic, mostly-uppercase "title" for an opening title card. You may use a newline in the title to force a two-line layout.',
     "",

@@ -263,6 +263,10 @@ last-opened tab and binds it to that step in the report. So:
 - Keep each caption to ONE short sentence — it must fit two lines on screen (~100 characters);
   anything longer is clamped and the overflow is lost. Split a longer thought across captions on
   successive steps. They fade after a few seconds (pass `{ durationMs }` to adjust).
+- Recording for a cinematic edit? Start with `canary session start --cinematic`. The overlay is
+  then suppressed (the themed captions burned in by `session end --cinematic` replace it), but the
+  text you pass still feeds the narration as your stated intent — so keep writing captions exactly
+  as you would otherwise; they're the clearest signal of WHY each step matters.
 <!-- canary:end rule-caption -->
 
 <!-- canary:snippet rule-pass-fail -->
@@ -301,6 +305,11 @@ last-opened tab and binds it to that step in the report. So:
   attach it, continue recording.
 - **Split / dropdown button submenus:** after clicking a button that reveals a submenu, snapshot
   immediately — before any other call — to capture the menu while it's open.
-- **Cinematic mode is a `session end` flag.** Pass `--cinematic` (and `--open`) to
-  `npx @usecanary/cli session end`, not to `session start` or `run`. Re-running
-  `session end --cinematic` on an already-ended session is safe — it rebuilds the report idempotently.
+- **Cinematic mode: flag both ends.** The pass that adds narration + burned captions runs at
+  `session end` — pass `--cinematic` (and `--open`) to `npx @usecanary/cli session end`, not to
+  `run`. But ALSO pass `--cinematic` to `session start` when you know the recording is for a
+  cinematic edit: that suppresses the `page.showCaption` overlays during recording (their text
+  still feeds the narration) so they don't double up with the burned captions. Re-running
+  `session end --cinematic` on an already-ended session is safe — it rebuilds the report
+  idempotently — but if the session wasn't started with `--cinematic`, the overlays are already
+  baked into the video and you'll get double captions (the command warns you).

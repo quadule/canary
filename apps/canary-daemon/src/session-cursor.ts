@@ -25,10 +25,11 @@
 // - document.open() (setContent) removes window listeners but keeps window
 //   properties, so installation re-arms on an interval instead of trusting
 //   the install guard.
-// Duration of the cursor's glide transition. Shared with the sandbox so the
-// human-interaction helpers (page.humanClick / humanFill) can wait for the
-// cursor to actually arrive before pressing — otherwise the click lands while
-// the cursor is still mid-flight and the recording reads as a teleport.
+// Baseline glide duration. The actual per-move duration is now distance-scaled
+// (Fitts's law) inside glideAnimated and returned to the sandbox, which waits
+// for it before pressing so the click never lands mid-flight (a teleport in the
+// recording). This constant is the sandbox's floor for that wait (CURSOR_SETTLE_MS),
+// so even a short hop visibly rests on the target before the click.
 export const CURSOR_GLIDE_MS = 600;
 
 export const SESSION_CURSOR_SCRIPT = `(() => {
@@ -183,7 +184,69 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
     spotlightRaf = requestAnimationFrame(frame);
   }
 
-  function glideAnimated(x, y, duration) {
+  // Motion-realism tunables. The cursor should read like a confident presenter,
+  // not a bot evading detection — these are deliberately gentle and named so
+  // they can be adjusted by eye against an actual recording.
+  // Fitts's-law glide duration: t = BASE + PER_BIT * log2(dist / WIDTH + 1).
+  const GLIDE_BASE_MS = 90;
+  const GLIDE_PER_BIT_MS = 180;
+  const GLIDE_WIDTH_PX = 24;
+  const GLIDE_JITTER = 0.15; // ±15% so repeated moves aren't identical
+  const GLIDE_MIN_MS = 220;
+  const GLIDE_MAX_MS = 1100;
+  // Perpendicular bow of the path's mid-knots (tapers to 0 at both ends).
+  const CURVE_FRAC = 0.12;
+  const CURVE_MAX_PX = 48;
+  // Gentle arrive-with-momentum overshoot, long moves only, then settles exact.
+  const OVERSHOOT_MIN_PX = 280;
+  const OVERSHOOT_PX = 6;
+  // Sub-pixel liveness in flight; fades to 0 on landing so the rest is still.
+  const TREMOR_PX = 0.6;
+
+  // Gesture tunables (circle / underline / point / highlight). A deliberate
+  // gesture is shakier than a glide, so its hand-wobble is a touch larger.
+  const WOBBLE_PX = 1.5;
+  const CIRCLE_MS = 900; // per loop
+  const UNDERLINE_MS = 700; // per pass
+  const UNDERLINE_DOUBLE_PX = 220; // narrower than this gets a second pass
+  const BOW_PX = 3; // downward bow of an underline sweep
+
+  function easeInOut(t) {
+    return t * t * (3 - 2 * t);
+  }
+
+  function reducedMotion() {
+    try {
+      return (
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  // Uniform Catmull-Rom: the curve passes THROUGH p1 at u=0 and p2 at u=1, so a
+  // path built from [from, ...knots, to] hits its endpoints exactly.
+  function catmull(p0, p1, p2, p3, u) {
+    const u2 = u * u;
+    const u3 = u2 * u;
+    return (
+      0.5 *
+      (2 * p1 +
+        (-p0 + p2) * u +
+        (2 * p0 - 5 * p1 + 4 * p2 - p3) * u2 +
+        (-p0 + 3 * p1 - 3 * p2 + p3) * u3)
+    );
+  }
+
+  // Animate the cursor from its current position to (x, y). Returns the chosen
+  // duration so the host can wait for the move to actually finish before
+  // pressing. \`fixedDuration\` (used by park) bypasses the Fitts computation for
+  // a short, predictable hop. Builds a multi-knot Catmull-Rom path with a gentle
+  // perpendicular bow, distance-scaled timing, optional end-overshoot, and a
+  // fading tremor — all collapsed to a straight, still line under reduced motion.
+  function glideAnimated(x, y, fixedDuration) {
     const fromX = state.x !== null ? state.x : x;
     const fromY = state.y !== null ? state.y : y;
     cancelAnim();
@@ -198,27 +261,77 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
     if (dist < 8) {
       setTransform(x, y);
       updateVignette(x, y);
-      return;
+      return 0;
     }
-    const arc = Math.min(dist * 0.15, 60);
-    const side = Math.random() < 0.5 ? 1 : -1;
-    const cx = (fromX + x) / 2 + (-dy / dist) * arc * side;
-    const cy = (fromY + y) / 2 + (dx / dist) * arc * side;
+    const reduced = reducedMotion();
+    // Fitts's-law duration: short hops snap, long reaches take their time.
+    let duration;
+    if (typeof fixedDuration === 'number') {
+      duration = fixedDuration;
+    } else {
+      const bits = Math.log(dist / GLIDE_WIDTH_PX + 1) / Math.LN2;
+      duration = GLIDE_BASE_MS + GLIDE_PER_BIT_MS * bits;
+      duration *= 1 + (Math.random() * 2 - 1) * GLIDE_JITTER;
+      duration = Math.max(GLIDE_MIN_MS, Math.min(GLIDE_MAX_MS, duration));
+    }
+    // Build the path knots: from -> mid-knots (perpendicular bow) -> to.
+    const perpX = -dy / dist;
+    const perpY = dx / dist;
+    const knotCount = dist < 200 ? 1 : dist < 500 ? 2 : 3;
+    const curveAmp = reduced ? 0 : Math.min(dist * CURVE_FRAC, CURVE_MAX_PX);
+    const xs = [fromX];
+    const ys = [fromY];
+    for (let i = 1; i <= knotCount; i++) {
+      const u = i / (knotCount + 1);
+      const taper = Math.sin(u * Math.PI); // 0 at ends, 1 in the middle
+      const off = (Math.random() * 2 - 1) * curveAmp * taper;
+      xs.push(fromX + dx * u + perpX * off);
+      ys.push(fromY + dy * u + perpY * off);
+    }
+    xs.push(x);
+    ys.push(y);
+    // Pad endpoints so every segment has the four controls Catmull-Rom needs.
+    const xp = [xs[0]].concat(xs, [xs[xs.length - 1]]);
+    const yp = [ys[0]].concat(ys, [ys[ys.length - 1]]);
+    const segs = xs.length - 1;
+    const overshoot =
+      !reduced && dist > OVERSHOOT_MIN_PX ? Math.min(OVERSHOOT_PX, dist * 0.03) : 0;
+    const dirX = dx / dist;
+    const dirY = dy / dist;
     const t0 = performance.now();
     function step(now) {
       const t = Math.min((now - t0) / duration, 1);
-      const et = 1 - (1 - t) * (1 - t);
-      const bx = (1 - et) * (1 - et) * fromX + 2 * (1 - et) * et * cx + et * et * x;
-      const by = (1 - et) * (1 - et) * fromY + 2 * (1 - et) * et * cy + et * et * y;
+      const et = 1 - (1 - t) * (1 - t); // ease-out
+      let fs = et * segs;
+      let seg = Math.floor(fs);
+      if (seg > segs - 1) seg = segs - 1;
+      const lu = fs - seg;
+      let bx = catmull(xp[seg], xp[seg + 1], xp[seg + 2], xp[seg + 3], lu);
+      let by = catmull(yp[seg], yp[seg + 1], yp[seg + 2], yp[seg + 3], lu);
+      // Forward overshoot bump: zero before 0.62 and at t=1, peaks near 0.81 —
+      // the cursor drifts just past the target then settles exactly onto it.
+      if (overshoot > 0 && t > 0.62) {
+        const b = Math.sin(((t - 0.62) / 0.38) * Math.PI);
+        bx += dirX * overshoot * b;
+        by += dirY * overshoot * b;
+      }
+      if (!reduced && t < 1) {
+        const tremor = TREMOR_PX * (1 - t);
+        bx += (Math.random() * 2 - 1) * tremor;
+        by += (Math.random() * 2 - 1) * tremor;
+      }
       setTransform(bx, by);
       updateVignette(bx, by);
       if (t < 1) {
         animRaf = requestAnimationFrame(step);
       } else {
+        setTransform(x, y);
+        updateVignette(x, y);
         animRaf = null;
       }
     }
     animRaf = requestAnimationFrame(step);
+    return duration;
   }
 
   const ARROW_SVG =
@@ -283,8 +396,18 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
     }
     if (state.x === null) {
       const stored = loadPos();
-      state.x = stored ? stored.x : Math.round(window.innerWidth / 2);
-      state.y = stored ? stored.y : Math.round(window.innerHeight / 2);
+      if (stored) {
+        state.x = stored.x;
+        state.y = stored.y;
+      } else {
+        // Fresh session: park the cursor just off the bottom-right edge so it's
+        // out of frame, then glide in from the side on the first interaction —
+        // like a presenter moving their hand into shot — instead of sitting in
+        // the middle of the page from the first frame. Once it has moved, the
+        // on-screen position persists (sessionStorage) across navigations.
+        state.x = window.innerWidth + SIZE;
+        state.y = Math.round(window.innerHeight * 0.82);
+      }
     }
     el = document.createElement('canary-virtual-cursor');
     el.setAttribute('aria-hidden', 'true');
@@ -450,16 +573,215 @@ export const SESSION_CURSOR_SCRIPT = `(() => {
 
   function glide(x, y, el) {
     setGlyph(glyphFor(el));
-    glideAnimated(x, y, ${CURSOR_GLIDE_MS});
+    // Distance-scaled duration (returned to the host so it can wait for the
+    // cursor to actually land before the click fires — see revealAndGlide).
+    const duration = glideAnimated(x, y);
     armPress();
+    return duration;
   }
   state.glide = glide;
   state.showVignette = showVignette;
 
   function park(x, y) {
-    glideAnimated(x, y, 250);
+    return glideAnimated(x, y, 250);
   }
   state.park = park;
+
+  // Shared gesture runner: drive the cursor along sample(t) (t in [0,1]) over
+  // \`duration\` ms, adding a faint per-frame hand-wobble and landing exactly on
+  // sample(1). Fire-and-forget like glideAnimated — the host waits the duration
+  // the gesture reports. sample() may carry a side effect (e.g. growing a
+  // selection in lockstep with the sweep).
+  function gestureLoop(duration, sample) {
+    cancelAnim();
+    const reduced = reducedMotion();
+    const t0 = performance.now();
+    function step(now) {
+      const t = Math.min((now - t0) / duration, 1);
+      const p = sample(t);
+      let bx = p.x;
+      let by = p.y;
+      if (!reduced && t < 1) {
+        bx += (Math.random() * 2 - 1) * WOBBLE_PX;
+        by += (Math.random() * 2 - 1) * WOBBLE_PX;
+      }
+      state.x = bx;
+      state.y = by;
+      savePos(bx, by);
+      setTransform(bx, by);
+      updateVignette(bx, by);
+      if (t < 1) {
+        animRaf = requestAnimationFrame(step);
+      } else {
+        animRaf = null;
+      }
+    }
+    animRaf = requestAnimationFrame(step);
+  }
+
+  // Trace 1+ loops around an element's box, then a little extra so the ring
+  // overlaps where it began (a hand-drawn circle never closes perfectly). The
+  // angle advances on an ease-in-out clock, not constant angular speed.
+  function circleAround(rect, opts) {
+    const pad = 14;
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const rx = rect.width / 2 + pad;
+    const ry = rect.height / 2 + pad + (Math.random() * 6 - 3);
+    const loops = (opts && opts.loops) || 1;
+    const start = Math.random() * Math.PI * 2;
+    const extra = ((10 + Math.random() * 10) * Math.PI) / 180;
+    const sweep = loops * Math.PI * 2 + extra;
+    const dur = CIRCLE_MS * loops;
+    const sx = cx + rx * Math.cos(start);
+    const sy = cy + ry * Math.sin(start);
+    setGlyph('arrow');
+    const d1 = glideAnimated(sx, sy);
+    setTimeout(function () {
+      gestureLoop(dur, function (t) {
+        const ang = start + sweep * easeInOut(t);
+        return { x: cx + rx * Math.cos(ang), y: cy + ry * Math.sin(ang) };
+      });
+    }, d1 + 60);
+    return d1 + 60 + dur + 80;
+  }
+  state.circleAround = circleAround;
+
+  // Sweep the cursor along the underside of an element with eased speed and a
+  // slight downward bow. Short elements get a second (reverse) pass, the way
+  // someone double-underlines a short phrase for emphasis.
+  function underlineAcross(rect) {
+    const y0 = rect.bottom + 4;
+    const x1 = rect.left + 2;
+    const x2 = rect.right - 2;
+    const width = Math.max(1, x2 - x1);
+    const doublePass = width < UNDERLINE_DOUBLE_PX;
+    setGlyph('arrow');
+    const d1 = glideAnimated(x1, y0);
+    setTimeout(function () {
+      gestureLoop(UNDERLINE_MS, function (t) {
+        const e = easeInOut(t);
+        return { x: x1 + width * e, y: y0 + BOW_PX * Math.sin(e * Math.PI) };
+      });
+      if (doublePass) {
+        setTimeout(function () {
+          const y1 = y0 - 3;
+          gestureLoop(UNDERLINE_MS * 0.85, function (t) {
+            const e = easeInOut(t);
+            return { x: x2 - width * e, y: y1 + BOW_PX * Math.sin(e * Math.PI) };
+          });
+        }, UNDERLINE_MS + 40);
+      }
+    }, d1 + 60);
+    let total = d1 + 60 + UNDERLINE_MS;
+    if (doublePass) total += 40 + UNDERLINE_MS * 0.85;
+    return total + 80;
+  }
+  state.underlineAcross = underlineAcross;
+
+  // Two small in-and-back nudges toward an element — a "look here" tap.
+  function pointAt(rect) {
+    const tx = rect.left + rect.width / 2;
+    const ty = rect.top + rect.height / 2;
+    const ax = rect.left + Math.min(rect.width * 0.25, 30);
+    const ay = rect.top + Math.min(rect.height * 0.5, 20);
+    setGlyph('arrow');
+    const d1 = glideAnimated(ax, ay);
+    const dirX = tx - ax;
+    const dirY = ty - ay;
+    const len = Math.sqrt(dirX * dirX + dirY * dirY) || 1;
+    const ux = dirX / len;
+    const uy = dirY / len;
+    const nudge = 10;
+    const nudgeDur = 150;
+    const tap = function (t) {
+      const e = Math.sin(t * Math.PI);
+      return { x: ax + ux * nudge * e, y: ay + uy * nudge * e };
+    };
+    setTimeout(function () {
+      gestureLoop(nudgeDur, tap);
+      setTimeout(function () {
+        gestureLoop(nudgeDur, tap);
+      }, nudgeDur + 30);
+    }, d1 + 50);
+    return d1 + 50 + nudgeDur * 2 + 30 + 60;
+  }
+  state.pointAt = pointAt;
+
+  // Select the first \`n\` characters of an element's text into \`range\`, walking
+  // its text nodes so the offset works across nested inline markup.
+  function selectFirstChars(root, n) {
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    let counted = 0;
+    let node = walker.nextNode();
+    while (node) {
+      const len = node.nodeValue.length;
+      if (counted + len >= n) {
+        range.setEnd(node, n - counted);
+        return range;
+      }
+      counted += len;
+      node = walker.nextNode();
+    }
+    return range;
+  }
+
+  // Drag-select an element's text: the I-beam sweeps left to right while a real
+  // DOM Selection grows in lockstep, so the browser paints its native highlight.
+  // Driven by the same rAF clock, never by page.mouse (the overlay ignores mouse
+  // events by design, and a real drag would fight the synthetic cursor).
+  function highlightText(el, rect, opts) {
+    const y = rect.top + rect.height / 2;
+    const x1 = rect.left + 2;
+    const x2 = rect.right - 2;
+    const width = Math.max(1, x2 - x1);
+    let sel = null;
+    let textLen = 0;
+    try {
+      sel = window.getSelection();
+      const probe = document.createRange();
+      probe.selectNodeContents(el);
+      textLen = probe.toString().length;
+      sel.removeAllRanges();
+    } catch {
+      sel = null;
+    }
+    setGlyph('text');
+    const d1 = glideAnimated(x1, y);
+    const sweepDur = Math.max(500, Math.min(1200, width * 2));
+    setTimeout(function () {
+      gestureLoop(sweepDur, function (t) {
+        const e = easeInOut(t);
+        if (sel && textLen > 0) {
+          try {
+            const chars = Math.max(1, Math.round(textLen * e));
+            const r = selectFirstChars(el, chars);
+            sel.removeAllRanges();
+            sel.addRange(r);
+          } catch {
+            // selection unsupported on this node — sweep cosmetically only
+          }
+        }
+        return { x: x1 + width * e, y: y };
+      });
+    }, d1 + 60);
+    if (opts && typeof opts.clearAfterMs === 'number') {
+      setTimeout(
+        function () {
+          try {
+            window.getSelection().removeAllRanges();
+          } catch {
+            // best effort
+          }
+        },
+        d1 + 60 + sweepDur + opts.clearAfterMs,
+      );
+    }
+    return d1 + 60 + sweepDur + 80;
+  }
+  state.highlightText = highlightText;
 
   const isTopFrame = (() => {
     try {
