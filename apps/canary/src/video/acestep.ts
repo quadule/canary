@@ -254,7 +254,9 @@ function createMusicProvider(config: AceStepConfig, echo?: Echo): MusicProvider 
     singsLyrics: true,
     credit: () =>
       Promise.resolve(
-        `ACE-Step 1.5${config.model ? ` (${config.model})` : ""} — generated locally`
+        `ACE-Step 1.5${config.model ? ` (${config.model})` : ""} — generated ${
+          isLocalUrl(config.baseUrl) ? "locally" : "on a local-network server"
+        }`
       ),
     bed: (directionText, seconds, outPath) =>
       generate({
