@@ -996,7 +996,11 @@ async function generateNarration(
 ): Promise<Narration | null> {
   let stdout: string;
   try {
-    ({ stdout } = await run("claude", ["-p", prompt], LLM_TIMEOUT_MS, echo));
+    // Echo an elided form: the narration prompt is multi-KB, and dumping it as
+    // one stderr line is noise (the reproducibility the user wants is about the
+    // voices/encodes, not this blob). Pass no echo to run() so it isn't doubled.
+    echo?.(`$ claude -p <narration prompt, ${prompt.length} chars>`);
+    ({ stdout } = await run("claude", ["-p", prompt], LLM_TIMEOUT_MS));
   } catch (err) {
     log.debug({ err }, "cinematic: claude narration call failed");
     return null;
