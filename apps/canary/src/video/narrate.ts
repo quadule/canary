@@ -43,8 +43,10 @@ import {
   type TtsProvider,
 } from "./providers.js";
 import { resolveAceStepMusic } from "./acestep.js";
+import { alignLyricsToSegments, vocalRegion } from "./align.js";
 import { resolveArchiveMusic } from "./archive.js";
 import { resolveOmlxProviders } from "./omlx.js";
+import { transcribeSong } from "./transcribe.js";
 import { formatCommand, shellQuote } from "./shell.js";
 import {
   type StyleId,
@@ -1646,63 +1648,74 @@ async function assembleVideo(args: {
   return { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec, music };
 }
 
-// Generate the single full SONG for song mode: the music model SINGS the supplied
-// lyrics over the whole final video (body + credits). One foreground track at
-// delay 0 — there's no narration to duck under. Best-effort: a failure returns []
-// + a note, and the caller skips song mode rather than shipping a silent video.
-async function generateSong(args: {
-  ffmpeg: string;
+// Generate the raw SONG file (the model SINGS the supplied lyrics). Returns its
+// path, or null on failure. The length is the MODEL's choice (acestep omits the
+// duration for lyric songs — pinning it yields instrumental), so this file is
+// long with the vocals somewhere inside; the caller transcribes + trims it.
+async function generateRawSong(args: {
   provider: MusicProvider | undefined;
   directionText: string;
   lyrics: string;
-  finalBodyPath: string;
   videoPath: string;
   temps: string[];
   notes: string[];
   log: Logger;
-  progress: (message: string) => void;
-}): Promise<MusicTrack[]> {
-  const {
-    ffmpeg,
-    provider,
-    directionText,
-    lyrics,
-    finalBodyPath,
-    videoPath,
-    temps,
-    notes,
-    log,
-  } = args;
+}): Promise<string | null> {
+  const { provider, directionText, lyrics, videoPath, temps, notes, log } = args;
   if (!provider) {
-    return [];
+    return null;
   }
-  const total = await audioDurationSec(ffmpeg, finalBodyPath);
-  if (!total) {
-    return [];
-  }
-  args.progress("composing the song…");
+  const songPath = `${videoPath}.rawsong.wav`;
+  temps.push(songPath);
   try {
-    const songPath = `${videoPath}.song.wav`;
-    temps.push(songPath);
-    await provider.song(directionText, total, songPath, lyrics);
-    // Foreground: the song IS the soundtrack. 0.9 leaves a little headroom so the
-    // mix doesn't clip. The output is still capped to the video length downstream.
-    return [{ path: songPath, delaySec: 0, volume: 0.9 }];
+    // `seconds` is ignored for a lyric song (acestep omits duration); pass 0.
+    await provider.song(directionText, 0, songPath, lyrics);
+    return songPath;
   } catch (err) {
     log.debug({ err }, "cinematic: song generation failed");
     notes.push("song unavailable — generation failed");
-    return [];
+    return null;
   }
 }
 
-// Song-mode counterpart of assembleVideo. RE-TIMES the body like narration —
-// each step's frame holds for `holdDurSec[i]` — so the body is long enough for the
-// song's vocals to play across it (ACE-Step front-loads a ~6s instrumental intro,
-// so a too-short body ends before the singing) and the per-step captions get
-// readable, non-overlapping spacing even when condense collapsed the source. Then
-// prepend the title, append the credits, and generate the one song spanning the
-// whole final video. Returns the final body, each step's position, and the song
-// track — or null if the source can't be probed/re-timed.
+// Trim an audio file from `startSec` to the end, re-encoding to stereo 44.1kHz wav
+// (re-encode so the seek is frame-accurate, unlike a stream copy). Used to skip a
+// generated song's instrumental intro so the vocals start near the video's body.
+async function trimAudio(args: {
+  ffmpeg: string;
+  src: string;
+  startSec: number;
+  outPath: string;
+  echo?: Echo;
+}): Promise<void> {
+  const { ffmpeg, src, startSec, outPath, echo } = args;
+  await run(
+    ffmpeg,
+    [
+      "-hide_banner",
+      "-nostats",
+      "-y",
+      ...(startSec > 0.05 ? ["-ss", startSec.toFixed(3)] : []),
+      "-i",
+      src,
+      "-ac",
+      "2",
+      "-ar",
+      "44100",
+      outPath,
+    ],
+    ENCODE_TIMEOUT_MS,
+    echo
+  );
+}
+
+// Song-mode counterpart of assembleVideo. RE-TIMES the body like narration — each
+// step's frame holds for `holdDurSec[i]` — so the body is long enough for the
+// song's vocals to play across it and the captions get readable spacing. Then
+// prepend the title and append the credits. The SONG itself is generated, timed,
+// and mixed by the caller (it needs the song's transcript first); this just builds
+// the silent video. Returns the final body, each step's new position, and the
+// title offset — or null if the source can't be probed/re-timed.
 async function assembleSongVideo(args: {
   ffmpeg: string;
   videoPath: string;
@@ -1711,7 +1724,6 @@ async function assembleSongVideo(args: {
   title: string;
   category: ThemeCategory | undefined;
   directionText: string;
-  lyrics: string;
   providers: MediaProviders;
   hasDrawtext: boolean;
   repoDir: string;
@@ -1724,7 +1736,6 @@ async function assembleSongVideo(args: {
   finalBody: string;
   stepTimes: number[];
   titleOffsetSec: number;
-  music: MusicTrack[];
 } | null> {
   const {
     ffmpeg,
@@ -1734,7 +1745,6 @@ async function assembleSongVideo(args: {
     title,
     category,
     directionText,
-    lyrics,
     providers,
     hasDrawtext,
     repoDir,
@@ -1748,8 +1758,8 @@ async function assembleSongVideo(args: {
   const geometry = await probeVideo(ffmpeg, videoPath);
   const frameRate = geometry?.frameRate ?? 30;
 
-  // Re-time so each step holds for its lyric line's readable duration. This both
-  // lengthens the body past the song's intro and spreads the captions.
+  // Re-time so each step holds for its share of the song. This lengthens the body
+  // to span the vocals and spreads the captions.
   progress("re-timing the video to the song…");
   const retimed = await retimeForNarration({
     ffmpeg,
@@ -1791,8 +1801,6 @@ async function assembleSongVideo(args: {
     log,
   });
 
-  // Re-timing moved every step; its new position is retimed.starts shifted by the
-  // title card — keeping click-to-seek and the captions aligned to the song cut.
   const stepTimes = retimed.starts.map((s) => s + titleOffsetSec);
 
   let finalBody = body;
@@ -1824,20 +1832,7 @@ async function assembleSongVideo(args: {
     });
   }
 
-  const music = await generateSong({
-    ffmpeg,
-    provider: providers.music,
-    directionText,
-    lyrics,
-    finalBodyPath: finalBody,
-    videoPath,
-    temps,
-    notes,
-    log,
-    progress,
-  });
-
-  return { finalBody, stepTimes, titleOffsetSec, music };
+  return { finalBody, stepTimes, titleOffsetSec };
 }
 
 interface RenderedClip {
@@ -2721,19 +2716,14 @@ export async function cinematicProcess(
       }
       const { direction, lyrics, repoDir, base } = planned;
 
-      // Lines in step order, and the lyric block ACE-Step sings (a [verse] tag
-      // helps the model; the words are the per-step lines in order).
+      // Lines in step order, and the lyric block the model sings (a [verse] tag
+      // helps it; the words are the per-step lines in order).
       const byIndex = new Map(lyrics.lines.map((l) => [l.index, l.text]));
       const ordered = narratableSteps
         .map((_, i) => ({ i, text: byIndex.get(i) }))
         .filter((x): x is { i: number; text: string } => Boolean(x.text));
-      const lyricBlock = `[verse]\n${ordered.map((x) => x.text).join("\n")}`;
-      // Per-step hold for the re-timing: a readable beat sized to each line (steps
-      // with no line still get the floor so the body stays continuous).
-      const holdDurSec = narratableSteps.map((_, i) => {
-        const text = byIndex.get(i);
-        return text ? songHoldSec(text) : 3.5;
-      });
+      const orderedTexts = ordered.map((x) => x.text);
+      const lyricBlock = `[verse]\n${orderedTexts.join("\n")}`;
 
       const musicLabel =
         (await songMusic.credit?.(direction.text).catch(() => undefined)) ??
@@ -2747,6 +2737,86 @@ export async function cinematicProcess(
       };
       log.info(meta, "cinematic: song parameters");
 
+      // 1. Generate the raw song. The model chooses the length (pinning it yields
+      // instrumental), so this is long with the vocals somewhere inside.
+      progress("composing the song…");
+      const rawSong = await generateRawSong({
+        provider: songMusic,
+        directionText: direction.text,
+        lyrics: lyricBlock,
+        videoPath,
+        temps,
+        notes,
+        log,
+      });
+      if (!rawSong) {
+        // No song audio means song mode produced nothing — skip and keep the plain
+        // condensed cut rather than ship a silent "song" video.
+        return notApplied("song audio could not be generated");
+      }
+
+      // 2. Transcribe (best-effort) to find where the vocals actually are.
+      progress("listening for the vocals…");
+      const segments = await transcribeSong({
+        audioPath: rawSong,
+        ffmpeg: ffmpegPath,
+        env: process.env,
+        echo,
+      });
+
+      // 3. Decide the song clip, per-step holds, and (when transcribed) the cues.
+      const stepCount = Math.max(1, narratableSteps.length);
+      let songClip = rawSong;
+      let alignedCues: { start: number; end: number; text: string }[] | null =
+        null;
+      let holdDurSec: number[];
+      if (segments) {
+        // Trim the instrumental intro so the vocals start near the body; size the
+        // re-timed body to the vocal region so the singing plays across it.
+        const region = vocalRegion(segments, {
+          lead: TITLE_SEC + 0.5,
+          tail: 1.5,
+        }) ?? { start: 0, end: 0 };
+        const trimStart = region.start;
+        if (trimStart > 0.05) {
+          songClip = `${videoPath}.song.wav`;
+          temps.push(songClip);
+          await trimAudio({
+            ffmpeg: ffmpegPath,
+            src: rawSong,
+            startSec: trimStart,
+            outPath: songClip,
+            echo,
+          });
+        }
+        // Our clean lines, timed to the vocals, rebased to the trimmed song — which
+        // plays at delay 0, so clip time == final-video time and audio+caption sync.
+        // Cap each cue's on-screen time (a long sustained/mis-merged note shouldn't
+        // hold a caption for half a minute).
+        const MAX_CUE_SEC = 8;
+        alignedCues = alignLyricsToSegments(orderedTexts, segments).map((c) => {
+          const start = Math.max(0, c.start - trimStart);
+          const end = Math.max(0.5, c.end - trimStart);
+          return { start, end: Math.min(end, start + MAX_CUE_SEC), text: c.text };
+        });
+        const bodyLen = Math.max(6, region.end - region.start);
+        holdDurSec = Array.from({ length: stepCount }, () => bodyLen / stepCount);
+        notes.push(
+          `captions timed to the detected vocals (${alignedCues.length}/${orderedTexts.length} lines sung)`
+        );
+      } else {
+        // No transcription: keep the raw song (capped by the mix), re-time by line
+        // length, and place captions at step times (vocals may land late).
+        holdDurSec = narratableSteps.map((_, i) => {
+          const text = byIndex.get(i);
+          return text ? songHoldSec(text) : 3.5;
+        });
+        notes.push(
+          "vocal timing not detected (no whisper model) — captions placed at step times; set $CANARY_WHISPER_MODEL to align them to the singing"
+        );
+      }
+
+      // 4. Build the (silent) video around the song: re-time, title, credits.
       const assembled = await assembleSongVideo({
         ffmpeg: ffmpegPath,
         videoPath: input,
@@ -2755,7 +2825,6 @@ export async function cinematicProcess(
         title: lyrics.title,
         category: direction.category,
         directionText: direction.text,
-        lyrics: lyricBlock,
         providers: songProviders,
         hasDrawtext,
         repoDir,
@@ -2768,29 +2837,22 @@ export async function cinematicProcess(
       if (!assembled) {
         return notApplied("could not probe the video to build the song cut");
       }
-      const { finalBody, stepTimes, titleOffsetSec, music } = assembled;
-      if (music.length === 0) {
-        // No song audio means song mode produced nothing it set out to — skip and
-        // keep the plain condensed cut rather than ship a silent "song" video.
-        return notApplied("song audio could not be generated");
-      }
+      const { finalBody, stepTimes, titleOffsetSec } = assembled;
 
-      // Song-mode captions are SOFT (a sibling .srt the player overlays), never
-      // burned: the sung vocals don't follow our written lines or their pacing, so
-      // baking captions in would lock in a guess — a soft .srt can be re-timed
-      // later by editing the text, with no re-render. Each lyric line appears at
-      // its step's position, laid out so bunched steps don't stack. --no-captions
-      // skips the .srt entirely.
+      // 5. Captions are SOFT (a sibling .srt the player overlays), never burned:
+      // they can be re-timed later by editing the text, with no re-render. Use the
+      // vocal-aligned cues when we have them, else step-timed. --no-captions skips.
       const wantCaptions = options.captions !== false;
       const srtPath = srtPathFor(videoPath);
       if (wantCaptions) {
-        const bodyEndSec = (await audioDurationSec(ffmpegPath, finalBody)) ?? 0;
-        const cues = layoutSongCues(
-          ordered.map((x) => ({ start: stepTimes[x.i] ?? 0, text: x.text })),
-          bodyEndSec
-        );
-        temps.push(srtPath);
         const srtGeometry = await probeVideo(ffmpegPath, input);
+        const cues =
+          alignedCues ??
+          layoutSongCues(
+            ordered.map((x) => ({ start: stepTimes[x.i] ?? 0, text: x.text })),
+            (await audioDurationSec(ffmpegPath, finalBody)) ?? 0
+          );
+        temps.push(srtPath);
         await writeFile(
           srtPath,
           buildSrt(cues, captionLineMax(srtGeometry?.width))
@@ -2800,14 +2862,16 @@ export async function cinematicProcess(
         await rm(srtPath, { force: true });
       }
 
-      // Write the full lyrics sidecar (one line per step, in order).
+      // 6. Write the full lyrics sidecar (one line per step, in order).
       const lyricsPath = lyricsPathFor(videoPath);
       temps.push(lyricsPath);
       await writeFile(
         lyricsPath,
-        `${lyrics.title}\n\n${ordered.map((x) => x.text).join("\n")}\n`
+        `${lyrics.title}\n\n${orderedTexts.join("\n")}\n`
       );
 
+      // 7. Mix the song under the video (foreground; soft subs only). The mix's
+      // -t cap trims the long song down to the video length.
       progress("mixing the song…");
       const finalPath = `${videoPath}.cinematic.webm`;
       temps.push(finalPath);
@@ -2816,7 +2880,7 @@ export async function cinematicProcess(
         videoPath: finalBody,
         clips: [],
         offsetsSec: [],
-        music,
+        music: [{ path: songClip, delaySec: 0, volume: 0.9 }],
         srtPath: "",
         burnCaptions: false, // soft subs only — the .srt sidecar carries them
         outPath: finalPath,
