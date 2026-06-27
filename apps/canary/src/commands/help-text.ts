@@ -132,13 +132,13 @@ SONG MODE (--song): score the whole video with ONE original song instead of spok
 An LLM writes ONE short, singable lyric line PER STEP and a music model sings them. Like narration,
 each step's frame is held for a readable beat (re-timing) so the body outlasts the song's short
 instrumental intro and the vocals play across it; an opening title card and credits are added.
-Captions are SOFT subs — a sibling .srt (plus a .lyrics.txt) the player overlays, NOT burned in.
-With a Whisper model set ($CANARY_WHISPER_MODEL → a whisper.cpp ggml model, whisper-cli on PATH or
-$CANARY_WHISPER_CLI), the song is transcribed and the captions are timed to the ACTUAL singing — the
-instrumental intro is trimmed off and the clean lyric lines are placed at the vocals (only the lines
-the model actually sang). Without a model, captions fall back to step times. Use --no-captions to skip
-the .srt. Needs the 'claude' CLI plus a lyrics-capable music model: the local ACE-Step server (see
-$CANARY_ACESTEP_URL) or a Gemini key (Lyria). Combine with --prompt to steer the genre.
+Captions are burned in (and a sibling .srt + .lyrics.txt are written). With a Whisper model set
+($CANARY_WHISPER_MODEL → a whisper.cpp ggml model, whisper-cli on PATH or $CANARY_WHISPER_CLI), the
+song is transcribed and the captions are timed to the ACTUAL singing — the instrumental intro is
+trimmed off and the clean lyric lines are placed at the vocals (only the lines the model actually
+sang). Without a model, captions fall back to step times. Use --no-captions to skip them. Needs the
+'claude' CLI plus a lyrics-capable music model: the local ACE-Step server (see $CANARY_ACESTEP_URL)
+or a Gemini key (Lyria). Combine with --prompt to steer the genre.
 
   --song              score the video with a sung song instead of narration (implies --cinematic)
   --prompt "<text>"   steer theme/tone/style in your own words (implies --cinematic);

@@ -2839,11 +2839,14 @@ export async function cinematicProcess(
       }
       const { finalBody, stepTimes, titleOffsetSec } = assembled;
 
-      // 5. Captions are SOFT (a sibling .srt the player overlays), never burned:
-      // they can be re-timed later by editing the text, with no re-render. Use the
-      // vocal-aligned cues when we have them, else step-timed. --no-captions skips.
+      // 5. Captions: the vocal-aligned cues when we have them, else step-timed.
+      // BURN them into the video (when this ffmpeg can) so they're visible in any
+      // player — a sibling .srt isn't loaded by QuickTime or the report viewer.
+      // The .srt is still written beside the video (for editing / soft-sub
+      // players). --no-captions skips both.
       const wantCaptions = options.captions !== false;
       const srtPath = srtPathFor(videoPath);
+      const burnCaptions = wantCaptions && hasSubtitles;
       if (wantCaptions) {
         const srtGeometry = await probeVideo(ffmpegPath, input);
         const cues =
@@ -2857,6 +2860,12 @@ export async function cinematicProcess(
           srtPath,
           buildSrt(cues, captionLineMax(srtGeometry?.width))
         );
+        if (!hasSubtitles) {
+          const note =
+            "captions not burned — this ffmpeg has no `subtitles` filter; wrote a soft-sub .srt instead";
+          notes.push(note);
+          log.warn({ ffmpeg: ffmpegPath }, `cinematic: ${note}`);
+        }
       } else {
         // No captions: drop any stale .srt from a prior run beside the video.
         await rm(srtPath, { force: true });
@@ -2870,9 +2879,11 @@ export async function cinematicProcess(
         `${lyrics.title}\n\n${orderedTexts.join("\n")}\n`
       );
 
-      // 7. Mix the song under the video (foreground; soft subs only). The mix's
-      // -t cap trims the long song down to the video length.
-      progress("mixing the song…");
+      // 7. Mix the song under the video and burn the captions. The mix's -t cap
+      // trims the long song down to the video length.
+      progress(
+        burnCaptions ? "mixing the song and burning captions…" : "mixing the song…"
+      );
       const finalPath = `${videoPath}.cinematic.webm`;
       temps.push(finalPath);
       await mixAudioAndCaptions({
@@ -2881,8 +2892,8 @@ export async function cinematicProcess(
         clips: [],
         offsetsSec: [],
         music: [{ path: songClip, delaySec: 0, volume: 0.9 }],
-        srtPath: "",
-        burnCaptions: false, // soft subs only — the .srt sidecar carries them
+        srtPath: burnCaptions ? srtPath : "",
+        burnCaptions,
         outPath: finalPath,
         echo,
       });
