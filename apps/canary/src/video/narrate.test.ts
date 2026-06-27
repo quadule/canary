@@ -12,6 +12,7 @@ import {
   changeScaleHint,
   customSaySynth,
   layoutSongCues,
+  songHoldSec,
   extractCaptions,
   lyricsPathFor,
   parseFilterNames,
@@ -239,6 +240,18 @@ describe("precinematicVideoPath", () => {
     expect(precinematicVideoPath("/s/abc/clip.mp4")).toBe(
       "/s/abc/clip.precinematic.mp4"
     );
+  });
+});
+
+describe("songHoldSec", () => {
+  it("floors short lines and scales with word count", () => {
+    expect(songHoldSec("two words")).toBe(3.5); // floor
+    expect(songHoldSec("")).toBe(3.5);
+    // 10 words → 10/2.5 + 1 = 5s
+    expect(songHoldSec("one two three four five six seven eight nine ten")).toBe(5);
+  });
+  it("caps very long lines", () => {
+    expect(songHoldSec(Array.from({ length: 40 }, () => "x").join(" "))).toBe(6.5);
   });
 });
 

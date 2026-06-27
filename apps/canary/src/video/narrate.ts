@@ -367,6 +367,15 @@ export function wrapCaption(
   return lines.join("\n");
 }
 
+// How long to hold a step's frame for its sung lyric line (song-mode re-timing).
+// ~2.5 words/sec singing plus a beat to read, floored so every line gets a
+// readable hold and the body stays long enough to clear the song's intro, capped
+// so one wordy line doesn't dominate. Pure → unit-tested.
+export function songHoldSec(text: string): number {
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  return Math.min(6.5, Math.max(3.5, words / 2.5 + 1));
+}
+
 // Lay out song-mode caption cues so they never overlap. Each lyric line wants to
 // appear at its step's time, but condense can bunch several steps into the same
 // instant (a static stretch trimmed to one point), which would stack captions on
@@ -1686,16 +1695,19 @@ async function generateSong(args: {
   }
 }
 
-// Song-mode counterpart of assembleVideo: NO per-step re-timing (the condensed
-// cut plays at its natural pace) and NO narration clips. Normalize the body to
-// CFR libvpx so the title card + credits concat-copy cleanly onto it, prepend the
-// title, append the credits, then generate the one song spanning the whole final
-// video. Returns the final body, each step's position (shifted by the title card),
-// and the single song track — or null if the source duration can't be probed.
+// Song-mode counterpart of assembleVideo. RE-TIMES the body like narration —
+// each step's frame holds for `holdDurSec[i]` — so the body is long enough for the
+// song's vocals to play across it (ACE-Step front-loads a ~6s instrumental intro,
+// so a too-short body ends before the singing) and the per-step captions get
+// readable, non-overlapping spacing even when condense collapsed the source. Then
+// prepend the title, append the credits, and generate the one song spanning the
+// whole final video. Returns the final body, each step's position, and the song
+// track — or null if the source can't be probed/re-timed.
 async function assembleSongVideo(args: {
   ffmpeg: string;
   videoPath: string;
   narratableSteps: CinematicStep[];
+  holdDurSec: number[];
   title: string;
   category: ThemeCategory | undefined;
   directionText: string;
@@ -1718,6 +1730,7 @@ async function assembleSongVideo(args: {
     ffmpeg,
     videoPath,
     narratableSteps,
+    holdDurSec,
     title,
     category,
     directionText,
@@ -1734,26 +1747,21 @@ async function assembleSongVideo(args: {
 
   const geometry = await probeVideo(ffmpeg, videoPath);
   const frameRate = geometry?.frameRate ?? 30;
-  const total = await audioDurationSec(ffmpeg, videoPath);
-  if (!total) {
+
+  // Re-time so each step holds for its lyric line's readable duration. This both
+  // lengthens the body past the song's intro and spreads the captions.
+  progress("re-timing the video to the song…");
+  const retimed = await retimeForNarration({
+    ffmpeg,
+    videoPath,
+    steps: narratableSteps,
+    clipDurSec: holdDurSec,
+    frameRate,
+    temps,
+  });
+  if (!retimed) {
     return null;
   }
-
-  // Normalize the condensed cut to CFR libvpx (a single full-length slice, no
-  // re-timing) so the freshly-encoded title card and credits stream-copy onto it,
-  // exactly as the narration path's re-timed slices do.
-  progress("preparing the video…");
-  const normalized = `${videoPath}.songbody.webm`;
-  temps.push(normalized);
-  await encodeSlice({
-    ffmpeg,
-    src: videoPath,
-    startSec: 0,
-    durSec: total,
-    holdSec: 0,
-    frameRate,
-    outPath: normalized,
-  });
 
   const background =
     hasDrawtext && geometry
@@ -1772,7 +1780,7 @@ async function assembleSongVideo(args: {
   progress("painting the title card…");
   const { body, titleOffsetSec } = await applyTitleCard({
     ffmpeg,
-    retimedPath: normalized,
+    retimedPath: retimed.path,
     title,
     style: titleStyle(category),
     background,
@@ -1783,9 +1791,9 @@ async function assembleSongVideo(args: {
     log,
   });
 
-  // No re-timing, so each step keeps its condensed position, shifted only by the
-  // title card — keeping click-to-seek aligned to the song cut.
-  const stepTimes = narratableSteps.map((s) => s.videoTime + titleOffsetSec);
+  // Re-timing moved every step; its new position is retimed.starts shifted by the
+  // title card — keeping click-to-seek and the captions aligned to the song cut.
+  const stepTimes = retimed.starts.map((s) => s + titleOffsetSec);
 
   let finalBody = body;
   if (hasDrawtext && geometry) {
@@ -2672,10 +2680,11 @@ export async function cinematicProcess(
     }
 
     // Song mode: instead of per-step spoken narration, the LLM writes ONE short
-    // themed lyric line per step (scaled to the session length) and a singing
-    // music model performs them as the whole soundtrack. No TTS, no re-timing.
-    // The vocals aren't frame-aligned to the captions (the model paces them), so
-    // the captions reuse the narration timing — each line shown at its step.
+    // themed lyric line per step and a singing music model performs them as the
+    // whole soundtrack. The body is RE-TIMED (each step holds for its line) so it
+    // outlasts the song's ~6s instrumental intro and the captions get readable
+    // spacing. No TTS. The vocals aren't frame-aligned to the captions (the model
+    // paces them), so the captions track the on-screen steps.
     if (options.song) {
       // Pick a music provider that actually SINGS supplied lyrics (ACE-Step /
       // Lyria), ignoring stock music (archive.org) even if it won the normal
@@ -2694,15 +2703,16 @@ export async function cinematicProcess(
         notes: [],
       };
 
-      // Scale the lyrics to the condensed runtime so the whole song fits (a short
-      // video was getting only its first line sung). Fall back to a nominal length
-      // if the probe fails.
-      const songSeconds = (await audioDurationSec(ffmpegPath, input)) ?? 20;
+      // Re-timing gives each step its own readable hold (~4s nominal), so size the
+      // lyric word-budget to that re-timed body length, not the (often tiny)
+      // condensed input — one short, singable line per step.
+      const NOMINAL_HOLD_SEC = 4;
+      const videoSeconds = Math.max(8, narratableSteps.length * NOMINAL_HOLD_SEC);
       progress("writing the lyrics…");
       const planned = await planSong({
         options,
         narratableSteps,
-        videoSeconds: songSeconds,
+        videoSeconds,
         log,
         echo,
       });
@@ -2718,6 +2728,12 @@ export async function cinematicProcess(
         .map((_, i) => ({ i, text: byIndex.get(i) }))
         .filter((x): x is { i: number; text: string } => Boolean(x.text));
       const lyricBlock = `[verse]\n${ordered.map((x) => x.text).join("\n")}`;
+      // Per-step hold for the re-timing: a readable beat sized to each line (steps
+      // with no line still get the floor so the body stays continuous).
+      const holdDurSec = narratableSteps.map((_, i) => {
+        const text = byIndex.get(i);
+        return text ? songHoldSec(text) : 3.5;
+      });
 
       const musicLabel =
         (await songMusic.credit?.(direction.text).catch(() => undefined)) ??
@@ -2735,6 +2751,7 @@ export async function cinematicProcess(
         ffmpeg: ffmpegPath,
         videoPath: input,
         narratableSteps,
+        holdDurSec,
         title: lyrics.title,
         category: direction.category,
         directionText: direction.text,

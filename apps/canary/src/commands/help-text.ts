@@ -129,14 +129,14 @@ soft-sub .srt and tells you). Every generation command (say/ffmpeg/claude, and a
 for HTTP TTS) is printed so a run is easy to reproduce and tweak.
 
 SONG MODE (--song): score the whole video with ONE original song instead of spoken narration.
-An LLM writes ONE short, singable lyric line PER STEP (so the song scales to the session length)
-and a music model sings them; the condensed cut plays at its natural pace under the song, with the
-same title card and credits. Each lyric line is burned in as a caption at its step's moment (reusing
-the narration caption timing) and a sibling .lyrics.txt + .srt are written — the sung vocals aren't
-frame-aligned to the captions (the model paces them), so the captions track the on-screen steps.
-Use --no-captions to skip the burn. Needs the 'claude' CLI plus a lyrics-capable music model: the
-local ACE-Step server (see $CANARY_ACESTEP_URL) or a Gemini key (Lyria). Combine with --prompt to
-steer the genre.
+An LLM writes ONE short, singable lyric line PER STEP and a music model sings them. Like narration,
+each step's frame is held for a readable beat (re-timing) so the body outlasts the song's short
+instrumental intro and the vocals play across it; an opening title card and credits are added. Each
+lyric line is burned in as a caption at its step (and a sibling .lyrics.txt + .srt are written) —
+the sung vocals aren't frame-aligned to the captions (the model paces them), so the captions track
+the on-screen steps. Use --no-captions to skip the burn. Needs the 'claude' CLI plus a lyrics-capable
+music model: the local ACE-Step server (see $CANARY_ACESTEP_URL) or a Gemini key (Lyria). Combine
+with --prompt to steer the genre.
 
   --song              score the video with a sung song instead of narration (implies --cinematic)
   --prompt "<text>"   steer theme/tone/style in your own words (implies --cinematic);
