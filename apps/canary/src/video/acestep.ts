@@ -34,6 +34,15 @@ export function acestepBaseUrl(env: NodeJS.ProcessEnv): string {
   return env.CANARY_ACESTEP_URL?.trim() || DEFAULT_URL;
 }
 
+// Whether a base URL points at the local machine. Used only to phrase the
+// provider note accurately (a remote server means the lyrics/direction leave this
+// machine). Pure → unit-tested.
+export function isLocalUrl(url: string): boolean {
+  return /^https?:\/\/(127\.0\.0\.1|localhost|0\.0\.0\.0|\[::1\]|::1)(:\d+)?(\/|$)/i.test(
+    url.trim()
+  );
+}
+
 // Build the user-message content for ACE-Step's three modes:
 //   - instrumental BED: tagged mode — <prompt> (style/caption) + "[instrumental]".
 //   - SONG with explicit lyrics (song mode): tagged mode — <prompt> (genre/mood) +
@@ -300,10 +309,11 @@ export async function resolveAceStepMusic(opts: {
   }
   const resolved: AceStepConfig = { ...config, model };
   log.debug({ url: config.baseUrl, model }, "ACE-Step music provider enabled");
+  const where = isLocalUrl(config.baseUrl)
+    ? "generated on this machine"
+    : "generated on the configured server (lyrics/direction are sent there)";
   return {
     music: createMusicProvider(resolved, echo),
-    notes: [
-      `ACE-Step local music enabled (${model} @ ${config.baseUrl}) — generated on this machine.`,
-    ],
+    notes: [`ACE-Step music enabled (${model} @ ${config.baseUrl}) — ${where}.`],
   };
 }

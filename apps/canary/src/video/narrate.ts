@@ -1758,20 +1758,33 @@ async function assembleSongVideo(args: {
   const geometry = await probeVideo(ffmpeg, videoPath);
   const frameRate = geometry?.frameRate ?? 30;
 
-  // Re-time so each step holds for its share of the song. This lengthens the body
-  // to span the vocals and spreads the captions.
+  // Re-time by UNIFORMLY slowing the whole condensed body to span the song — no
+  // per-step still-frame freezes (which read as a "pause" mid-step). The target
+  // length is the sum of the per-step budgets.
   progress("re-timing the video to the song…");
-  const retimed = await retimeForNarration({
-    ffmpeg,
-    videoPath,
-    steps: narratableSteps,
-    clipDurSec: holdDurSec,
-    frameRate,
-    temps,
-  });
-  if (!retimed) {
+  const srcSec = await audioDurationSec(ffmpeg, videoPath);
+  if (!srcSec) {
     return null;
   }
+  const targetSec = Math.max(
+    srcSec,
+    holdDurSec.reduce((a, b) => a + b, 0)
+  );
+  const stretchedPath = `${videoPath}.songbody.webm`;
+  temps.push(stretchedPath);
+  const factor = await stretchVideo({
+    ffmpeg,
+    src: videoPath,
+    srcSec,
+    targetSec,
+    frameRate,
+    outPath: stretchedPath,
+  });
+  // Each step's new position scales with the uniform stretch.
+  const retimed = {
+    path: stretchedPath,
+    starts: narratableSteps.map((s) => s.videoTime * factor),
+  };
 
   const background =
     hasDrawtext && geometry
@@ -2239,6 +2252,46 @@ async function encodeSlice(args: {
     ],
     ENCODE_TIMEOUT_MS
   );
+}
+
+// Uniformly time-stretch (or compress) a video to `targetSec`, re-encoded to CFR
+// libvpx. Used by song mode instead of per-step freezes: the whole condensed body
+// plays continuously, slowed to span the song — no still-frame "pause" mid-step.
+// `setpts=factor*PTS` rescales every timestamp; the fps filter then re-samples to
+// constant frame rate over the new duration. Returns the stretch factor used.
+async function stretchVideo(args: {
+  ffmpeg: string;
+  src: string;
+  srcSec: number;
+  targetSec: number;
+  frameRate: number;
+  outPath: string;
+}): Promise<number> {
+  const { ffmpeg, src, srcSec, targetSec, frameRate, outPath } = args;
+  const fps = frameRate > 0 ? frameRate : 30;
+  const factor = srcSec > 0 && targetSec > 0 ? targetSec / srcSec : 1;
+  await run(
+    ffmpeg,
+    [
+      "-hide_banner",
+      "-nostats",
+      "-y",
+      "-i",
+      src,
+      "-vf",
+      `setpts=${factor.toFixed(6)}*PTS,fps=${fps},setpts=N/FRAME_RATE/TB`,
+      "-r",
+      String(fps),
+      "-an",
+      "-c:v",
+      "libvpx",
+      "-b:v",
+      "1M",
+      outPath,
+    ],
+    ENCODE_TIMEOUT_MS
+  );
+  return factor;
 }
 
 // Concat N stream-copyable segments (all libvpx/webm here) in order.

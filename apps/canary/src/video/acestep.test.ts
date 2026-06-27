@@ -1,12 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
   acestepBaseUrl,
+  isLocalUrl,
   audioFromResponse,
   buildMusicContent,
   buildMusicPayload,
   describeMusicCurl,
   parseAudioDataUrl,
 } from "./acestep.js";
+
+describe("isLocalUrl", () => {
+  it("recognizes loopback hosts and rejects remote ones", () => {
+    expect(isLocalUrl("http://127.0.0.1:8001")).toBe(true);
+    expect(isLocalUrl("http://localhost:8001/")).toBe(true);
+    expect(isLocalUrl("http://[::1]:8001")).toBe(true);
+    expect(isLocalUrl("http://192.168.1.50:8001")).toBe(false);
+    expect(isLocalUrl("https://gpu-box.lan:8001")).toBe(false);
+  });
+});
 
 describe("acestepBaseUrl", () => {
   it("defaults to :8001 and honors the override", () => {

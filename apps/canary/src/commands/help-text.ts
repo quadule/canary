@@ -157,8 +157,9 @@ or a Gemini key (Lyria). Combine with --prompt to steer the genre.
                         TTS (narration stays on your machine); key also read from ~/.omlx
   $CANARY_ARCHIVE_MUSIC=1   score the video with free Creative-Commons music from archive.org
                         (attribution is added to the run notes); needs ffmpeg, no model download
-  $CANARY_ACESTEP_URL / $CANARY_ACESTEP_API_KEY / $CANARY_ACESTEP_MODEL   point at a local ACE-Step
-                        server for generated music (the bed, and the sung song in --song mode)
+  $CANARY_ACESTEP_URL / $CANARY_ACESTEP_API_KEY / $CANARY_ACESTEP_MODEL   point at an ACE-Step server
+                        (local default :8001, or a remote box with a better GPU) for generated music —
+                        the bed, and the sung song in --song mode (a remote URL sends lyrics there)
 
   canary session end "$id"
   canary session end "$id" --cinematic
