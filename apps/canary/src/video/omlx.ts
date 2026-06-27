@@ -1,0 +1,253 @@
+// Local TTS (and, later, music) via an oMLX server — an OpenAI-compatible MLX
+// runtime that serves models from the user's Hugging Face cache on localhost.
+// This is an ADDITIVE provider layer mirroring providers.ts (the Gemini path):
+// same contract (write a finished file to `outPath` or throw), wrapped in the
+// caller's try/catch so any failure degrades to the next provider / local `say`.
+//
+// WHY LOCAL: unlike the Gemini path, session-derived narration text never leaves
+// the machine — it's POSTed only to 127.0.0.1. That privacy win is surfaced in
+// the provider notes so the user knows nothing was sent off-box.
+//
+// API: oMLX speaks the OpenAI audio API. `POST /v1/audio/speech` takes
+// { model, input, voice?, response_format } and returns the audio BYTES directly
+// (verified: a 24 kHz mono WAV), synchronously — no poll loop, and it does not
+// play aloud. `GET /v1/models` lists what's loaded so we can auto-pick a TTS
+// model. Auth is an OpenAI-style bearer token.
+//
+// PRIVACY: the API key is read from env or the local oMLX config only; it is
+// never logged, echoed (the curl preview uses a $CANARY_OMLX_API_KEY
+// placeholder), or written to disk.
+import { readFile, rename, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import type { Logger } from "@usecanary/logger";
+import type { MediaProviders, TtsProvider } from "./providers.js";
+
+const DEFAULT_URL = "http://127.0.0.1:8000";
+const MODELS_TIMEOUT_MS = 4000;
+const SPEECH_TIMEOUT_MS = 120_000;
+
+// A user-facing line emitter (the cinematic pass routes it to stderr).
+type Echo = (line: string) => void;
+
+export interface OmlxConfig {
+  apiKey: string;
+  baseUrl: string;
+}
+
+// Resolve the oMLX base URL. $CANARY_OMLX_URL overrides the localhost default.
+export function omlxBaseUrl(env: NodeJS.ProcessEnv): string {
+  return env.CANARY_OMLX_URL?.trim() || DEFAULT_URL;
+}
+
+// Read the oMLX API key: $CANARY_OMLX_API_KEY wins; otherwise best-effort read
+// the local oMLX app config (~/.omlx/settings.json → auth.api_key) so it works
+// out of the box on a machine running oMLX. Returns undefined when neither is
+// available (oMLX is then treated as not configured and we skip it entirely).
+// The key value is never logged.
+export async function readOmlxApiKey(
+  env: NodeJS.ProcessEnv
+): Promise<string | undefined> {
+  const fromEnv = env.CANARY_OMLX_API_KEY?.trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
+  try {
+    const raw = await readFile(
+      path.join(os.homedir(), ".omlx", "settings.json"),
+      "utf8"
+    );
+    const key = (JSON.parse(raw) as { auth?: { api_key?: unknown } })?.auth
+      ?.api_key;
+    return typeof key === "string" && key.trim() ? key.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Choose the TTS model: an explicit $CANARY_OMLX_TTS_MODEL wins; otherwise the
+// first loaded model whose id looks like a TTS model. Returns undefined when
+// none match (no TTS available via oMLX). Pure → unit-tested.
+export function pickTtsModel(
+  modelIds: string[],
+  env: NodeJS.ProcessEnv
+): string | undefined {
+  const override = env.CANARY_OMLX_TTS_MODEL?.trim();
+  if (override) {
+    return override;
+  }
+  return modelIds.find((id) => /tts/i.test(id));
+}
+
+// Build the /v1/audio/speech request body. `wav` keeps the bytes trivially
+// ffmpeg-decodable. Pure → unit-tested.
+export function buildSpeechBody(args: {
+  model: string;
+  text: string;
+  voice?: string;
+}): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: args.model,
+    input: args.text,
+    response_format: "wav",
+  };
+  if (args.voice) {
+    body.voice = args.voice;
+  }
+  return body;
+}
+
+// Single-quote a string for a copy-pasteable shell command (POSIX: ' → '\'').
+function sq(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+// A redacted, copy-pasteable curl equivalent of a /v1/audio/speech call. The key
+// is shown as the env-var reference $CANARY_OMLX_API_KEY (never the value) so the
+// line runs verbatim once that var is exported. Pure → unit-tested.
+export function describeSpeechCurl(args: {
+  baseUrl: string;
+  body: Record<string, unknown>;
+  outPath: string;
+}): string {
+  return [
+    "curl -s -X POST",
+    `${args.baseUrl}/v1/audio/speech`,
+    '-H "Authorization: Bearer $CANARY_OMLX_API_KEY"',
+    "-H 'content-type: application/json'",
+    `-d ${sq(JSON.stringify(args.body))}`,
+    `-o ${sq(args.outPath)}`,
+  ].join(" ");
+}
+
+// Write bytes to `outPath` atomically (temp + rename) so a crash mid-write never
+// leaves a partial file the caller might use.
+async function writeFileAtomic(outPath: string, bytes: Buffer): Promise<void> {
+  if (bytes.length === 0) {
+    throw new Error("oMLX returned 0 audio bytes");
+  }
+  const tmp = `${outPath}.tmp-${process.pid}`;
+  try {
+    await writeFile(tmp, bytes);
+    await rename(tmp, outPath);
+  } catch (err) {
+    await rm(tmp, { force: true });
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+}
+
+// List the model ids the oMLX server has loaded, or null if it's unreachable /
+// errors (so the caller treats oMLX as unavailable and falls back). The key
+// travels in the header only.
+async function listModelIds(config: OmlxConfig): Promise<string[] | null> {
+  try {
+    const res = await fetch(`${config.baseUrl}/v1/models`, {
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+      signal: AbortSignal.timeout(MODELS_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      return null;
+    }
+    const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
+    const ids = (body.data ?? [])
+      .map((m) => m.id)
+      .filter((id): id is string => typeof id === "string");
+    return ids;
+  } catch {
+    return null;
+  }
+}
+
+// POST one speech request and write the returned audio bytes to `outPath`.
+// Throws a clean Error (no key, no request text) on a non-2xx or transport
+// failure — a JSON error body (oMLX returns one) is detected via content-type.
+async function synthesizeSpeech(args: {
+  config: OmlxConfig;
+  model: string;
+  voice?: string;
+  text: string;
+  outPath: string;
+  echo?: Echo;
+}): Promise<void> {
+  const { config, model, voice, text, outPath, echo } = args;
+  const body = buildSpeechBody({ model, text, voice });
+  echo?.(describeSpeechCurl({ baseUrl: config.baseUrl, body, outPath }));
+  let res: Response;
+  try {
+    res = await fetch(`${config.baseUrl}/v1/audio/speech`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.apiKey}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(SPEECH_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`oMLX ${model} speech request failed: ${reason}`);
+  }
+  if (!res.ok) {
+    throw new Error(`oMLX ${model} returned HTTP ${res.status}`);
+  }
+  if (res.headers.get("content-type")?.includes("application/json")) {
+    // An OK status with a JSON body means an error envelope, not audio.
+    throw new Error(`oMLX ${model} returned JSON, not audio`);
+  }
+  const bytes = Buffer.from(await res.arrayBuffer());
+  await writeFileAtomic(outPath, bytes);
+}
+
+function createTtsProvider(args: {
+  config: OmlxConfig;
+  model: string;
+  voice?: string;
+  echo?: Echo;
+}): TtsProvider {
+  const { config, model, voice, echo } = args;
+  return {
+    id: "omlx-tts",
+    label: voice ? `omlx:${model}/${voice}` : `omlx:${model}`,
+    synthesize: (text, outPath) =>
+      synthesizeSpeech({ config, model, voice, text, outPath, echo }),
+  };
+}
+
+// Resolve oMLX-backed media providers, or just notes when oMLX isn't configured /
+// reachable / has no usable model. Returns a partial MediaProviders the caller
+// merges over the Gemini/local defaults (oMLX wins per capability). Async because
+// it probes /v1/models to discover what's loaded.
+export async function resolveOmlxProviders(opts: {
+  env: NodeJS.ProcessEnv;
+  log: Logger;
+  echo?: Echo;
+}): Promise<Pick<MediaProviders, "tts" | "music" | "notes">> {
+  const { env, log, echo } = opts;
+  const apiKey = await readOmlxApiKey(env);
+  if (!apiKey) {
+    // Not configured — stay silent so non-oMLX machines see no noise.
+    return { notes: [] };
+  }
+  const config: OmlxConfig = { apiKey, baseUrl: omlxBaseUrl(env) };
+  const modelIds = await listModelIds(config);
+  if (!modelIds) {
+    log.debug({ url: config.baseUrl }, "oMLX configured but not reachable");
+    return { notes: [] };
+  }
+  const ttsModel = pickTtsModel(modelIds, env);
+  if (!ttsModel) {
+    return {
+      notes: [
+        `oMLX reachable at ${config.baseUrl} but no TTS model loaded (set CANARY_OMLX_TTS_MODEL or load one); using fallback narration.`,
+      ],
+    };
+  }
+  const voice = env.CANARY_OMLX_TTS_VOICE?.trim() || undefined;
+  log.debug({ url: config.baseUrl, ttsModel }, "oMLX TTS provider enabled");
+  return {
+    tts: createTtsProvider({ config, model: ttsModel, voice, echo }),
+    notes: [
+      `oMLX local TTS enabled (${ttsModel}) — narration is synthesized on this machine and never leaves it.`,
+    ],
+  };
+}

@@ -1,4 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildAudioMix,
@@ -6,8 +8,10 @@ import {
   buildSrt,
   captionLineMax,
   changeScaleHint,
+  customSaySynth,
   extractCaptions,
   parseFilterNames,
+  sayCommand,
   parseInstalledVoices,
   parseNarrationJson,
   pickVoice,
@@ -217,6 +221,36 @@ describe("buildNarrationPrompt", () => {
     expect(withChange).toContain("go expansive");
     const without = buildNarrationPrompt({ direction: "noir", steps });
     expect(without).not.toContain("change under review");
+  });
+});
+
+describe("sayCommand", () => {
+  it("defaults to `say` and honors $CANARY_SAY_COMMAND", () => {
+    expect(sayCommand({})).toBe("say");
+    expect(sayCommand({ CANARY_SAY_COMMAND: "/usr/local/bin/mysay" })).toBe(
+      "/usr/local/bin/mysay"
+    );
+    expect(sayCommand({ CANARY_SAY_COMMAND: "  " })).toBe("say");
+  });
+});
+
+describe("customSaySynth", () => {
+  it("passes the text as the only arg and writes to $CANARY_SAY_OUTPUT", async () => {
+    // A stand-in TTS command: it carries its own arg, reads the text from "$1",
+    // and writes to the env-provided output path — exactly the custom contract.
+    const synth = customSaySynth(
+      'printf "%s" "$1" > "$CANARY_SAY_OUTPUT" # --some-flag'
+    );
+    const out = path.join(
+      os.tmpdir(),
+      `canary-customsay-${process.pid}.txt`
+    );
+    try {
+      await synth.run("hello from canary", out);
+      expect(readFileSync(out, "utf8")).toBe("hello from canary");
+    } finally {
+      rmSync(out, { force: true });
+    }
   });
 });
 

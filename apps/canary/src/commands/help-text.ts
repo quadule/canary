@@ -119,17 +119,27 @@ copy): the pre-page-load segment is dropped and motionless stretches are trimmed
 frame-accurate re-encode that keeps real motion (cursor, typing, captions). Pass --no-condense
 to keep the raw recordings.
 
-CINEMATIC MODE (--cinematic, macOS only): turn the silent recording into a narrated short.
-An LLM writes themed narration per step, the macOS 'say' voice reads it, and each step's frame
-is held just long enough for its line; an opening title card and burned-in captions are added,
-plus a sibling .srt. Requires the 'claude' CLI and 'say' on PATH; the title card needs an ffmpeg
-built with drawtext and burned captions need the subtitles filter (otherwise it writes a
-soft-sub .srt and tells you). The chosen theme/voice are printed so you can reproduce a run.
+CINEMATIC MODE (--cinematic): turn the silent recording into a narrated short.
+An LLM writes themed narration per step, a voice reads it, and each step's frame is held just
+long enough for its line; an opening title card and burned-in captions are added, plus a sibling
+.srt. Requires the 'claude' CLI; voicing uses a local oMLX TTS model if available, else macOS
+'say', else a Gemini key (so it can run off macOS with oMLX or a key). The title card needs an
+ffmpeg built with drawtext and burned captions need the subtitles filter (otherwise it writes a
+soft-sub .srt and tells you). Every generation command (say/ffmpeg/claude, and a redacted curl
+for HTTP TTS) is printed so a run is easy to reproduce and tweak.
 
   --prompt "<text>"   steer theme/tone/style in your own words (implies --cinematic);
                       omit for a random theme. e.g. --prompt "noir detective, as a haiku"
   --no-captions       skip burning subtitles into the video (the .srt is still written)
   $CANARY_SAY_VOICE / $CANARY_SAY_RATE   pin the voice / words-per-minute
+  $CANARY_SAY_COMMAND   replace 'say' with your own TTS command (run via the shell, so it may
+                        include args). It receives the text to speak as its only argument and must
+                        write audio to $CANARY_SAY_OUTPUT; $CANARY_SAY_VOICE is passed in the
+                        environment. Use it for a non-macOS tool, or a wrapper that voices a macOS
+                        Personal Voice (e.g. DYLD_INSERT_LIBRARIES=…/mysay.dylib say -v
+                        "$CANARY_SAY_VOICE" -o "$CANARY_SAY_OUTPUT" "$1")
+  $CANARY_OMLX_URL / $CANARY_OMLX_API_KEY / $CANARY_OMLX_TTS_MODEL   use a local oMLX server for
+                        TTS (narration stays on your machine); key also read from ~/.omlx
 
   canary session end "$id"
   canary session end "$id" --cinematic

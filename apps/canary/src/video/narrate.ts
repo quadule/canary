@@ -30,6 +30,8 @@ import {
   type TitleBackgroundProvider,
   type TtsProvider,
 } from "./providers.js";
+import { resolveOmlxProviders } from "./omlx.js";
+import { formatCommand, shellQuote } from "./shell.js";
 import {
   type StyleId,
   selectStyle,
@@ -573,14 +575,22 @@ function tryParseJson(raw: string): unknown {
 // Subprocess helpers (generalized from condense's runFfmpeg).
 // ---------------------------------------------------------------------------
 
+// A user-facing line emitter (routed to onProgress → stderr). Optional so probes
+// stay silent; generation sites pass one so the exact command is shown.
+type Echo = (line: string) => void;
+
 // Run a command and return its stdout/stderr. Bumped maxBuffer and a hard
 // timeout, like condense's runFfmpeg. Throws on non-zero exit / timeout — every
-// caller is inside cinematicProcess's try/catch.
+// caller is inside cinematicProcess's try/catch. When `echo` is supplied the
+// exact command is printed first (copy-paste reproduction); probes omit it so
+// version checks (`say -v ?`, `ffmpeg -version`, `git …`) don't spam the output.
 async function run(
   cmd: string,
   args: string[],
-  timeoutMs: number
+  timeoutMs: number,
+  echo?: Echo
 ): Promise<{ stdout: string; stderr: string }> {
+  echo?.(`$ ${formatCommand(cmd, args)}`);
   const { stdout, stderr } = await execFileAsync(cmd, args, {
     timeout: timeoutMs,
     maxBuffer: 64 * 1024 * 1024,
@@ -770,13 +780,23 @@ function parseFrameRate(fraction: string | undefined): number {
 // Pipeline stages (each guarded by cinematicProcess's try/catch + best-effort).
 // ---------------------------------------------------------------------------
 
-// List the voices `say` can actually use on this host, or null if `say` is
-// missing/unusable. Used both as the precondition probe and to constrain the
-// voice pick to installed voices (premium voices need a manual download, so a
-// hardcoded name may not be present).
-async function listSayVoices(): Promise<InstalledVoice[] | null> {
+// The command used to synthesize speech, `say` by default. Override with
+// $CANARY_SAY_COMMAND to point at a say-compatible binary — a non-macOS TTS tool,
+// or a wrapper that authorizes a macOS Personal Voice (e.g. a one-line script:
+// `exec env DYLD_INSERT_LIBRARIES=…/mysay.dylib say "$@"`; see SavePersonalVoiceAudio).
+// It's invoked with the same argv `say` gets: `-v <voice> -r <rate> <text> -o <out>`.
+export function sayCommand(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CANARY_SAY_COMMAND?.trim() || "say";
+}
+
+// List the voices the say command can use, or null if it's missing/unusable or
+// doesn't support the `-v ?` listing (a custom non-macOS command may not). Used
+// as the precondition probe and to constrain the voice pick to installed voices.
+async function listSayVoices(
+  command: string
+): Promise<InstalledVoice[] | null> {
   try {
-    const { stdout } = await run("say", ["-v", "?"], VERSION_PROBE_TIMEOUT_MS);
+    const { stdout } = await run(command, ["-v", "?"], VERSION_PROBE_TIMEOUT_MS);
     return parseInstalledVoices(stdout);
   } catch {
     return null;
@@ -963,11 +983,12 @@ export function changeScaleHint(commits: number, churn: number): string {
 // Ask the LLM for narration JSON, or null on any failure.
 async function generateNarration(
   prompt: string,
-  log: Logger
+  log: Logger,
+  echo?: Echo
 ): Promise<Narration | null> {
   let stdout: string;
   try {
-    ({ stdout } = await run("claude", ["-p", prompt], LLM_TIMEOUT_MS));
+    ({ stdout } = await run("claude", ["-p", prompt], LLM_TIMEOUT_MS, echo));
   } catch (err) {
     log.debug({ err }, "cinematic: claude narration call failed");
     return null;
@@ -986,13 +1007,14 @@ async function planNarration(args: {
   options: CinematicOptions;
   narratableSteps: CinematicStep[];
   log: Logger;
+  echo?: Echo;
 }): Promise<{
   direction: ReturnType<typeof resolveDirection>;
   narration: Narration;
   repoDir: string;
   base: string;
 } | null> {
-  const { options, narratableSteps, log } = args;
+  const { options, narratableSteps, log, echo } = args;
   const direction = resolveDirection(options.prompt);
   const repoDir = options.repoDir ?? process.cwd();
   const base = await resolveBase(repoDir);
@@ -1006,7 +1028,7 @@ async function planNarration(args: {
       script: step.script,
     })),
   });
-  const narration = await generateNarration(prompt, log);
+  const narration = await generateNarration(prompt, log, echo);
   return narration ? { direction, narration, repoDir, base } : null;
 }
 
@@ -1312,36 +1334,90 @@ interface SpeechSynth {
   run: (text: string, outPath: string) => Promise<void>;
 }
 
-function saySynth(voice: string, rate: number): SpeechSynth {
+function saySynth(
+  command: string,
+  voice: string,
+  rate: number,
+  echo?: Echo
+): SpeechSynth {
   return {
     ext: "aiff",
     run: (text, outPath) =>
       run(
-        "say",
+        command,
         ["-v", voice, "-r", String(rate), text, "-o", outPath],
-        SAY_TIMEOUT_MS
+        SAY_TIMEOUT_MS,
+        echo
       ).then(() => undefined),
   };
 }
 
-// Decide how narration gets voiced: a TTS provider when present, with macOS `say`
-// as the (mac-only) fallback. Returns the say synth (if usable here), the rate,
-// and a reproducibility voice label — or null when there's NO way to voice it
-// (non-macOS host with no provider), so cinematic can run anywhere a key is set.
+// Run a $CANARY_SAY_COMMAND override through the shell so the command STRING can
+// carry its own arguments (flags, quoting, redirects). The text to speak is the
+// only argument we append (passed as the positional "$@", never interpolated, so
+// narration can't inject shell). The output path and the voice ride in the
+// environment: $CANARY_SAY_OUTPUT is where the command must write the audio, and
+// $CANARY_SAY_VOICE (if the user set it) is inherited for the command to read.
+async function runSayCommand(
+  command: string,
+  text: string,
+  outPath: string,
+  echo?: Echo
+): Promise<void> {
+  echo?.(
+    `$ CANARY_SAY_OUTPUT=${shellQuote(outPath)} ${command} ${shellQuote(text)}`
+  );
+  await execFileAsync("/bin/sh", ["-c", `${command} "$@"`, "sh", text], {
+    timeout: SAY_TIMEOUT_MS,
+    maxBuffer: 64 * 1024 * 1024,
+    env: { ...process.env, CANARY_SAY_OUTPUT: outPath },
+  });
+}
+
+// Synth for a $CANARY_SAY_COMMAND override. The command may not be `say`, so we
+// impose no say-specific flags — it gets the text (only) and writes to
+// $CANARY_SAY_OUTPUT. Use it for a non-macOS TTS tool, or a wrapper that voices a
+// macOS Personal Voice, e.g. (chmod +x, then point $CANARY_SAY_COMMAND at it):
+//   exec env DYLD_INSERT_LIBRARIES=…/mysay.dylib \
+//     say -v "$CANARY_SAY_VOICE" -o "$CANARY_SAY_OUTPUT" "$1"
+export function customSaySynth(command: string, echo?: Echo): SpeechSynth {
+  return {
+    ext: "aiff",
+    run: (text, outPath) => runSayCommand(command, text, outPath, echo),
+  };
+}
+
+// Decide how narration gets voiced: a TTS provider when present, with the `say`
+// command as the fallback. `say` is macOS-only, but $CANARY_SAY_COMMAND can point
+// at a say-compatible binary (a non-macOS tool, or a Personal Voice shim), so the
+// say path is also taken off-macOS when that's set. Returns the say synth (if
+// usable here), the rate, and a reproducibility voice label — or null when
+// there's NO way to voice it, so cinematic can run anywhere a key/command is set.
 async function resolveSpeech(
   providers: MediaProviders,
-  notes: string[]
+  notes: string[],
+  echo?: Echo
 ): Promise<{ say?: SpeechSynth; rate: number; label: string } | null> {
   const rate = pickRate();
+  const command = sayCommand();
+  const voiceOverride = process.env.CANARY_SAY_VOICE?.trim();
   let say: SpeechSynth | undefined;
   let sayLabel = "";
-  if (process.platform === "darwin") {
-    const installed = await listSayVoices();
-    if (installed) {
-      const voice = pickVoice(installed);
-      say = saySynth(voice, rate);
-      // sayLabel is the full `-v` identifier (e.g. "Ava (Premium)"), surfaced
-      // in meta so a good run can be reproduced via $CANARY_SAY_VOICE.
+  if (command !== "say") {
+    // Custom command: it owns voice/rate, so we only feed it text + output. Works
+    // on any platform. $CANARY_SAY_VOICE is optional here (for the label only).
+    say = customSaySynth(command, echo);
+    sayLabel = voiceOverride ? `${command}:${voiceOverride}` : command;
+  } else if (process.platform === "darwin") {
+    const installed = await listSayVoices(command);
+    // An explicit $CANARY_SAY_VOICE always wins and works even when listing
+    // fails. Otherwise pick the best installed voice.
+    const voice =
+      voiceOverride || (installed ? pickVoice(installed) : undefined);
+    if (voice) {
+      say = saySynth(command, voice, rate, echo);
+      // sayLabel is the full `-v` identifier (e.g. "Ava (Premium)"), surfaced in
+      // meta so a good run can be reproduced via $CANARY_SAY_VOICE.
       sayLabel = voice;
       // The compact voices are the ones that sound robotic. macOS hides a
       // compact build behind every premium/enhanced voice, so a name like
@@ -1349,12 +1425,9 @@ async function resolveSpeech(
       // enhanced English voice is installed at all, the pick falls through to a
       // compact voice. When that happens and no higher-quality TTS provider is
       // configured, say so, since it's the usual cause of robotic narration.
-      const chosen = installed.find((v) => v.full === voice);
+      const chosen = installed?.find((v) => v.full === voice);
       const fellBackToCompact = !chosen || chosen.quality === "Default";
-      if (
-        !(providers.tts || process.env.CANARY_SAY_VOICE) &&
-        fellBackToCompact
-      ) {
+      if (!(providers.tts || voiceOverride) && fellBackToCompact) {
         notes.push(
           "no premium/enhanced English voice installed — narration uses the compact (robotic-sounding) voice; download one in System Settings › Accessibility › Spoken Content › System Voice (e.g. Ava, Zoe), or set GEMINI_API_KEY for higher-quality TTS"
         );
@@ -1379,8 +1452,10 @@ async function renderClip(args: {
   videoPath: string;
   index: number;
   temps: string[];
+  echo?: Echo;
 }): Promise<RenderedClip | null> {
-  const { ffmpeg, synth, step, narration, videoPath, index, temps } = args;
+  const { ffmpeg, synth, step, narration, videoPath, index, temps, echo } =
+    args;
   const rawPath = `${videoPath}.step${index}.${synth.ext}`;
   const m4aPath = `${videoPath}.step${index}.m4a`;
   temps.push(rawPath, m4aPath);
@@ -1402,7 +1477,8 @@ async function renderClip(args: {
       "aac",
       m4aPath,
     ],
-    ENCODE_TIMEOUT_MS
+    ENCODE_TIMEOUT_MS,
+    echo
   );
   const durationSec = await audioDurationSec(ffmpeg, m4aPath);
   if (durationSec === undefined || durationSec <= 0) {
@@ -1425,8 +1501,9 @@ async function synthesizeClips(args: {
   temps: string[];
   notes: string[];
   log: Logger;
+  echo?: Echo;
 }): Promise<RenderedClip[]> {
-  const { ffmpeg, say, tts, steps, byIndex, videoPath, temps, notes, log } =
+  const { ffmpeg, say, tts, steps, byIndex, videoPath, temps, notes, log, echo } =
     args;
   let provider: SpeechSynth | undefined = tts
     ? { ext: "wav", run: (t, o) => tts.synthesize(t, o) }
@@ -1444,6 +1521,7 @@ async function synthesizeClips(args: {
       videoPath,
       index: i,
       temps,
+      echo,
     };
     let clip: RenderedClip | null = null;
     if (provider) {
@@ -1858,6 +1936,7 @@ async function mixAudioAndCaptions(args: {
   srtPath: string;
   burnCaptions: boolean;
   outPath: string;
+  echo?: Echo;
 }): Promise<void> {
   const {
     ffmpeg,
@@ -1868,6 +1947,7 @@ async function mixAudioAndCaptions(args: {
     srtPath,
     burnCaptions,
     outPath,
+    echo,
   } = args;
   // Audio inputs (and their mix tracks) in lockstep: narration clips at full
   // volume first, then any music underneath at its set gain.
@@ -1918,7 +1998,8 @@ async function mixAudioAndCaptions(args: {
       "libopus",
       outPath,
     ],
-    ENCODE_TIMEOUT_MS
+    ENCODE_TIMEOUT_MS,
+    echo
   );
 }
 
@@ -1988,15 +2069,35 @@ export async function cinematicProcess(
     const hasSubtitles = filters.has("subtitles");
     const notes: string[] = [];
     const progress = options.onProgress ?? (() => undefined);
+    // Echo each generation command (say/ffmpeg/claude, and a redacted curl for
+    // HTTP providers) so a run is easy to reproduce and tweak — the user can copy
+    // a line, change the voice/model, and re-run it by hand. `progress` already
+    // matches the Echo shape, so commands ride the same stderr channel.
+    const echo: Echo = progress;
 
-    // Optional Gemini-backed providers (TTS / title image / music). Absent
-    // unless GEMINI_API_KEY is set; each is best-effort and falls back locally.
-    const providers = resolveMediaProviders({ env: process.env, log });
-    notes.push(...providers.notes);
+    // Media providers, preferred local-first: oMLX (on-machine MLX models) wins
+    // per capability, then Gemini (if a key is set), then the local say/drawtext
+    // fallbacks. Each is best-effort — a failure degrades to the next. oMLX is
+    // probed (it lists its loaded models) only when it's configured.
+    const omlx = await resolveOmlxProviders({ env: process.env, log, echo });
+    const gemini = resolveMediaProviders({ env: process.env, log });
+    const providers: MediaProviders = {
+      tts: omlx.tts ?? gemini.tts,
+      music: omlx.music ?? gemini.music,
+      titleBackground: gemini.titleBackground,
+      notes: [],
+    };
+    notes.push(...omlx.notes);
+    // Only surface Gemini's notes when Gemini is actually active, or when oMLX
+    // didn't cover TTS — otherwise its "no key → using say" note contradicts the
+    // oMLX-narration note above.
+    if (gemini.tts || !omlx.tts) {
+      notes.push(...gemini.notes);
+    }
 
     // Voicing: a TTS provider, or macOS `say`. With a provider this runs on any
     // platform; without one it needs macOS.
-    const speech = await resolveSpeech(providers, notes);
+    const speech = await resolveSpeech(providers, notes, echo);
     if (!speech) {
       return notApplied(
         "cinematic narration needs macOS `say` or a TTS provider (set GEMINI_API_KEY)"
@@ -2009,6 +2110,7 @@ export async function cinematicProcess(
       options,
       narratableSteps,
       log,
+      echo,
     });
     if (!planned) {
       return notApplied("narration generation failed");
@@ -2036,6 +2138,7 @@ export async function cinematicProcess(
       temps,
       notes,
       log,
+      echo,
     });
     if (clips.length === 0) {
       return notApplied("no narration audio could be synthesized");
@@ -2111,6 +2214,7 @@ export async function cinematicProcess(
       srtPath,
       burnCaptions,
       outPath: finalPath,
+      echo,
     });
 
     const produced = await stat(finalPath);
