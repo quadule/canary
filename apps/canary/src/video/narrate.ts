@@ -1673,6 +1673,12 @@ async function assembleVideo(args: {
   return { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec, music };
 }
 
+// Nominal full-song length requested from a song provider. ACE-Step ignores it
+// (model picks the length); Gemini Lyria targets it. The result is trimmed to its
+// vocal region and capped to the video downstream, so this is just a floor that's
+// long enough to contain a sung section.
+const SONG_TARGET_SEC = 60;
+
 // Generate the raw SONG file (the model SINGS the supplied lyrics). Returns its
 // path, or null on failure. The length is the MODEL's choice (acestep omits the
 // duration for lyric songs — pinning it yields instrumental), so this file is
@@ -1693,8 +1699,11 @@ async function generateRawSong(args: {
   const songPath = `${videoPath}.rawsong.wav`;
   temps.push(songPath);
   try {
-    // `seconds` is ignored for a lyric song (acestep omits duration); pass 0.
-    await provider.song(directionText, 0, songPath, lyrics);
+    // ACE-Step ignores `seconds` for a lyric song (it omits duration so the model
+    // sings); Gemini Lyria uses it as a target length. Pass a nominal full-song
+    // length so Lyria gets a real target — the pipeline transcribes, trims to the
+    // vocal region, and the mix caps it to the video either way.
+    await provider.song(directionText, SONG_TARGET_SEC, songPath, lyrics);
     return songPath;
   } catch (err) {
     log.debug({ err }, "cinematic: song generation failed");
