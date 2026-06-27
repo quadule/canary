@@ -2,10 +2,33 @@ import { describe, expect, it } from "vitest";
 import {
   attributionFor,
   buildSearchUrl,
+  loudestIndex,
   parseSearchDocs,
   pickAudioFile,
   sanitizeQuery,
+  windowStarts,
 } from "./archive.js";
+
+describe("loudestIndex", () => {
+  it("returns the index of the max level (first wins on ties)", () => {
+    expect(loudestIndex([-30, -12, -18, -12])).toBe(1);
+    expect(loudestIndex([-40])).toBe(0);
+  });
+  it("returns -1 for an empty array", () => {
+    expect(loudestIndex([])).toBe(-1);
+  });
+});
+
+describe("windowStarts", () => {
+  it("spaces `count` starts across [0, maxStart] inclusive", () => {
+    expect(windowStarts(40, 5)).toEqual([0, 10, 20, 30, 40]);
+  });
+  it("returns [0] when there's no room to move or only one probe", () => {
+    expect(windowStarts(0, 8)).toEqual([0]);
+    expect(windowStarts(-5, 8)).toEqual([0]);
+    expect(windowStarts(40, 1)).toEqual([0]);
+  });
+});
 
 describe("sanitizeQuery", () => {
   it("strips Lucene-significant chars and collapses whitespace", () => {

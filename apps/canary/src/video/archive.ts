@@ -169,26 +169,156 @@ export interface ArchiveDeps {
   random?: () => number;
 }
 
-// Trim `src` to `seconds` with a 2s fade-out and write `outPath` (wav by ext).
+// ffprobe usually sits beside ffmpeg with the same name suffix (mirrors narrate's
+// ffprobeFor). Used to learn a downloaded track's length so a window can be picked.
+function ffprobeFor(ffmpeg: string): string {
+  const slash = Math.max(ffmpeg.lastIndexOf("/"), ffmpeg.lastIndexOf("\\"));
+  const dir = slash >= 0 ? ffmpeg.slice(0, slash + 1) : "";
+  const base = slash >= 0 ? ffmpeg.slice(slash + 1) : ffmpeg;
+  return base.startsWith("ffmpeg")
+    ? dir + base.replace("ffmpeg", "ffprobe")
+    : "ffprobe";
+}
+
+async function probeDurationSec(ffmpeg: string, src: string): Promise<number> {
+  try {
+    const { stdout } = await execFileAsync(
+      ffprobeFor(ffmpeg),
+      [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        src,
+      ],
+      { timeout: TRIM_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 }
+    );
+    const v = Number(stdout.trim());
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  } catch {
+    return 0;
+  }
+}
+
+// Mean volume (dBFS) of a [startSec, startSec+seconds) slice via volumedetect.
+// Louder ≈ a fuller, more "vocal/chorus" section; quieter ≈ an intro/breakdown.
+// Returns -Infinity when it can't be measured so it never wins the argmax.
+async function meanVolumeDb(
+  ffmpeg: string,
+  src: string,
+  startSec: number,
+  seconds: number
+): Promise<number> {
+  try {
+    const { stderr } = await execFileAsync(
+      ffmpeg,
+      [
+        "-hide_banner",
+        "-nostats",
+        "-ss",
+        startSec.toFixed(2),
+        "-t",
+        seconds.toFixed(2),
+        "-i",
+        src,
+        "-af",
+        "volumedetect",
+        "-f",
+        "null",
+        "-",
+      ],
+      { timeout: TRIM_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 }
+    );
+    const m = stderr.match(/mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB/);
+    return m ? Number(m[1]) : Number.NEGATIVE_INFINITY;
+  } catch {
+    return Number.NEGATIVE_INFINITY;
+  }
+}
+
+// Argmax of a level array (first max wins); -1 for an empty array. Pure → tested.
+export function loudestIndex(levels: number[]): number {
+  let best = -1;
+  let bestVal = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i < levels.length; i++) {
+    const v = levels[i] ?? Number.NEGATIVE_INFINITY;
+    if (v > bestVal) {
+      bestVal = v;
+      best = i;
+    }
+  }
+  return best;
+}
+
+// Evenly-spaced candidate window starts across [0, maxStart], inclusive of both
+// ends, with at most `count` probes. Pure → tested.
+export function windowStarts(maxStart: number, count: number): number[] {
+  if (maxStart <= 0) {
+    return [0];
+  }
+  const n = Math.max(1, count);
+  if (n === 1) {
+    return [0];
+  }
+  const step = maxStart / (n - 1);
+  return Array.from({ length: n }, (_, i) => Math.min(maxStart, i * step));
+}
+
+// Pick the start offset (seconds) of the loudest `wantSec` window in `src` — the
+// "smarter section selection" so a long stock track plays from its fullest part
+// instead of always from a (often quiet) intro. Returns 0 when the track is too
+// short to choose, or measurement fails. Probes a handful of evenly-spaced
+// windows; the head is always one candidate so a track that's loudest up front
+// still works.
+const WINDOW_PROBES = 8;
+async function pickLoudestOffset(
+  ffmpeg: string,
+  src: string,
+  wantSec: number
+): Promise<number> {
+  const dur = await probeDurationSec(ffmpeg, src);
+  const maxStart = dur - wantSec;
+  if (!(dur > 0) || maxStart <= 1) {
+    return 0;
+  }
+  const starts = windowStarts(maxStart, WINDOW_PROBES);
+  const levels = await Promise.all(
+    starts.map((s) => meanVolumeDb(ffmpeg, src, s, wantSec))
+  );
+  const idx = loudestIndex(levels);
+  return idx >= 0 ? (starts[idx] ?? 0) : 0;
+}
+
+// Trim `seconds` out of `src` to `outPath` (wav by ext), starting at `startSec`,
+// with a short fade-in (when starting mid-track, to avoid an abrupt cut-in) and a
+// 2s fade-out at the end.
 async function trimTo(
   ffmpeg: string,
   src: string,
   seconds: number,
   outPath: string,
-  echo?: Echo
+  echo?: Echo,
+  startSec = 0
 ): Promise<void> {
   const dur = Math.max(1, Math.round(seconds));
   const fadeStart = Math.max(0, dur - 2);
+  const fades = [
+    ...(startSec > 0.05 ? ["afade=t=in:st=0:d=1"] : []),
+    `afade=t=out:st=${fadeStart}:d=2`,
+  ].join(",");
   const args = [
     "-hide_banner",
     "-nostats",
     "-y",
+    ...(startSec > 0.05 ? ["-ss", startSec.toFixed(2)] : []),
     "-i",
     src,
     "-t",
     String(dur),
     "-af",
-    `afade=t=out:st=${fadeStart}:d=2`,
+    fades,
     "-ac",
     "2",
     "-ar",
@@ -241,7 +371,10 @@ async function downloadAndTrim(
   deps.echo?.(`$ curl -sL ${sq(dlUrl)} -o ${sq(raw)}`);
   try {
     await downloadTo(dlUrl, raw, DOWNLOAD_TIMEOUT_MS);
-    await trimTo(deps.ffmpeg, raw, seconds, outPath, deps.echo);
+    // Smarter section selection: play the loudest (fullest) window of the track,
+    // not always its (often quiet) intro.
+    const startSec = await pickLoudestOffset(deps.ffmpeg, raw, seconds);
+    await trimTo(deps.ffmpeg, raw, seconds, outPath, deps.echo, startSec);
     deps.notes.push(attributionFor(track));
   } finally {
     await rm(raw, { force: true });
