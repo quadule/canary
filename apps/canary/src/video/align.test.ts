@@ -49,6 +49,26 @@ describe("parseWhisperSrt", () => {
       { start: 35, end: 37.56, text: "The text feels cried" },
     ]);
   });
+
+  it("drops bracketed ASR markers like [BLANK_AUDIO] and [Music]", () => {
+    const srt = [
+      "1",
+      "00:05:04,300 --> 00:05:13,260",
+      " [BLANK_AUDIO]",
+      "",
+      "2",
+      "00:00:10,000 --> 00:00:12,000",
+      " [Music] ",
+      "",
+      "3",
+      "00:00:20,000 --> 00:00:22,000",
+      "the real lyric here",
+      "",
+    ].join("\n");
+    expect(parseWhisperSrt(srt)).toEqual([
+      { start: 20, end: 22, text: "the real lyric here" },
+    ]);
+  });
 });
 
 describe("similarity", () => {

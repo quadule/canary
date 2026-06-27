@@ -800,11 +800,22 @@ async function run(
   echo?: Echo
 ): Promise<{ stdout: string; stderr: string }> {
   echo?.(`$ ${formatCommand(cmd, args)}`);
-  const { stdout, stderr } = await execFileAsync(cmd, args, {
-    timeout: timeoutMs,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  return { stdout, stderr };
+  try {
+    const { stdout, stderr } = await execFileAsync(cmd, args, {
+      timeout: timeoutMs,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return { stdout, stderr };
+  } catch (err) {
+    // execFile's error message is just "Command failed: <cmd>"; append the tail of
+    // the tool's own stderr so failures (esp. ffmpeg filtergraph errors) are
+    // diagnosable instead of opaque.
+    const e = err as { stderr?: string; message?: string };
+    const tail = (e.stderr ?? "").trim().split("\n").slice(-4).join("\n");
+    throw new Error(
+      `${cmd} failed${tail ? `:\n${tail}` : `: ${e.message ?? String(err)}`}`
+    );
+  }
 }
 
 // Is a binary callable on PATH? Best-effort probe used for preconditions.
@@ -3025,25 +3036,36 @@ export async function cinematicProcess(
       // players). --no-captions skips both.
       const wantCaptions = options.captions !== false;
       const srtPath = srtPathFor(videoPath);
-      const burnCaptions = wantCaptions && hasSubtitles;
+      let wroteSrt = false;
+      let burnCaptions = false;
       if (wantCaptions) {
         const srtGeometry = await probeVideo(ffmpegPath, input);
+        // Vocal-aligned cues when we actually matched some; otherwise step-timed
+        // (e.g. whisper found no usable lyrics in an instrumental-leaning song).
         const cues =
-          alignedCues ??
-          layoutSongCues(
-            ordered.map((x) => ({ start: stepTimes[x.i] ?? 0, text: x.text })),
-            (await audioDurationSec(ffmpegPath, finalBody)) ?? 0
+          alignedCues && alignedCues.length > 0
+            ? alignedCues
+            : layoutSongCues(
+                ordered.map((x) => ({ start: stepTimes[x.i] ?? 0, text: x.text })),
+                (await audioDurationSec(ffmpegPath, finalBody)) ?? 0
+              );
+        if (cues.length > 0) {
+          temps.push(srtPath);
+          await writeFile(
+            srtPath,
+            buildSrt(cues, captionLineMax(srtGeometry?.width))
           );
-        temps.push(srtPath);
-        await writeFile(
-          srtPath,
-          buildSrt(cues, captionLineMax(srtGeometry?.width))
-        );
-        if (!hasSubtitles) {
-          const note =
-            "captions not burned — this ffmpeg has no `subtitles` filter; wrote a soft-sub .srt instead";
-          notes.push(note);
-          log.warn({ ffmpeg: ffmpegPath }, `cinematic: ${note}`);
+          wroteSrt = true;
+          burnCaptions = hasSubtitles;
+          if (!hasSubtitles) {
+            const note =
+              "captions not burned — this ffmpeg has no `subtitles` filter; wrote a soft-sub .srt instead";
+            notes.push(note);
+            log.warn({ ffmpeg: ffmpegPath }, `cinematic: ${note}`);
+          }
+        } else {
+          // Nothing to caption — never burn an empty .srt (it errors the filter).
+          await rm(srtPath, { force: true });
         }
       } else {
         // No captions: drop any stale .srt from a prior run beside the video.
@@ -3084,7 +3106,7 @@ export async function cinematicProcess(
       // The final video is the original path now; the .srt and lyrics sidecar are
       // deliverables — drop them from the cleanup list.
       temps.splice(temps.indexOf(finalPath), 1);
-      if (wantCaptions) {
+      if (wroteSrt) {
         temps.splice(temps.indexOf(srtPath), 1);
       }
       temps.splice(temps.indexOf(lyricsPath), 1);

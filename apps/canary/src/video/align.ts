@@ -53,9 +53,14 @@ export function parseWhisperSrt(srt: string): Segment[] {
     if (!text) {
       continue;
     }
-    // Drop sound-effect / non-lyrical cues: parenthesized stage directions, or a
-    // bare filler vocalization with no real word.
-    const cleaned = text.replace(/\([^)]*\)/g, "").trim();
+    // Drop sound-effect / non-lyrical cues: ASR non-speech markers in (parens) or
+    // [brackets] (e.g. "(upbeat music)", "[BLANK_AUDIO]", "[Music]"), or a bare
+    // filler vocalization with no real word.
+    const cleaned = text
+      .replace(/\([^)]*\)/g, "")
+      .replace(/\[[^\]]*\]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
     if (!cleaned || isFiller(cleaned)) {
       continue;
     }
@@ -73,6 +78,9 @@ function isFiller(text: string): boolean {
   const filler = new Set([
     "oh", "ah", "ooh", "ooo", "yeah", "yea", "la", "na", "mmm", "hmm", "whoa",
     "woah", "hey", "uh", "huh", "ohh", "ahh",
+    // ASR non-speech markers that can appear without brackets.
+    "music", "silence", "blank", "audio", "applause", "inaudible", "noise",
+    "instrumental",
   ]);
   return words.every((w) => filler.has(w));
 }
