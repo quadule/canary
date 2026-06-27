@@ -60,8 +60,21 @@ export interface MusicProvider {
   // Write a themed instrumental bed of ~`seconds` to `outPath`. Throws on failure.
   bed(directionText: string, seconds: number, outPath: string): Promise<void>;
   id: string;
-  // Write a themed full song (may have vocals) of ~`seconds` to `outPath`. Throws on failure.
-  song(directionText: string, seconds: number, outPath: string): Promise<void>;
+  // Write a themed full song (may have vocals) of ~`seconds` to `outPath`. When
+  // `lyrics` is given the provider must SING those exact words (song mode);
+  // without it the provider writes its own themed vocals/instrumental. Throws on
+  // failure. A provider that can't sing supplied lyrics (e.g. stock music) leaves
+  // `singsLyrics` unset and simply ignores `lyrics`.
+  song(
+    directionText: string,
+    seconds: number,
+    outPath: string,
+    lyrics?: string
+  ): Promise<void>;
+  // True when `song(..., lyrics)` actually sings the supplied lyrics (a generative
+  // model like ACE-Step or Lyria). Stock-track providers leave it unset, so song
+  // mode can pick a lyrics-capable provider rather than relying on chain order.
+  singsLyrics?: boolean;
   // Optional: a human credit line for the score (e.g. an archive.org track's
   // title/artist/license, or a model name), resolved WITHOUT producing audio so
   // it can go in the credits roll before generation. Implementations that select
@@ -290,15 +303,21 @@ export function buildImagePrompt(directionText: string): string {
 export function buildMusicPrompt(
   directionText: string,
   seconds: number,
-  wantVocals: boolean
+  wantVocals: boolean,
+  lyrics?: string
 ): string {
   const kind = wantVocals
     ? "a complete song with vocals (use [Verse] and [Chorus] structure as it fits)"
     : "an instrumental score with NO vocals";
+  const lyricLine =
+    wantVocals && lyrics?.trim()
+      ? [`Sing these exact lyrics:\n${lyrics.trim()}`]
+      : [];
   return [
     `Compose ${kind} as the soundtrack for a short cinematic piece with this creative direction: ${directionText}.`,
     `Target roughly ${Math.round(seconds)} seconds.`,
     "Match the genre, mood, tempo, and instrumentation to that theme; make it evocative and film-quality.",
+    ...lyricLine,
   ].join(" ");
 }
 
@@ -549,6 +568,7 @@ function createMusicProvider(apiKey: string): MusicProvider {
   };
   return {
     id: "gemini-music",
+    singsLyrics: true,
     credit(): Promise<string | undefined> {
       return Promise.resolve("Lyria (Google Gemini)");
     },
@@ -567,12 +587,14 @@ function createMusicProvider(apiKey: string): MusicProvider {
     song(
       directionText: string,
       seconds: number,
-      outPath: string
+      outPath: string,
+      lyrics?: string
     ): Promise<void> {
-      // Full song → the full-length pro model.
+      // Full song → the full-length pro model. With explicit lyrics Lyria sings
+      // them (song mode); without, it writes its own.
       return generate(
         MUSIC_PRO_MODEL,
-        buildMusicPrompt(directionText, seconds, true),
+        buildMusicPrompt(directionText, seconds, true, lyrics),
         outPath
       );
     },

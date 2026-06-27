@@ -34,29 +34,39 @@ export function acestepBaseUrl(env: NodeJS.ProcessEnv): string {
   return env.CANARY_ACESTEP_URL?.trim() || DEFAULT_URL;
 }
 
-// Build the user-message content. An instrumental BED uses ACE-Step's tagged
-// mode — <prompt> (style/caption) with "[instrumental]" lyrics. A SONG uses
-// natural-language sample mode (see buildMusicPayload), where the content is just
-// the plain creative direction and the model's LM planner writes the lyrics.
+// Build the user-message content for ACE-Step's three modes:
+//   - instrumental BED: tagged mode — <prompt> (style/caption) + "[instrumental]".
+//   - SONG with explicit lyrics (song mode): tagged mode — <prompt> (genre/mood) +
+//     the supplied lyrics, so ACE-Step SINGS those exact words.
+//   - SONG without lyrics: natural-language sample mode (see buildMusicPayload),
+//     where the content is just the creative direction and the LM writes lyrics.
 // Pure → unit-tested.
 export function buildMusicContent(
   directionText: string,
-  instrumental: boolean
+  instrumental: boolean,
+  lyrics?: string
 ): string {
-  return instrumental
-    ? `<prompt>${directionText}</prompt><lyrics>[instrumental]</lyrics>`
-    : directionText;
+  if (instrumental) {
+    return `<prompt>${directionText}</prompt><lyrics>[instrumental]</lyrics>`;
+  }
+  const supplied = lyrics?.trim();
+  if (supplied) {
+    return `<prompt>${directionText}</prompt><lyrics>${supplied}</lyrics>`;
+  }
+  return directionText;
 }
 
 // Build the chat-completions payload. CRITICAL: duration (and vocal_language)
 // live under `audio_config`, NOT at the top level — a top-level duration is
 // ignored and the server falls back to its default ceiling (minutes of audio).
-// A song additionally sets top-level `sample_mode` so the LM writes lyrics from
-// the natural-language content. Pure → unit-tested.
+// A song WITHOUT supplied lyrics sets top-level `sample_mode` so the LM writes
+// lyrics from the natural-language content; a song WITH lyrics stays in tagged
+// mode (no sample_mode) so the model sings the exact words. Pure → unit-tested.
 export function buildMusicPayload(args: {
   directionText: string;
   seconds: number;
   instrumental: boolean;
+  lyrics?: string;
   model?: string;
 }): Record<string, unknown> {
   const audioConfig: Record<string, unknown> = {
@@ -66,15 +76,23 @@ export function buildMusicPayload(args: {
     messages: [
       {
         role: "user",
-        content: buildMusicContent(args.directionText, args.instrumental),
+        content: buildMusicContent(
+          args.directionText,
+          args.instrumental,
+          args.lyrics
+        ),
       },
     ],
     audio_config: audioConfig,
   };
   if (!args.instrumental) {
-    // Natural-language song: let the LM plan lyrics; pick an output language.
-    payload.sample_mode = true;
+    // Any vocal track picks an output language. Only let the LM invent lyrics
+    // (sample_mode) when none were supplied — with explicit lyrics, tagged mode
+    // sings them verbatim.
     audioConfig.vocal_language = "en";
+    if (!args.lyrics?.trim()) {
+      payload.sample_mode = true;
+    }
   }
   if (args.model) {
     payload.model = args.model;
@@ -169,14 +187,17 @@ async function generate(args: {
   directionText: string;
   seconds: number;
   instrumental: boolean;
+  lyrics?: string;
   outPath: string;
   echo?: Echo;
 }): Promise<void> {
-  const { config, directionText, seconds, instrumental, outPath, echo } = args;
+  const { config, directionText, seconds, instrumental, lyrics, outPath, echo } =
+    args;
   const payload = buildMusicPayload({
     directionText,
     seconds,
     instrumental,
+    lyrics,
     model: config.model,
   });
   echo?.(
@@ -211,6 +232,7 @@ async function generate(args: {
 function createMusicProvider(config: AceStepConfig, echo?: Echo): MusicProvider {
   return {
     id: "acestep-music",
+    singsLyrics: true,
     credit: () =>
       Promise.resolve(
         `ACE-Step 1.5${config.model ? ` (${config.model})` : ""} — generated locally`
@@ -224,12 +246,13 @@ function createMusicProvider(config: AceStepConfig, echo?: Echo): MusicProvider 
         outPath,
         echo,
       }),
-    song: (directionText, seconds, outPath) =>
+    song: (directionText, seconds, outPath, lyrics) =>
       generate({
         config,
         directionText,
         seconds,
         instrumental: false,
+        lyrics,
         outPath,
         echo,
       }),

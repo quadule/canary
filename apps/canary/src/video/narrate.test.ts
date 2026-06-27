@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildAudioMix,
+  buildLyricsPrompt,
   buildNarrationPrompt,
   buildSrt,
   captionLineMax,
@@ -11,7 +12,9 @@ import {
   changeScaleHint,
   customSaySynth,
   extractCaptions,
+  lyricsPathFor,
   parseFilterNames,
+  parseLyricsJson,
   precinematicVideoPath,
   sayCommand,
   voiceCredit,
@@ -238,6 +241,13 @@ describe("precinematicVideoPath", () => {
   });
 });
 
+describe("lyricsPathFor", () => {
+  it("swaps the video extension for .lyrics.txt", () => {
+    expect(lyricsPathFor("/s/abc/video.webm")).toBe("/s/abc/video.lyrics.txt");
+    expect(lyricsPathFor("/s/abc/clip.mp4")).toBe("/s/abc/clip.lyrics.txt");
+  });
+});
+
 describe("sayCommand", () => {
   it("defaults to `say` and honors $CANARY_SAY_COMMAND", () => {
     expect(sayCommand({})).toBe("say");
@@ -309,6 +319,71 @@ describe("buildModelCredits", () => {
         titleArt: false,
       })
     ).toEqual(["Narration — Claude (Anthropic)", "Voice — Samantha"]);
+  });
+
+  it("credits lyrics (not narration) and drops the voice line in song mode", () => {
+    expect(
+      buildModelCredits({
+        voiceLabel: "ignored",
+        ttsId: "omlx-tts",
+        musicId: "acestep-music",
+        titleArt: false,
+        song: true,
+      })
+    ).toEqual([
+      "Lyrics — Claude (Anthropic)",
+      "Music — ACE-Step 1.5 (local)",
+    ]);
+  });
+});
+
+describe("parseLyricsJson", () => {
+  it("parses a valid {title, lyrics} object", () => {
+    const raw = '{"title":"THE BUILD","lyrics":"[verse]\\nwe ship it green"}';
+    expect(parseLyricsJson(raw)).toEqual({
+      title: "THE BUILD",
+      lyrics: "[verse]\nwe ship it green",
+    });
+  });
+
+  it("strips code fences and tolerates a chatty preamble", () => {
+    const fence = "```";
+    const body = '{"title":"X","lyrics":"[chorus]\\nla"}';
+    expect(parseLyricsJson(`${fence}json\n${body}\n${fence}`)).not.toBeNull();
+    expect(parseLyricsJson(`Here you go: ${body}`)).toEqual({
+      title: "X",
+      lyrics: "[chorus]\nla",
+    });
+  });
+
+  it("rejects missing, empty, or non-string fields", () => {
+    expect(parseLyricsJson('{"title":"x"}')).toBeNull();
+    expect(parseLyricsJson('{"lyrics":"x"}')).toBeNull();
+    expect(parseLyricsJson('{"title":"","lyrics":"x"}')).toBeNull();
+    expect(parseLyricsJson('{"title":"x","lyrics":"   "}')).toBeNull();
+    expect(parseLyricsJson('{"title":1,"lyrics":"x"}')).toBeNull();
+    expect(parseLyricsJson("not json")).toBeNull();
+    expect(parseLyricsJson("")).toBeNull();
+  });
+});
+
+describe("buildLyricsPrompt", () => {
+  it("asks for a song about the steps and a strict-JSON {title, lyrics} reply", () => {
+    const prompt = buildLyricsPrompt({
+      direction: "80s power ballad",
+      steps: [
+        { index: 0, name: "open", script: "await page.goto('/')" },
+        { index: 1, name: "login" },
+      ],
+    });
+    expect(prompt).toContain("80s power ballad");
+    expect(prompt).toContain("[verse]");
+    expect(prompt).toContain('{"title": string, "lyrics": string}');
+    // The steps drive the verses.
+    expect(prompt).toContain("0. open");
+    expect(prompt).toContain("1. login");
+    // No spoken narration in song mode.
+    expect(prompt).toContain("there is no spoken narration");
   });
 });
 

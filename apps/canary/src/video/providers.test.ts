@@ -285,6 +285,22 @@ describe("buildMusicPrompt", () => {
     expect(prompt.toLowerCase()).toContain("vocals");
     expect(prompt).toContain("45");
   });
+
+  it("embeds supplied lyrics for a song (song mode)", () => {
+    const prompt = buildMusicPrompt(
+      "upbeat pop montage",
+      45,
+      true,
+      "[chorus]\nCanary sings"
+    );
+    expect(prompt).toContain("Sing these exact lyrics:");
+    expect(prompt).toContain("[chorus]\nCanary sings");
+  });
+
+  it("omits the lyrics line for an instrumental bed even if lyrics are passed", () => {
+    const prompt = buildMusicPrompt("noir", 30, false, "[verse]\nwords");
+    expect(prompt).not.toContain("Sing these exact lyrics:");
+  });
 });
 
 describe("aspectRatioFor", () => {

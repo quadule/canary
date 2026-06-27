@@ -24,6 +24,22 @@ describe("buildMusicContent", () => {
     );
     expect(buildMusicContent("upbeat pop", false)).toBe("upbeat pop");
   });
+
+  it("tags supplied lyrics into a song (song mode), trimming them", () => {
+    expect(
+      buildMusicContent("upbeat pop", false, "  [verse]\nla la la  ")
+    ).toBe("<prompt>upbeat pop</prompt><lyrics>[verse]\nla la la</lyrics>");
+  });
+
+  it("ignores blank lyrics and falls back to sample-mode content", () => {
+    expect(buildMusicContent("upbeat pop", false, "   ")).toBe("upbeat pop");
+  });
+
+  it("ignores lyrics for an instrumental bed", () => {
+    expect(buildMusicContent("noir jazz", true, "[verse]\nwords")).toBe(
+      "<prompt>noir jazz</prompt><lyrics>[instrumental]</lyrics>"
+    );
+  });
 });
 
 describe("buildMusicPayload", () => {
@@ -41,7 +57,7 @@ describe("buildMusicPayload", () => {
     });
   });
 
-  it("uses sample_mode + vocal_language for a song", () => {
+  it("uses sample_mode + vocal_language for a song without lyrics", () => {
     const p = buildMusicPayload({
       directionText: "upbeat pop",
       seconds: 30,
@@ -50,6 +66,25 @@ describe("buildMusicPayload", () => {
     expect(p.sample_mode).toBe(true);
     expect(p.messages).toEqual([{ role: "user", content: "upbeat pop" }]);
     expect(p.audio_config).toEqual({ duration: 30, vocal_language: "en" });
+  });
+
+  it("sings supplied lyrics in tagged mode (no sample_mode)", () => {
+    const p = buildMusicPayload({
+      directionText: "upbeat pop",
+      seconds: 25,
+      instrumental: false,
+      lyrics: "[chorus]\nCanary sings",
+    });
+    // Tagged mode → the LM must NOT invent its own lyrics.
+    expect(p.sample_mode).toBeUndefined();
+    expect(p.messages).toEqual([
+      {
+        role: "user",
+        content:
+          "<prompt>upbeat pop</prompt><lyrics>[chorus]\nCanary sings</lyrics>",
+      },
+    ]);
+    expect(p.audio_config).toEqual({ duration: 25, vocal_language: "en" });
   });
 
   it("rounds duration up to >=1 and includes model only when set", () => {

@@ -128,6 +128,16 @@ ffmpeg built with drawtext and burned captions need the subtitles filter (otherw
 soft-sub .srt and tells you). Every generation command (say/ffmpeg/claude, and a redacted curl
 for HTTP TTS) is printed so a run is easy to reproduce and tweak.
 
+SONG MODE (--song): score the whole video with ONE original song instead of spoken narration.
+An LLM writes themed, singable lyrics ABOUT the session and a music model performs them; the
+condensed cut plays at its natural pace under the song, with the same title card and credits.
+There's no spoken voice and no burned captions (generated vocals carry no timing data), so the
+full lyrics are written to a sibling .lyrics.txt and any page.showCaption overlays baked into the
+recording stay on screen as labels (record WITHOUT --cinematic to keep them). Needs the 'claude'
+CLI plus a lyrics-capable music model: the local ACE-Step server (see $CANARY_ACESTEP_URL) or a
+Gemini key (Lyria). Combine with --prompt to steer the genre.
+
+  --song              score the video with a sung song instead of narration (implies --cinematic)
   --prompt "<text>"   steer theme/tone/style in your own words (implies --cinematic);
                       omit for a random theme. e.g. --prompt "noir detective, as a haiku"
                       Re-run --cinematic with a new --prompt anytime: the pre-cinematic cut is
@@ -144,10 +154,13 @@ for HTTP TTS) is printed so a run is easy to reproduce and tweak.
                         TTS (narration stays on your machine); key also read from ~/.omlx
   $CANARY_ARCHIVE_MUSIC=1   score the video with free Creative-Commons music from archive.org
                         (attribution is added to the run notes); needs ffmpeg, no model download
+  $CANARY_ACESTEP_URL / $CANARY_ACESTEP_API_KEY / $CANARY_ACESTEP_MODEL   point at a local ACE-Step
+                        server for generated music (the bed, and the sung song in --song mode)
 
   canary session end "$id"
   canary session end "$id" --cinematic
-  canary session end "$id" --prompt "1970s heist film"`;
+  canary session end "$id" --song
+  canary session end "$id" --song --prompt "80s power ballad"`;
 
 export const STOP_LONG_ABOUT = `Stop the background daemon and everything it is running (all browsers and sessions).
 

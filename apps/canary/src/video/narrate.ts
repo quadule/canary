@@ -194,14 +194,24 @@ export interface CinematicOptions {
   // Directory of the project under review — its branch (vs configured base) sets
   // the contributor credits and scales the narration. Defaults to process.cwd().
   repoDir?: string;
+  // Song mode: replace per-step spoken narration with ONE sung song (LLM-written
+  // themed lyrics performed by a singing music model over the whole video). No
+  // TTS, no per-step re-timing, no burned captions. Needs a lyrics-capable music
+  // provider (ACE-Step or Gemini Lyria).
+  song?: boolean;
 }
 
 export interface CinematicMeta {
   // Human-readable creative direction (the random theme+style, or the --prompt),
   // surfaced so a good run can be reproduced.
   direction: string;
+  // Narration mode: the speaking rate (wpm) and the chosen voice.
   rate: number;
   voice: string;
+  // Song mode: true, with `music` naming the model that sang the lyrics. (voice/
+  // rate don't apply and are left empty/zero.)
+  song?: boolean;
+  music?: string;
 }
 
 export interface CinematicResult {
@@ -233,6 +243,15 @@ interface NarrationStep {
 
 interface Narration {
   steps: NarrationStep[];
+  title: string;
+}
+
+// Song-mode plan: one set of sung lyrics for the whole piece (ACE-Step sings
+// them) plus an opening title. Unlike narration there are no per-step lines —
+// generated vocals carry no alignment data, so we don't pretend to time-sync
+// them to the steps.
+interface Lyrics {
+  lyrics: string;
   title: string;
 }
 
@@ -471,6 +490,57 @@ export function buildNarrationPrompt(args: {
   ].join("\n");
 }
 
+// Build the `claude -p` prompt for SONG mode: themed, singable lyrics ABOUT the
+// QA session (the comedic payoff — a checkout flow sung as a power ballad), plus
+// a title card. The lyrics use ACE-Step's structure tags ([verse]/[chorus]) and
+// stay short so they fit a brief score. Deterministic given its inputs (testable).
+export function buildLyricsPrompt(args: {
+  direction: string;
+  change?: ChangeContext;
+  steps: { index: number; name: string; script?: string }[];
+}): string {
+  const { direction, change, steps } = args;
+  const stepLines = steps
+    .map((step) => {
+      const slice = step.script?.slice(0, SCRIPT_SLICE_CHARS).trim();
+      const scriptPart = slice ? ` — does: ${slice}` : "";
+      const captions = extractCaptions(step.script);
+      const intentPart = captions.length
+        ? ` — intent: ${captions.map((c) => `"${c}"`).join(" ")}`
+        : "";
+      return `  ${step.index}. ${step.name}${scriptPart}${intentPart}`;
+    })
+    .join("\n");
+
+  const changeLines = change
+    ? [
+        `Sense of scale (use it only to size the song's length and energy, never to override the genre): the change under review is ${change.label}, so ${change.scaleHint}.`,
+        "",
+      ]
+    : [];
+
+  return [
+    "You are writing the lyrics for a short original SONG that scores a screen-recording of an automated browser QA session.",
+    "The whole video is set to this one song — there is no spoken narration. Write lyrics that tell the story of the session, fully in character for the creative direction below.",
+    "",
+    `Creative direction (the song's genre, mood, and voice): ${direction}`,
+    "",
+    ...changeLines,
+    "What happens in the session, in order (let it shape the verses):",
+    stepLines,
+    "",
+    "Rules:",
+    "- Write COMPLETE, singable lyrics: a short song of roughly one or two verses and a chorus — keep it tight (about 8–16 short lines total) so it fits a brief score.",
+    "- Use ACE-Step structure tags on their own lines: [verse], [chorus], and optionally [bridge] or [outro]. Put each lyric line on its own line under its tag.",
+    "- Make the lyrics ABOUT what happens in the session (the steps above), but commit hard to the genre — be playful and vivid, never a dry play-by-play.",
+    "- Keep lines short and rhythmic so they sing well; favor a memorable, repeatable chorus.",
+    "- Do NOT include chord names, timestamps, performance notes, or stage directions — only the structure tags and the words to sing.",
+    '- Provide a punchy, dramatic, mostly-uppercase "title" for an opening title card. You may use a newline in the title to force a two-line layout.',
+    "",
+    'Respond with STRICT JSON only — no prose, no markdown fences — exactly: {"title": string, "lyrics": string}. The lyrics string uses "\\n" for line breaks.',
+  ].join("\n");
+}
+
 const STYLE_DIRECTIVES: Record<StyleId, string> = {
   prose: "natural prose narration.",
   poem: "write the narration as short free-verse poetry.",
@@ -512,6 +582,26 @@ export function parseNarrationJson(raw: string): Narration | null {
     });
   }
   return { title: record.title, steps };
+}
+
+// Parse the SONG-mode LLM response into a validated Lyrics, or null on any
+// problem. Same lenient JSON handling as parseNarrationJson (strips fences, falls
+// back to brace extraction). Both fields must be non-empty strings.
+export function parseLyricsJson(raw: string): Lyrics | null {
+  const parsed = tryParseJson(raw);
+  if (typeof parsed !== "object" || parsed === null) {
+    return null;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (
+    typeof record.title !== "string" ||
+    typeof record.lyrics !== "string" ||
+    record.title.trim() === "" ||
+    record.lyrics.trim() === ""
+  ) {
+    return null;
+  }
+  return { title: record.title, lyrics: record.lyrics };
 }
 
 // Parse `say -v '?'` output into structured voices. Each line is
@@ -867,7 +957,15 @@ function pickRate(): number {
 // commit to, then adapt to the change's scale) + a weighted style. Returns the
 // text injected into the prompt, a short reproducibility label, and the dominant
 // theme category (drives the title-card font/color).
-function resolveDirection(userPrompt: string | undefined): {
+//
+// In SONG mode the theme stands in for "a random style" (its genre/mood drives
+// the music) and the prose/poem/haiku style draw is skipped — the piece is always
+// a sung song, so a "render it as a haiku" suffix would just confuse the lyricist
+// and the music model.
+function resolveDirection(
+  userPrompt: string | undefined,
+  opts: { song?: boolean } = {}
+): {
   text: string;
   label: string;
   category?: ThemeCategory;
@@ -879,11 +977,18 @@ function resolveDirection(userPrompt: string | undefined): {
   const count = Math.random() < 0.5 ? 1 : 2;
   const drawn = selectThemes(count);
   const themes = drawn.map((theme) => theme.label);
-  const style = selectStyle();
   const themePart =
     themes.length === 1
-      ? themes[0]
+      ? (themes[0] ?? "")
       : `commit to "${themes[0]}" as the dominant voice, optionally borrowing a flourish from "${themes[1]}"`;
+  if (opts.song) {
+    return {
+      text: themePart,
+      label: `theme: ${themes.join(" + ")} · song`,
+      category: drawn[0]?.category,
+    };
+  }
+  const style = selectStyle();
   const text = `${themePart}. Render it as ${STYLE_DIRECTIVES[style]}`;
   return {
     text,
@@ -1050,6 +1155,60 @@ async function planNarration(args: {
   return narration ? { direction, narration, repoDir, base } : null;
 }
 
+// Ask the LLM for song lyrics JSON, or null on any failure (mirrors
+// generateNarration). The prompt is multi-KB, so echo an elided form.
+async function generateLyrics(
+  prompt: string,
+  log: Logger,
+  echo?: Echo
+): Promise<Lyrics | null> {
+  let stdout: string;
+  try {
+    echo?.(`$ claude -p <lyrics prompt, ${prompt.length} chars>`);
+    ({ stdout } = await run("claude", ["-p", prompt], LLM_TIMEOUT_MS));
+  } catch (err) {
+    log.debug({ err }, "cinematic: claude lyrics call failed");
+    return null;
+  }
+  const lyrics = parseLyricsJson(stdout);
+  if (!lyrics) {
+    log.debug({ stdout }, "cinematic: could not parse lyrics JSON");
+  }
+  return lyrics;
+}
+
+// Song-mode counterpart of planNarration: resolve the creative direction (theme
+// as genre) and generate the lyrics. Returns the direction (for title styling +
+// reproducibility) and the lyrics, or null if generation failed.
+async function planSong(args: {
+  options: CinematicOptions;
+  narratableSteps: CinematicStep[];
+  log: Logger;
+  echo?: Echo;
+}): Promise<{
+  direction: ReturnType<typeof resolveDirection>;
+  lyrics: Lyrics;
+  repoDir: string;
+  base: string;
+} | null> {
+  const { options, narratableSteps, log, echo } = args;
+  const direction = resolveDirection(options.prompt, { song: true });
+  const repoDir = options.repoDir ?? process.cwd();
+  const base = await resolveBase(repoDir);
+  const change = (await describeChange(repoDir, base)) ?? undefined;
+  const prompt = buildLyricsPrompt({
+    direction: direction.text,
+    change,
+    steps: narratableSteps.map((step, index) => ({
+      index,
+      name: step.name,
+      script: step.script,
+    })),
+  });
+  const lyrics = await generateLyrics(prompt, log, echo);
+  return lyrics ? { direction, lyrics, repoDir, base } : null;
+}
+
 // A friendly source name for the music provider, for the "Made with" block.
 function musicToolName(id: string | undefined): string | undefined {
   switch (id) {
@@ -1082,17 +1241,23 @@ export function voiceCredit(
   return label ? `Voice — ${label}` : "Voice — system speech";
 }
 
-// The "Made with" tool credits actually used this run. Narration always runs via
-// the `claude` CLI; voice/music/title-art depend on what was resolved. Pure →
-// unit-tested.
+// The "Made with" tool credits actually used this run. The `claude` CLI always
+// writes the words (narration, or lyrics in song mode); voice/music/title-art
+// depend on what was resolved. In song mode there's no spoken voice, so the voice
+// line is dropped and the music (the sung song) is primary. Pure → unit-tested.
 export function buildModelCredits(args: {
   voiceLabel: string;
   ttsId: string | undefined;
   musicId: string | undefined;
   titleArt: boolean;
+  song?: boolean;
 }): string[] {
-  const models = ["Narration — Claude (Anthropic)"];
-  models.push(voiceCredit(args.ttsId, args.voiceLabel));
+  const models = [
+    args.song ? "Lyrics — Claude (Anthropic)" : "Narration — Claude (Anthropic)",
+  ];
+  if (!args.song) {
+    models.push(voiceCredit(args.ttsId, args.voiceLabel));
+  }
   const music = musicToolName(args.musicId);
   if (music) {
     models.push(music);
@@ -1388,6 +1553,201 @@ async function assembleVideo(args: {
   });
 
   return { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec, music };
+}
+
+// Generate the single full SONG for song mode: the music model SINGS the supplied
+// lyrics over the whole final video (body + credits). One foreground track at
+// delay 0 — there's no narration to duck under. Best-effort: a failure returns []
+// + a note, and the caller skips song mode rather than shipping a silent video.
+async function generateSong(args: {
+  ffmpeg: string;
+  provider: MusicProvider | undefined;
+  directionText: string;
+  lyrics: string;
+  finalBodyPath: string;
+  videoPath: string;
+  temps: string[];
+  notes: string[];
+  log: Logger;
+  progress: (message: string) => void;
+}): Promise<MusicTrack[]> {
+  const {
+    ffmpeg,
+    provider,
+    directionText,
+    lyrics,
+    finalBodyPath,
+    videoPath,
+    temps,
+    notes,
+    log,
+  } = args;
+  if (!provider) {
+    return [];
+  }
+  const total = await audioDurationSec(ffmpeg, finalBodyPath);
+  if (!total) {
+    return [];
+  }
+  args.progress("composing the song…");
+  try {
+    const songPath = `${videoPath}.song.wav`;
+    temps.push(songPath);
+    await provider.song(directionText, total, songPath, lyrics);
+    // Foreground: the song IS the soundtrack. 0.9 leaves a little headroom so the
+    // mix doesn't clip. The output is still capped to the video length downstream.
+    return [{ path: songPath, delaySec: 0, volume: 0.9 }];
+  } catch (err) {
+    log.debug({ err }, "cinematic: song generation failed");
+    notes.push("song unavailable — generation failed");
+    return [];
+  }
+}
+
+// Song-mode counterpart of assembleVideo: NO per-step re-timing (the condensed
+// cut plays at its natural pace) and NO narration clips. Normalize the body to
+// CFR libvpx so the title card + credits concat-copy cleanly onto it, prepend the
+// title, append the credits, then generate the one song spanning the whole final
+// video. Returns the final body, each step's position (shifted by the title card),
+// and the single song track — or null if the source duration can't be probed.
+async function assembleSongVideo(args: {
+  ffmpeg: string;
+  videoPath: string;
+  narratableSteps: CinematicStep[];
+  title: string;
+  category: ThemeCategory | undefined;
+  directionText: string;
+  lyrics: string;
+  providers: MediaProviders;
+  hasDrawtext: boolean;
+  repoDir: string;
+  base: string;
+  temps: string[];
+  notes: string[];
+  log: Logger;
+  progress: (message: string) => void;
+}): Promise<{
+  finalBody: string;
+  stepTimes: number[];
+  titleOffsetSec: number;
+  music: MusicTrack[];
+} | null> {
+  const {
+    ffmpeg,
+    videoPath,
+    narratableSteps,
+    title,
+    category,
+    directionText,
+    lyrics,
+    providers,
+    hasDrawtext,
+    repoDir,
+    base,
+    temps,
+    notes,
+    log,
+    progress,
+  } = args;
+
+  const geometry = await probeVideo(ffmpeg, videoPath);
+  const frameRate = geometry?.frameRate ?? 30;
+  const total = await audioDurationSec(ffmpeg, videoPath);
+  if (!total) {
+    return null;
+  }
+
+  // Normalize the condensed cut to CFR libvpx (a single full-length slice, no
+  // re-timing) so the freshly-encoded title card and credits stream-copy onto it,
+  // exactly as the narration path's re-timed slices do.
+  progress("preparing the video…");
+  const normalized = `${videoPath}.songbody.webm`;
+  temps.push(normalized);
+  await encodeSlice({
+    ffmpeg,
+    src: videoPath,
+    startSec: 0,
+    durSec: total,
+    holdSec: 0,
+    frameRate,
+    outPath: normalized,
+  });
+
+  const background =
+    hasDrawtext && geometry
+      ? await renderTitleBackground({
+          provider: providers.titleBackground,
+          directionText,
+          geometry,
+          videoPath,
+          temps,
+          notes,
+          log,
+          progress,
+        })
+      : undefined;
+
+  progress("painting the title card…");
+  const { body, titleOffsetSec } = await applyTitleCard({
+    ffmpeg,
+    retimedPath: normalized,
+    title,
+    style: titleStyle(category),
+    background,
+    hasDrawtext,
+    geometry,
+    temps,
+    notes,
+    log,
+  });
+
+  // No re-timing, so each step keeps its condensed position, shifted only by the
+  // title card — keeping click-to-seek aligned to the song cut.
+  const stepTimes = narratableSteps.map((s) => s.videoTime + titleOffsetSec);
+
+  let finalBody = body;
+  if (hasDrawtext && geometry) {
+    progress("rolling the credits…");
+    const musicCredit = await providers.music
+      ?.credit?.(directionText)
+      .catch(() => undefined);
+    const sections = buildCreditSections({
+      contributors: await branchContributors(repoDir, base),
+      music: musicCredit,
+      models: buildModelCredits({
+        voiceLabel: "",
+        ttsId: undefined,
+        musicId: providers.music?.id,
+        titleArt: Boolean(background),
+        song: true,
+      }),
+    });
+    finalBody = await appendCredits({
+      ffmpeg,
+      body,
+      videoPath,
+      heading: title,
+      sections,
+      geometry,
+      temps,
+      log,
+    });
+  }
+
+  const music = await generateSong({
+    ffmpeg,
+    provider: providers.music,
+    directionText,
+    lyrics,
+    finalBodyPath: finalBody,
+    videoPath,
+    temps,
+    notes,
+    log,
+    progress,
+  });
+
+  return { finalBody, stepTimes, titleOffsetSec, music };
 }
 
 interface RenderedClip {
@@ -2114,6 +2474,14 @@ function srtPathFor(videoPath: string): string {
   return `${videoPath.slice(0, videoPath.length - ext.length)}.srt`;
 }
 
+// Sidecar path for the song-mode lyrics, beside the video. In song mode the
+// generated vocals carry no alignment data, so rather than fake time-synced
+// captions we write the lyrics here as the honest text artifact.
+export function lyricsPathFor(videoPath: string): string {
+  const ext = path.extname(videoPath);
+  return `${videoPath.slice(0, videoPath.length - ext.length)}.lyrics.txt`;
+}
+
 // Sidecar path holding the pre-cinematic (condensed) cut, beside the video. The
 // cinematic pass preserves the condensed video here on its first run so it can be
 // re-run with a different prompt/theme from the clean source — never stacking a
@@ -2219,6 +2587,110 @@ export async function cinematicProcess(
       notes.push(...gemini.notes);
     } else if (!omlx.tts && !providers.music) {
       notes.push(...gemini.notes);
+    }
+
+    // Song mode: instead of per-step spoken narration, the LLM writes themed
+    // lyrics ABOUT the session and a singing music model performs them as the
+    // whole soundtrack. No TTS, no per-step re-timing, no time-synced captions
+    // (generated vocals carry no alignment) — the lyrics go to a sidecar instead.
+    if (options.song) {
+      // Pick a music provider that actually SINGS supplied lyrics (ACE-Step /
+      // Lyria), ignoring stock music (archive.org) even if it won the normal
+      // chain — it can't sing custom words.
+      const songMusic = [acestep.music, gemini.music].find(
+        (m) => m?.singsLyrics
+      );
+      if (!songMusic) {
+        return notApplied(
+          "song mode needs a lyrics-capable music model — start the ACE-Step server (set CANARY_ACESTEP_URL for a non-default port) or set GEMINI_API_KEY"
+        );
+      }
+      const songProviders: MediaProviders = {
+        music: songMusic,
+        titleBackground: gemini.titleBackground,
+        notes: [],
+      };
+
+      progress("writing the lyrics…");
+      const planned = await planSong({ options, narratableSteps, log, echo });
+      if (!planned) {
+        return notApplied("song lyrics generation failed");
+      }
+      const { direction, lyrics, repoDir, base } = planned;
+      const musicLabel =
+        (await songMusic.credit?.(direction.text).catch(() => undefined)) ??
+        songMusic.id;
+      const meta: CinematicMeta = {
+        direction: direction.label,
+        voice: "",
+        rate: 0,
+        song: true,
+        music: musicLabel,
+      };
+      log.info(meta, "cinematic: song parameters");
+
+      const assembled = await assembleSongVideo({
+        ffmpeg: ffmpegPath,
+        videoPath: input,
+        narratableSteps,
+        title: lyrics.title,
+        category: direction.category,
+        directionText: direction.text,
+        lyrics: lyrics.lyrics,
+        providers: songProviders,
+        hasDrawtext,
+        repoDir,
+        base,
+        temps,
+        notes,
+        log,
+        progress,
+      });
+      if (!assembled) {
+        return notApplied("could not probe the video to build the song cut");
+      }
+      const { finalBody, stepTimes, titleOffsetSec, music } = assembled;
+      if (music.length === 0) {
+        // No song audio means song mode produced nothing it set out to — skip and
+        // keep the plain condensed cut rather than ship a silent "song" video.
+        return notApplied("song audio could not be generated");
+      }
+
+      // Remove any sibling .srt left by a prior NARRATION run on this session
+      // (song mode burns no captions and writes no .srt). A re-run flips
+      // narration → song on the same video, so without this a soft-sub player
+      // would auto-load the stale narration captions over the song.
+      await rm(srtPathFor(videoPath), { force: true });
+
+      // Write the lyrics sidecar (the honest artifact — no faked caption sync).
+      const lyricsPath = lyricsPathFor(videoPath);
+      temps.push(lyricsPath);
+      await writeFile(lyricsPath, `${lyrics.title}\n\n${lyrics.lyrics}\n`);
+
+      progress("mixing the song…");
+      const finalPath = `${videoPath}.cinematic.webm`;
+      temps.push(finalPath);
+      await mixAudioAndCaptions({
+        ffmpeg: ffmpegPath,
+        videoPath: finalBody,
+        clips: [],
+        offsetsSec: [],
+        music,
+        srtPath: "",
+        burnCaptions: false,
+        outPath: finalPath,
+        echo,
+      });
+      const producedSong = await stat(finalPath);
+      if (producedSong.size === 0) {
+        return notApplied("encoder produced an empty file");
+      }
+      await rename(finalPath, videoPath);
+      // The final video is the original path now; the lyrics sidecar is a
+      // deliverable — drop both from the cleanup list.
+      temps.splice(temps.indexOf(finalPath), 1);
+      temps.splice(temps.indexOf(lyricsPath), 1);
+      return { applied: true, titleOffsetSec, stepTimes, notes, meta };
     }
 
     // Voicing: a TTS provider, or macOS `say`. With a provider this runs on any

@@ -112,6 +112,7 @@ interface SessionEndOpts {
   condense?: boolean;
   open?: boolean;
   prompt?: string;
+  song?: boolean;
   stopDaemon?: boolean;
 }
 
@@ -205,8 +206,12 @@ export function buildProgram(): CommandType {
       "Add LLM narration, a macOS voice-over, captions, and a title card (macOS only; needs `claude` and `say`)"
     )
     .option(
+      "--song",
+      "Score the whole video with ONE sung song (LLM-written themed lyrics performed by a local/AI music model) instead of spoken narration; needs ACE-Step or GEMINI_API_KEY (a flavor of --cinematic)"
+    )
+    .option(
       "--prompt <text>",
-      'Steer the cinematic narration — theme, tone, and style — in your own words, e.g. "1970s heist film, narrated as a limerick" (implies --cinematic)'
+      'Steer the cinematic narration (or, with --song, the song) — theme, tone, and style — in your own words, e.g. "1970s heist film, narrated as a limerick" (implies --cinematic)'
     )
     .option("--no-captions", "With --cinematic, skip burning in subtitles")
     .option("--open", "Open the rendered report.html in your default browser")
@@ -215,6 +220,7 @@ export function buildProgram(): CommandType {
         stopDaemon: opts.stopDaemon === true,
         condense: opts.condense,
         cinematic: opts.cinematic === true || typeof opts.prompt === "string",
+        song: opts.song === true,
         prompt: opts.prompt,
         captions: opts.captions,
         open: opts.open === true,

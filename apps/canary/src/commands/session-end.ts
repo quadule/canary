@@ -37,6 +37,9 @@ interface SessionEndOpts {
   condense?: boolean;
   open?: boolean;
   prompt?: string;
+  // Song mode: score the whole video with one LLM-written, model-sung song
+  // instead of per-step spoken narration. A flavor of the cinematic pass.
+  song?: boolean;
   stopDaemon?: boolean;
 }
 
@@ -185,6 +188,8 @@ async function condenseSessionVideos(
 interface CinematicOpts {
   captions: boolean;
   prompt?: string;
+  // Song mode: replace narration with one sung song (see narrate.ts).
+  song?: boolean;
 }
 
 // Apply the opt-in cinematic pass (LLM narration + macOS TTS + burned captions +
@@ -236,11 +241,14 @@ async function cinematizeSessionVideo(
     logger.warn("no timed steps; skipping cinematic pass");
     return;
   }
-  process.stderr.write("Adding cinematic narration…\n");
+  process.stderr.write(
+    opts.song ? "Scoring a cinematic song…\n" : "Adding cinematic narration…\n"
+  );
   const outcome = await cinematicProcess(video.path, steps, {
     ffmpegPath: ffmpeg,
     prompt: opts.prompt,
     captions: opts.captions,
+    song: opts.song,
     log: logger,
     onProgress: (message) => process.stderr.write(`  · ${message}\n`),
   });
@@ -266,12 +274,16 @@ async function cinematizeSessionVideo(
   video.bytes = await stat(video.path)
     .then((s) => s.size)
     .catch(() => video.bytes);
-  process.stderr.write("  ✓ narration added\n");
+  process.stderr.write(opts.song ? "  ✓ song added\n" : "  ✓ narration added\n");
   // Surface the chosen parameters so a delightful random run can be reproduced
-  // (pin via --prompt and $CANARY_SAY_VOICE / $CANARY_SAY_RATE).
+  // (pin via --prompt and, for narration, $CANARY_SAY_VOICE / $CANARY_SAY_RATE).
   if (outcome.meta) {
-    const { direction, voice, rate } = outcome.meta;
-    process.stderr.write(`  🎬 ${direction} · voice: ${voice} @ ${rate} wpm\n`);
+    const { direction, voice, rate, song, music } = outcome.meta;
+    process.stderr.write(
+      song
+        ? `  🎵 ${direction} · song: ${music}\n`
+        : `  🎬 ${direction} · voice: ${voice} @ ${rate} wpm\n`
+    );
   }
   // Surface any degradation (e.g. this ffmpeg lacks drawtext/subtitles) so the
   // user isn't left wondering where the title card or burned captions went.
@@ -336,8 +348,9 @@ export async function sessionEnd(
   // and its preserved step timings, so re-condensing the prior cinematic output
   // would be wasted work. First runs (and non-cinematic ends) condense normally.
   const videoArtifact = endResult.artifacts.find((a) => a.kind === "video");
+  const cinematicRequested = opts.cinematic === true || opts.song === true;
   const cinematicRerun =
-    opts.cinematic === true &&
+    cinematicRequested &&
     videoArtifact !== undefined &&
     existsSync(precinematicVideoPath(videoArtifact.path));
   if (opts.condense !== false && !cinematicRerun) {
@@ -348,10 +361,14 @@ export async function sessionEnd(
     );
   }
 
-  // Cinematic narration is opt-in and runs after condensing (it keys off the
-  // stamped step.videoTime and the trimmed video). Default output is unchanged.
-  if (opts.cinematic) {
-    if (!record.cinematic) {
+  // Cinematic narration (or a cinematic song) is opt-in and runs after condensing
+  // (it keys off the stamped step.videoTime and the trimmed video). Default output
+  // is unchanged.
+  if (cinematicRequested) {
+    // The double-caption warning only applies to NARRATION mode, which burns
+    // captions. Song mode burns none — the page.showCaption overlays are the only
+    // on-screen labels and are meant to stay — so it never warns.
+    if (!opts.song && !record.cinematic) {
       // The session wasn't recorded with --cinematic, so any page.showCaption
       // overlays are already baked into the video; the burned captions land on
       // top of them. Still run the pass (handy for testing the pipeline) but
@@ -363,6 +380,7 @@ export async function sessionEnd(
     await cinematizeSessionVideo(endResult, record, {
       prompt: opts.prompt,
       captions: opts.captions !== false,
+      song: opts.song,
     });
     // Persist the step timings the cinematic pass stamped — notably
     // precinematicVideoTime (the condensed source positions). Step times are
