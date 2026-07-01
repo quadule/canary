@@ -30,12 +30,17 @@ import {
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Logger } from "@usecanary/logger";
+import { resolveAceStepMusic } from "./acestep.js";
+import { alignLyricsToSegments, mainCluster, vocalRegion } from "./align.js";
+import { resolveArchiveMusic } from "./archive.js";
 import {
   branchContributors,
   buildCreditSections,
   buildCreditsRoll,
   type CreditSection,
 } from "./credits.js";
+import { createLocalTitleBackground } from "./local-background.js";
+import { resolveOmlxProviders } from "./omlx.js";
 import {
   type MediaProviders,
   type MusicProvider,
@@ -43,11 +48,6 @@ import {
   type TitleBackgroundProvider,
   type TtsProvider,
 } from "./providers.js";
-import { resolveAceStepMusic } from "./acestep.js";
-import { alignLyricsToSegments, mainCluster, vocalRegion } from "./align.js";
-import { resolveArchiveMusic } from "./archive.js";
-import { resolveOmlxProviders } from "./omlx.js";
-import { transcribeSong } from "./transcribe.js";
 import { formatCommand, shellQuote } from "./shell.js";
 import {
   type StyleId,
@@ -55,6 +55,7 @@ import {
   selectThemes,
   type ThemeCategory,
 } from "./themes.js";
+import { transcribeSong } from "./transcribe.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -208,13 +209,13 @@ export interface CinematicMeta {
   // Human-readable creative direction (the random theme+style, or the --prompt),
   // surfaced so a good run can be reproduced.
   direction: string;
+  music?: string;
   // Narration mode: the speaking rate (wpm) and the chosen voice.
   rate: number;
-  voice: string;
   // Song mode: true, with `music` naming the model that sang the lyrics. (voice/
   // rate don't apply and are left empty/zero.)
   song?: boolean;
-  music?: string;
+  voice: string;
 }
 
 export interface CinematicResult {
@@ -423,7 +424,9 @@ export function layoutSongCues(
     const isLast = i === items.length - 1;
     // Hold until the next line wants to start, bounded by [minDur, maxDur]; the
     // last line gets the tail hold.
-    let end = isLast ? start + tail : Math.min(Math.max(nextRaw, start + minDur), start + maxDur);
+    let end = isLast
+      ? start + tail
+      : Math.min(Math.max(nextRaw, start + minDur), start + maxDur);
     if (!isLast) {
       end = Math.max(end, start + minDur);
     }
@@ -1016,7 +1019,11 @@ async function listSayVoices(
   command: string
 ): Promise<InstalledVoice[] | null> {
   try {
-    const { stdout } = await run(command, ["-v", "?"], VERSION_PROBE_TIMEOUT_MS);
+    const { stdout } = await run(
+      command,
+      ["-v", "?"],
+      VERSION_PROBE_TIMEOUT_MS
+    );
     return parseInstalledVoices(stdout);
   } catch {
     return null;
@@ -1083,12 +1090,18 @@ function resolveDirection(
   opts: { song?: boolean } = {}
 ): {
   text: string;
+  // Theme only, WITHOUT the narration-style directive ("Render it as natural
+  // prose narration."). The music and title-art providers get this: the style
+  // shapes how the spoken WORDS are written, and feeding it to a music model
+  // told the score to be spoken-word prose. Equals `text` for a --prompt or in
+  // song mode (no style suffix is appended there).
+  theme: string;
   label: string;
   category?: ThemeCategory;
 } {
   if (userPrompt?.trim()) {
     const text = userPrompt.trim();
-    return { text, label: `prompt: "${text}"` };
+    return { text, theme: text, label: `prompt: "${text}"` };
   }
   const count = Math.random() < 0.5 ? 1 : 2;
   const drawn = selectThemes(count);
@@ -1100,6 +1113,7 @@ function resolveDirection(
   if (opts.song) {
     return {
       text: themePart,
+      theme: themePart,
       label: `theme: ${themes.join(" + ")} · song`,
       category: drawn[0]?.category,
     };
@@ -1108,6 +1122,7 @@ function resolveDirection(
   const text = `${themePart}. Render it as ${STYLE_DIRECTIVES[style]}`;
   return {
     text,
+    theme: themePart,
     label: `theme: ${themes.join(" + ")} · style: ${style}`,
     category: drawn[0]?.category,
   };
@@ -1337,7 +1352,7 @@ function musicToolName(id: string | undefined): string | undefined {
     case "gemini-music":
       return "Music — Lyria (Google Gemini)";
     default:
-      return undefined;
+      return;
   }
 }
 
@@ -1363,27 +1378,53 @@ export function voiceCredit(
 // writes the words (narration, or lyrics in song mode); voice/music/title-art
 // depend on what was resolved. In song mode there's no spoken voice, so the voice
 // line is dropped and the music (the sung song) is primary. Pure → unit-tested.
+//
+// `hasMusicCredit` is set when a dedicated "Music" credit section already names
+// the score (the provider's credit() line — a specific archive.org track, or the
+// model name for ACE-Step/Lyria). In that case the generic "Music — <tool>" line
+// here is redundant (it was crediting ACE-Step/Lyria a second time), so it's
+// dropped and the richer section stands alone.
 export function buildModelCredits(args: {
   voiceLabel: string;
   ttsId: string | undefined;
   musicId: string | undefined;
-  titleArt: boolean;
+  // The title-background provider id when a background was actually rendered
+  // (undefined for the solid-color fallback). Only a GENERATED image earns a
+  // credit; the built-in local gradient is a fallback, not a tool, so it's not
+  // credited (like the drawtext/solid card it replaces).
+  titleArtId: string | undefined;
   song?: boolean;
+  hasMusicCredit?: boolean;
 }): string[] {
   const models = [
-    args.song ? "Lyrics — Claude (Anthropic)" : "Narration — Claude (Anthropic)",
+    args.song
+      ? "Lyrics — Claude (Anthropic)"
+      : "Narration — Claude (Anthropic)",
   ];
   if (!args.song) {
     models.push(voiceCredit(args.ttsId, args.voiceLabel));
   }
-  const music = musicToolName(args.musicId);
+  const music = args.hasMusicCredit ? undefined : musicToolName(args.musicId);
   if (music) {
     models.push(music);
   }
-  if (args.titleArt) {
-    models.push("Title art — Nano Banana (Google Gemini)");
+  const titleArt = titleArtToolName(args.titleArtId);
+  if (titleArt) {
+    models.push(titleArt);
   }
   return models;
+}
+
+// A friendly credit for the title-background source, for the "Made with" block.
+// Only a generated image (Gemini Nano Banana) is credited; the local gradient
+// and the solid fallback are built-ins, not tools. Pure → unit-tested.
+export function titleArtToolName(id: string | undefined): string | undefined {
+  switch (id) {
+    case "gemini-image":
+      return "Title art — Nano Banana (Google Gemini)";
+    default:
+      return;
+  }
 }
 
 // Append a scrolling end-credits roll after the body. The caller assembles the
@@ -1613,6 +1654,8 @@ async function assembleVideo(args: {
     title,
     style: titleStyle(category),
     background,
+    // The local gradient is already dark by design; only dim external photos.
+    dimBackground: providers.titleBackground?.id !== "local-gradient",
     hasDrawtext,
     geometry,
     temps,
@@ -1642,7 +1685,8 @@ async function assembleVideo(args: {
         voiceLabel,
         ttsId: providers.tts?.id,
         musicId: providers.music?.id,
-        titleArt: Boolean(background),
+        titleArtId: background ? providers.titleBackground?.id : undefined,
+        hasMusicCredit: Boolean(musicCredit),
       }),
     });
     finalBody = await appendCredits({
@@ -1696,8 +1740,16 @@ async function generateRawSong(args: {
   notes: string[];
   log: Logger;
 }): Promise<string | null> {
-  const { provider, directionText, lyrics, targetSec, videoPath, temps, notes, log } =
-    args;
+  const {
+    provider,
+    directionText,
+    lyrics,
+    targetSec,
+    videoPath,
+    temps,
+    notes,
+    log,
+  } = args;
   if (!provider) {
     return null;
   }
@@ -1845,6 +1897,8 @@ async function assembleSongVideo(args: {
     title,
     style: titleStyle(category),
     background,
+    // The local gradient is already dark by design; only dim external photos.
+    dimBackground: providers.titleBackground?.id !== "local-gradient",
     hasDrawtext,
     geometry,
     temps,
@@ -1867,8 +1921,9 @@ async function assembleSongVideo(args: {
         voiceLabel: "",
         ttsId: undefined,
         musicId: providers.music?.id,
-        titleArt: Boolean(background),
+        titleArtId: background ? providers.titleBackground?.id : undefined,
         song: true,
+        hasMusicCredit: Boolean(musicCredit),
       }),
     });
     finalBody = await appendCredits({
@@ -2080,8 +2135,18 @@ async function synthesizeClips(args: {
   log: Logger;
   echo?: Echo;
 }): Promise<RenderedClip[]> {
-  const { ffmpeg, say, tts, steps, byIndex, videoPath, temps, notes, log, echo } =
-    args;
+  const {
+    ffmpeg,
+    say,
+    tts,
+    steps,
+    byIndex,
+    videoPath,
+    temps,
+    notes,
+    log,
+    echo,
+  } = args;
   let provider: SpeechSynth | undefined = tts
     ? { ext: "wav", run: (t, o) => tts.synthesize(t, o) }
     : undefined;
@@ -2133,10 +2198,23 @@ async function buildTitleCard(args: {
   style: { font: string; color: string };
   geometry: ProbedVideo;
   background?: string;
+  // Darken the background before overlaying text. On by default for arbitrary
+  // (often bright) generated photos; skipped for the local gradient, which is
+  // already dark by design — dimming it further just muddies the card.
+  dimBackground?: boolean;
   temps: string[];
   outPath: string;
 }): Promise<void> {
-  const { ffmpeg, title, style, geometry, background, temps, outPath } = args;
+  const {
+    ffmpeg,
+    title,
+    style,
+    geometry,
+    background,
+    dimBackground = true,
+    temps,
+    outPath,
+  } = args;
   // Size text to the frame, then word-wrap; shrink a touch when it spills past
   // ~3 lines so a long title still fits without overflowing the card.
   const baseSize = Math.max(24, Math.round(geometry.height / 12));
@@ -2170,10 +2248,11 @@ async function buildTitleCard(args: {
     `boxborderw=${Math.round(fontSize * 0.6)}`,
   ].join(":");
 
-  // Base layer: a provided background image (scaled to fill + darkened so white
-  // text reads), else a solid black frame.
+  // Base layer: a provided background image (scaled to fill, darkened when it's
+  // an arbitrary photo so white text reads), else a solid black frame.
+  const dim = dimBackground ? "eq=brightness=-0.25," : "";
   const filter = background
-    ? `scale=${geometry.width}:${geometry.height}:force_original_aspect_ratio=increase,crop=${geometry.width}:${geometry.height},eq=brightness=-0.25,drawtext=${drawtext},fps=${geometry.frameRate},setpts=N/FRAME_RATE/TB`
+    ? `scale=${geometry.width}:${geometry.height}:force_original_aspect_ratio=increase,crop=${geometry.width}:${geometry.height},${dim}drawtext=${drawtext},fps=${geometry.frameRate},setpts=N/FRAME_RATE/TB`
     : `drawtext=${drawtext}`;
   const input = background
     ? ["-loop", "1", "-t", String(TITLE_SEC), "-i", background]
@@ -2531,10 +2610,20 @@ async function prependTitleCard(args: {
   title: string;
   style: { font: string; color: string };
   background?: string;
+  dimBackground?: boolean;
   geometry: ProbedVideo;
   temps: string[];
 }): Promise<string> {
-  const { ffmpeg, videoPath, title, style, background, geometry, temps } = args;
+  const {
+    ffmpeg,
+    videoPath,
+    title,
+    style,
+    background,
+    dimBackground,
+    geometry,
+    temps,
+  } = args;
   const titlePath = `${videoPath}.title.webm`;
   temps.push(titlePath);
   await buildTitleCard({
@@ -2542,6 +2631,7 @@ async function prependTitleCard(args: {
     title,
     style,
     background,
+    dimBackground,
     geometry,
     temps,
     outPath: titlePath,
@@ -2569,6 +2659,7 @@ async function applyTitleCard(args: {
   title: string;
   style: { font: string | undefined; color: string };
   background?: string;
+  dimBackground?: boolean;
   hasDrawtext: boolean;
   geometry: ProbedVideo | undefined;
   temps: string[];
@@ -2581,6 +2672,7 @@ async function applyTitleCard(args: {
     title,
     style,
     background,
+    dimBackground,
     hasDrawtext,
     geometry,
     temps,
@@ -2594,6 +2686,7 @@ async function applyTitleCard(args: {
       title,
       style: { font: style.font, color: style.color },
       background,
+      dimBackground,
       geometry,
       temps,
     });
@@ -2831,7 +2924,7 @@ export async function cinematicProcess(
     // music" note contradicts the oMLX/ACE-Step/archive providers above.
     if (gemini.tts) {
       notes.push(...gemini.notes);
-    } else if (!omlx.tts && !providers.music) {
+    } else if (!(omlx.tts || providers.music)) {
       notes.push(...gemini.notes);
     }
 
@@ -2913,7 +3006,7 @@ export async function cinematicProcess(
       const lyricBlock = `[verse]\n${orderedTexts.join("\n")}`;
 
       const musicLabel =
-        (await songMusic.credit?.(direction.text).catch(() => undefined)) ??
+        (await songMusic.credit?.(direction.theme).catch(() => undefined)) ??
         songMusic.id;
       const meta: CinematicMeta = {
         direction: direction.label,
@@ -2933,7 +3026,7 @@ export async function cinematicProcess(
         progress("composing the song…");
         const generated = await generateRawSong({
           provider: songMusic,
-          directionText: direction.text,
+          directionText: direction.theme,
           lyrics: lyricBlock,
           targetSec: songTargetSec(narratableSteps.length),
           videoPath,
@@ -3000,10 +3093,17 @@ export async function cinematicProcess(
         alignedCues = alignLyricsToSegments(orderedTexts, cluster).map((c) => {
           const start = Math.max(0, c.start - trimStart);
           const end = Math.max(0.5, c.end - trimStart);
-          return { start, end: Math.min(end, start + MAX_CUE_SEC), text: c.text };
+          return {
+            start,
+            end: Math.min(end, start + MAX_CUE_SEC),
+            text: c.text,
+          };
         });
         const bodyLen = Math.max(6, region.end - region.start);
-        holdDurSec = Array.from({ length: stepCount }, () => bodyLen / stepCount);
+        holdDurSec = Array.from(
+          { length: stepCount },
+          () => bodyLen / stepCount
+        );
         notes.push(
           `captions timed to the detected vocals (${alignedCues.length}/${orderedTexts.length} lines sung)`
         );
@@ -3020,6 +3120,11 @@ export async function cinematicProcess(
       }
 
       // 4. Build the (silent) video around the song: re-time, title, credits.
+      // Same local-gradient default as the narration path (see above).
+      songProviders.titleBackground ??= createLocalTitleBackground(
+        ffmpegPath,
+        direction.category
+      );
       const assembled = await assembleSongVideo({
         ffmpeg: ffmpegPath,
         videoPath: input,
@@ -3028,7 +3133,7 @@ export async function cinematicProcess(
         retimeMode: songRetimeMode(process.env),
         title: lyrics.title,
         category: direction.category,
-        directionText: direction.text,
+        directionText: direction.theme,
         providers: songProviders,
         hasDrawtext,
         repoDir,
@@ -3060,7 +3165,10 @@ export async function cinematicProcess(
           alignedCues && alignedCues.length > 0
             ? alignedCues
             : layoutSongCues(
-                ordered.map((x) => ({ start: stepTimes[x.i] ?? 0, text: x.text })),
+                ordered.map((x) => ({
+                  start: stepTimes[x.i] ?? 0,
+                  text: x.text,
+                })),
                 (await audioDurationSec(ffmpegPath, finalBody)) ?? 0
               );
         if (cues.length > 0) {
@@ -3097,7 +3205,9 @@ export async function cinematicProcess(
       // 7. Mix the song under the video and burn the captions. The mix's -t cap
       // trims the long song down to the video length.
       progress(
-        burnCaptions ? "mixing the song and burning captions…" : "mixing the song…"
+        burnCaptions
+          ? "mixing the song and burning captions…"
+          : "mixing the song…"
       );
       const finalPath = `${videoPath}.cinematic.webm`;
       temps.push(finalPath);
@@ -3149,6 +3259,15 @@ export async function cinematicProcess(
     }
     const { direction, narration, repoDir, base } = planned;
 
+    // Default the title-card background to a local themed gradient when no
+    // generated-image provider (Gemini) is configured — network-free and always
+    // available, so a plain install still gets an intentional card. The palette
+    // follows the resolved theme, so this waits until `direction` is known.
+    providers.titleBackground ??= createLocalTitleBackground(
+      ffmpegPath,
+      direction.category
+    );
+
     // 4. Voice + TTS: one clip per step that got narration text. The provider
     // voices it when available (else macOS `say`). Surface the chosen
     // direction/voice/rate so a delightful run can be reproduced (pin via
@@ -3186,7 +3305,9 @@ export async function cinematicProcess(
       clips,
       title: narration.title,
       category: direction.category,
-      directionText: direction.text,
+      // Theme only — the narration style ("…as natural prose narration") must
+      // not reach the music/title-art providers (it made the score spoken-word).
+      directionText: direction.theme,
       providers,
       voiceLabel: speech.label,
       hasDrawtext,

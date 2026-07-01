@@ -5,29 +5,29 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildAudioMix,
   buildLyricsPrompt,
+  buildModelCredits,
   buildNarrationPrompt,
   buildSrt,
   captionLineMax,
-  buildModelCredits,
   changeScaleHint,
   customSaySynth,
-  layoutSongCues,
-  songHoldSec,
-  songRetimeMode,
-  songTargetSec,
   extractCaptions,
+  layoutSongCues,
   lyricsPathFor,
   parseFilterNames,
-  parseLyricsJson,
-  precinematicVideoPath,
-  sayCommand,
-  voiceCredit,
   parseInstalledVoices,
+  parseLyricsJson,
   parseNarrationJson,
   pickVoice,
   planRetime,
+  precinematicVideoPath,
+  sayCommand,
   secToSrtTimestamp,
+  songHoldSec,
+  songRetimeMode,
+  songTargetSec,
   titleStyle,
+  voiceCredit,
   wrapCaption,
   wrapTitle,
 } from "./narrate.js";
@@ -268,10 +268,14 @@ describe("songHoldSec", () => {
     expect(songHoldSec("two words")).toBe(3.5); // floor
     expect(songHoldSec("")).toBe(3.5);
     // 10 words → 10/2.5 + 1 = 5s
-    expect(songHoldSec("one two three four five six seven eight nine ten")).toBe(5);
+    expect(
+      songHoldSec("one two three four five six seven eight nine ten")
+    ).toBe(5);
   });
   it("caps very long lines", () => {
-    expect(songHoldSec(Array.from({ length: 40 }, () => "x").join(" "))).toBe(6.5);
+    expect(songHoldSec(Array.from({ length: 40 }, () => "x").join(" "))).toBe(
+      6.5
+    );
   });
 });
 
@@ -351,10 +355,7 @@ describe("customSaySynth", () => {
     const synth = customSaySynth(
       'printf "%s" "$1" > "$CANARY_SAY_OUTPUT" # --some-flag'
     );
-    const out = path.join(
-      os.tmpdir(),
-      `canary-customsay-${process.pid}.txt`
-    );
+    const out = path.join(os.tmpdir(), `canary-customsay-${process.pid}.txt`);
     try {
       await synth.run("hello from canary", out);
       expect(readFileSync(out, "utf8")).toBe("hello from canary");
@@ -386,7 +387,7 @@ describe("buildModelCredits", () => {
         voiceLabel: "omlx:M",
         ttsId: "omlx-tts",
         musicId: "archive-music",
-        titleArt: true,
+        titleArtId: "gemini-image",
       })
     ).toEqual([
       "Narration — Claude (Anthropic)",
@@ -396,13 +397,38 @@ describe("buildModelCredits", () => {
     ]);
   });
 
+  it("does not credit the built-in local gradient as title art", () => {
+    expect(
+      buildModelCredits({
+        voiceLabel: "Samantha",
+        ttsId: undefined,
+        musicId: undefined,
+        titleArtId: "local-gradient",
+      })
+    ).toEqual(["Narration — Claude (Anthropic)", "Voice — Samantha"]);
+  });
+
+  it("drops the generic music line when a dedicated Music credit already names it", () => {
+    // A resolved provider.credit() (the "Music" section) credits the score
+    // richly; the generic "Music — <tool>" line would be a second credit.
+    expect(
+      buildModelCredits({
+        voiceLabel: "omlx:M",
+        ttsId: "omlx-tts",
+        musicId: "acestep-music",
+        titleArtId: undefined,
+        hasMusicCredit: true,
+      })
+    ).toEqual(["Narration — Claude (Anthropic)", "Voice — oMLX M"]);
+  });
+
   it("omits music and title art when none were used", () => {
     expect(
       buildModelCredits({
         voiceLabel: "Samantha",
         ttsId: undefined,
         musicId: undefined,
-        titleArt: false,
+        titleArtId: undefined,
       })
     ).toEqual(["Narration — Claude (Anthropic)", "Voice — Samantha"]);
   });
@@ -413,13 +439,10 @@ describe("buildModelCredits", () => {
         voiceLabel: "ignored",
         ttsId: "omlx-tts",
         musicId: "acestep-music",
-        titleArt: false,
+        titleArtId: undefined,
         song: true,
       })
-    ).toEqual([
-      "Lyrics — Claude (Anthropic)",
-      "Music — ACE-Step 1.5 (local)",
-    ]);
+    ).toEqual(["Lyrics — Claude (Anthropic)", "Music — ACE-Step 1.5 (local)"]);
   });
 });
 
@@ -453,9 +476,13 @@ describe("parseLyricsJson", () => {
   it("rejects a bad title, a missing/empty steps array, or malformed entries", () => {
     expect(parseLyricsJson('{"title":"x"}')).toBeNull();
     expect(parseLyricsJson('{"steps":[{"index":0,"lyric":"a"}]}')).toBeNull();
-    expect(parseLyricsJson('{"title":"","steps":[{"index":0,"lyric":"a"}]}')).toBeNull();
+    expect(
+      parseLyricsJson('{"title":"","steps":[{"index":0,"lyric":"a"}]}')
+    ).toBeNull();
     // All lines blank → no usable line survives.
-    expect(parseLyricsJson('{"title":"x","steps":[{"index":0,"lyric":"  "}]}')).toBeNull();
+    expect(
+      parseLyricsJson('{"title":"x","steps":[{"index":0,"lyric":"  "}]}')
+    ).toBeNull();
     expect(parseLyricsJson('{"title":"x","steps":[{"index":0}]}')).toBeNull();
     expect(parseLyricsJson('{"title":"x","steps":"nope"}')).toBeNull();
     expect(parseLyricsJson("not json")).toBeNull();
