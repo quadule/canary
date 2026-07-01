@@ -72,11 +72,11 @@ function openInOSDefault(target: string): void {
 // How much to keep around each step's script execution. The browser is driven
 // during a step; the long idle gaps BETWEEN steps (the agent reasoning) plus the
 // leading page load and the trailing tail are the dead air worth trimming.
-const STEP_PAD_BEFORE_SEC = 0.4;
+export const STEP_PAD_BEFORE_SEC = 0.6;
 // Generous tail: an action's visual effect (a navigation, a re-render) often
 // lands just AFTER the step's script returns, and the video clock can begin a
 // touch before createdAt — both must stay inside the kept window.
-const STEP_PAD_AFTER_SEC = 1.5;
+export const STEP_PAD_AFTER_SEC = 1.5;
 
 // Map each recorded step to a keep-window in video time. The video starts at the
 // session's createdAt, and each step is stamped with the same wall clock, so
@@ -274,7 +274,9 @@ async function cinematizeSessionVideo(
   video.bytes = await stat(video.path)
     .then((s) => s.size)
     .catch(() => video.bytes);
-  process.stderr.write(opts.song ? "  ✓ song added\n" : "  ✓ narration added\n");
+  process.stderr.write(
+    opts.song ? "  ✓ song added\n" : "  ✓ narration added\n"
+  );
   // Surface the chosen parameters so a delightful random run can be reproduced
   // (pin via --prompt and, for narration, $CANARY_SAY_VOICE / $CANARY_SAY_RATE).
   if (outcome.meta) {
@@ -384,7 +386,10 @@ export async function sessionEnd(
     // otherwise only in-memory at session end; without this a re-run would have
     // no preserved timings to source from after we skip re-condensing.
     await writeSessionRecord(record).catch((err) => {
-      logger.warn({ err, sessionId: id }, "could not persist cinematic timings");
+      logger.warn(
+        { err, sessionId: id },
+        "could not persist cinematic timings"
+      );
     });
   }
 

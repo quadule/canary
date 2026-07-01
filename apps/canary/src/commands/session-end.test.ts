@@ -1,9 +1,21 @@
 import { describe, expect, it } from "vitest";
 
 import type { SessionRecord, SessionStep } from "../session/registry.js";
-import { stepKeepWindows } from "./session-end.js";
+import {
+  STEP_PAD_AFTER_SEC,
+  STEP_PAD_BEFORE_SEC,
+  stepKeepWindows,
+} from "./session-end.js";
 
 const CREATED_AT = "2026-06-02T10:00:00.000Z";
+
+// Expected keep-window for a step starting `startSec` into the recording and
+// running `durSec` — derived from the pad constants so tweaking them doesn't
+// require editing these expectations.
+const windowFor = (startSec: number, durSec: number) => ({
+  start: startSec - STEP_PAD_BEFORE_SEC,
+  end: startSec + durSec + STEP_PAD_AFTER_SEC,
+});
 
 function recordWith(steps: SessionStep[]): SessionRecord {
   return {
@@ -39,7 +51,7 @@ describe("stepKeepWindows", () => {
         step({ startedAt: "2026-06-02T10:00:02.000Z", durationMs: 1000 }),
       ])
     );
-    expect(windows).toEqual([{ start: 1.6, end: 4.5 }]);
+    expect(windows).toEqual([windowFor(2, 1)]);
   });
 
   it("drops failed steps so stuck/timed-out attempts aren't kept", () => {
@@ -56,7 +68,7 @@ describe("stepKeepWindows", () => {
         step({ startedAt: "2026-06-02T10:00:33.000Z", durationMs: 1000 }),
       ])
     );
-    expect(windows).toEqual([{ start: 32.6, end: 35.5 }]);
+    expect(windows).toEqual([windowFor(33, 1)]);
   });
 
   it("returns no windows when every step failed (falls back to freezedetect)", () => {
