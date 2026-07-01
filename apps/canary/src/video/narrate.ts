@@ -40,6 +40,7 @@ import {
   type CreditSection,
 } from "./credits.js";
 import { createLocalTitleBackground } from "./local-background.js";
+import { resolveLocalImage } from "./local-image.js";
 import { resolveOmlxProviders } from "./omlx.js";
 import {
   type MediaProviders,
@@ -56,6 +57,7 @@ import {
   type ThemeCategory,
 } from "./themes.js";
 import { transcribeSong } from "./transcribe.js";
+import { resolveWikimediaImage } from "./wikimedia.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -1416,12 +1418,16 @@ export function buildModelCredits(args: {
 }
 
 // A friendly credit for the title-background source, for the "Made with" block.
-// Only a generated image (Gemini Nano Banana) is credited; the local gradient
-// and the solid fallback are built-ins, not tools. Pure → unit-tested.
+// Generated (Gemini/local model) and stock (Wikimedia) sources are credited; the
+// built-in local gradient and the solid fallback are not tools. Pure → tested.
 export function titleArtToolName(id: string | undefined): string | undefined {
   switch (id) {
     case "gemini-image":
       return "Title art — Nano Banana (Google Gemini)";
+    case "local-image":
+      return "Title art — local image model";
+    case "wikimedia-image":
+      return "Title art — Wikimedia Commons (CC)";
     default:
       return;
   }
@@ -2910,12 +2916,26 @@ export async function cinematicProcess(
       echo,
     });
     const gemini = resolveMediaProviders({ env: process.env, log });
+    // Title-background sources: a configured local image server ($CANARY_IMAGE_URL)
+    // wins (explicit user config), then Gemini (Nano Banana), then opt-in Wikimedia
+    // Commons ($CANARY_WIKIMEDIA_IMAGES) real imagery; the always-available local
+    // gradient is added later (once the theme is known) as the final fallback.
+    const localImage = resolveLocalImage({ env: process.env, log, echo });
+    const wikimedia = resolveWikimediaImage({
+      env: process.env,
+      notes,
+      log,
+      echo,
+    });
     const providers: MediaProviders = {
       tts: omlx.tts ?? gemini.tts,
       // Prefer stock (archive.org) when opted in, then generated (ACE-Step),
       // then Gemini Lyria.
       music: archive.music ?? acestep.music ?? gemini.music,
-      titleBackground: gemini.titleBackground,
+      titleBackground:
+        localImage.titleBackground ??
+        gemini.titleBackground ??
+        wikimedia.titleBackground,
       notes: [],
     };
     notes.push(...omlx.notes, ...acestep.notes);
@@ -2948,7 +2968,12 @@ export async function cinematicProcess(
       }
       const songProviders: MediaProviders = {
         music: songMusic,
-        titleBackground: gemini.titleBackground,
+        // Same background chain as the narration path (local image → Gemini →
+        // Wikimedia; local gradient added later as the fallback).
+        titleBackground:
+          localImage.titleBackground ??
+          gemini.titleBackground ??
+          wikimedia.titleBackground,
         notes: [],
       };
 

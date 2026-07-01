@@ -164,6 +164,12 @@ or a Gemini key (Lyria). Combine with --prompt to steer the genre.
   $CANARY_TRANSCRIBER / $CANARY_WHISPER_CLI / $CANARY_WHISPER_MODEL   override caption transcription:
                         force a backend (whisperx | mlx-whisper | whisper-cpp), its binary, or its
                         model (a size/HF repo for whisperx/mlx, a ggml path for whisper.cpp)
+  $CANARY_IMAGE_URL / $CANARY_IMAGE_API_KEY / $CANARY_IMAGE_MODEL   generate the title-card background
+                        with a local OpenAI-images-compatible server (POST /v1/images/generations)
+  $CANARY_WIKIMEDIA_IMAGES=1   use a real, openly-licensed photo from Wikimedia Commons for the title
+                        card (permissive licenses only; attribution added to the run notes)
+                        Title-background order: local image server, then Gemini (Nano Banana), then
+                        Wikimedia, then a themed local gradient (always available, no key/network)
 
   canary session end "$id"
   canary session end "$id" --cinematic
