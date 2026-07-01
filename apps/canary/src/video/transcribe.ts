@@ -1,24 +1,202 @@
 // Best-effort transcription of a generated song, for song-mode caption alignment.
 //
-// ACE-Step paces and drops our lyrics unpredictably, so to time the captions to
-// the ACTUAL singing we transcribe the rendered song with whisper.cpp's
-// `whisper-cli` and a local ggml model. This is OPTIONAL: with no model
-// (`$CANARY_WHISPER_MODEL` unset) or any failure it returns null, and song mode
-// falls back to step-timed captions. Mirrors the other providers' contract — a
-// missing local tool degrades gracefully, never throws into the pipeline.
+// ACE-Step (and Lyria) pace and drop our lyrics unpredictably, so to time the
+// captions to the ACTUAL singing we transcribe the rendered song and align our
+// clean written lines to it. This is OPTIONAL: when no transcriber is found (and
+// none is configured) or any step fails it returns null, and song mode falls back
+// to step-timed captions. Mirrors the other providers' contract — a missing local
+// tool degrades gracefully, never throws into the pipeline.
+//
+// BACKENDS (autodetected, English-only): any of these on PATH works, no env var
+// required. Preference order — whisperx first (it runs a wav2vec2 phoneme
+// forced-alignment pass for tight word timings), then mlx-whisper (Apple-Silicon,
+// pulls models from the HuggingFace cache), then whisper.cpp's whisper-cli (needs
+// a local ggml model, found in the HF cache or a whisper.cpp models dir). All
+// three emit an `.srt`, which parseWhisperSrt already understands. Override
+// detection with $CANARY_TRANSCRIBER (whisperx|mlx-whisper|whisper-cpp),
+// $CANARY_WHISPER_CLI (binary), and $CANARY_WHISPER_MODEL (model size/repo for
+// whisperx/mlx, or a ggml path for whisper.cpp).
 import { execFile } from "node:child_process";
-import { readFile, rm } from "node:fs/promises";
+import { access, readdir, readFile, rm } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 import { parseWhisperSrt, type Segment } from "./align.js";
 
 const execFileAsync = promisify(execFile);
 const TIMEOUT_MS = 300_000;
 const MAX_BUFFER = 64 * 1024 * 1024;
+const WHICH_TIMEOUT_MS = 5000;
 
 type Echo = (line: string) => void;
 
-// Resolve the whisper-cli binary and model path from the environment. Returns
-// null (transcription disabled) when no model is configured. Pure → unit-tested.
+export type TranscriberKind = "whisperx" | "mlx-whisper" | "whisper-cpp";
+
+// Autodetection preference order. whisperx leads because it does phoneme-level
+// forced alignment; whisper.cpp trails because it additionally needs a model file.
+const KIND_ORDER: TranscriberKind[] = [
+  "whisperx",
+  "mlx-whisper",
+  "whisper-cpp",
+];
+
+// The default CLI binary name for each backend.
+const DEFAULT_CLI: Record<TranscriberKind, string> = {
+  whisperx: "whisperx",
+  "mlx-whisper": "mlx_whisper",
+  "whisper-cpp": "whisper-cli",
+};
+
+// The default model per backend (English). whisperx takes a faster-whisper size;
+// mlx-whisper takes an HF repo id; whisper.cpp needs a resolved ggml path (no
+// default — see resolveWhisperCppModel).
+const DEFAULT_MODEL: Partial<Record<TranscriberKind, string>> = {
+  whisperx: "small.en",
+  "mlx-whisper": "mlx-community/whisper-small.en-mlx",
+};
+
+// PyPI-installable backends can be run WITHOUT a PATH install via `uvx <pkg>`
+// (uv's tool runner) — this is how whisperx is commonly installed. Maps the kind
+// to the package name uvx should run. whisper.cpp is a compiled binary, not a
+// pip package, so it has no uvx path.
+const UVX_PACKAGE: Partial<Record<TranscriberKind, string>> = {
+  whisperx: "whisperx",
+};
+
+export interface Transcriber {
+  // The executable to run — usually the tool itself, but "uvx" when the tool is
+  // launched via uv's runner (prefixArgs then carries the package name).
+  cli: string;
+  kind: TranscriberKind;
+  // whisperx/mlx: a model size or HF repo id. whisper-cpp: a ggml model path.
+  model: string;
+  // Args inserted BEFORE the tool's own args (e.g. ["whisperx"] for `uvx whisperx`).
+  prefixArgs: string[];
+}
+
+// ---------------------------------------------------------------------------
+// Pure helpers (unit-tested; no I/O).
+// ---------------------------------------------------------------------------
+
+// The `.srt` a backend writes for `wav` under `outDir`/`outBase`. whisperx and
+// mlx-whisper name the output after the INPUT file inside --output-dir; whisper.cpp
+// writes `<outBase>.srt` from its `-of` flag. Pure → unit-tested.
+export function transcriptSrtPath(
+  kind: TranscriberKind,
+  args: { wav: string; outDir: string; outBase: string }
+): string {
+  if (kind === "whisper-cpp") {
+    return `${args.outBase}.srt`;
+  }
+  const stem = path.basename(args.wav).replace(/\.[^.]+$/, "");
+  return path.join(args.outDir, `${stem}.srt`);
+}
+
+// The CLI arguments to transcribe `wav` to an English `.srt`. whisperx keeps its
+// default alignment pass ON (the reason it leads the order) — we only pin the
+// language so it skips detection and loads the English alignment model. Pure →
+// unit-tested.
+export function buildTranscribeArgs(
+  t: Transcriber,
+  args: { wav: string; outDir: string; outBase: string }
+): string[] {
+  switch (t.kind) {
+    case "whisperx":
+      return [
+        args.wav,
+        "--model",
+        t.model,
+        "--language",
+        "en",
+        "--output_format",
+        "srt",
+        "--output_dir",
+        args.outDir,
+      ];
+    case "mlx-whisper":
+      return [
+        args.wav,
+        "--model",
+        t.model,
+        "--language",
+        "en",
+        "--output-format",
+        "srt",
+        "--output-dir",
+        args.outDir,
+      ];
+    default:
+      return [
+        "-m",
+        t.model,
+        "-f",
+        args.wav,
+        "-l",
+        "en",
+        "-osrt",
+        "-of",
+        args.outBase,
+        "--no-prints",
+      ];
+  }
+}
+
+// How to launch a backend, given what's available: an explicit override CLI
+// (may include args, e.g. "uvx whisperx"), else the direct binary on PATH, else
+// `uvx <pkg>` for a pip-installable backend when uvx is present. Returns null
+// when nothing can launch it. Pure → unit-tested.
+export function launchFor(
+  kind: TranscriberKind,
+  opts: { overrideCli?: string; hasDirect: boolean; hasUvx: boolean }
+): { cli: string; prefixArgs: string[] } | null {
+  const override = opts.overrideCli?.trim();
+  if (override) {
+    const parts = override.split(/\s+/);
+    return { cli: parts[0] ?? override, prefixArgs: parts.slice(1) };
+  }
+  if (opts.hasDirect) {
+    return { cli: DEFAULT_CLI[kind], prefixArgs: [] };
+  }
+  const pkg = UVX_PACKAGE[kind];
+  if (pkg && opts.hasUvx) {
+    return { cli: "uvx", prefixArgs: [pkg] };
+  }
+  return null;
+}
+
+// Pick the best ggml model from a list of candidate filenames, preferring an
+// English (`.en`) build and a small/base size (fast, plenty for sung lyrics).
+// Pure → unit-tested.
+export function pickGgmlModel(files: string[]): string | undefined {
+  const bins = files.filter((f) => /^ggml-.*\.bin$/i.test(f));
+  if (bins.length === 0) {
+    return;
+  }
+  const score = (f: string): number => {
+    let s = 0;
+    if (/\.en\.bin$/i.test(f)) {
+      s += 100; // English-only build
+    }
+    if (/base/i.test(f)) {
+      s += 20;
+    } else if (/small/i.test(f)) {
+      s += 18;
+    } else if (/tiny/i.test(f)) {
+      s += 15;
+    } else if (/medium/i.test(f)) {
+      s += 8;
+    }
+    return s;
+  };
+  return [...bins].sort((a, b) => score(b) - score(a) || a.localeCompare(b))[0];
+}
+
+// ---------------------------------------------------------------------------
+// Detection (I/O).
+// ---------------------------------------------------------------------------
+
+// Back-compat: the previous env-only resolver. Still honored — an explicit
+// $CANARY_WHISPER_MODEL selects the whisper.cpp backend directly. Pure → tested.
 export function resolveWhisper(env: NodeJS.ProcessEnv): {
   cli: string;
   model: string;
@@ -30,35 +208,189 @@ export function resolveWhisper(env: NodeJS.ProcessEnv): {
   return { cli: env.CANARY_WHISPER_CLI?.trim() || "whisper-cli", model };
 }
 
+// Whether `bin` resolves on PATH (or is an absolute path that exists).
+async function onPath(bin: string): Promise<boolean> {
+  if (bin.includes("/")) {
+    try {
+      await access(bin);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  try {
+    const probe = process.platform === "win32" ? "where" : "which";
+    await execFileAsync(probe, [bin], { timeout: WHICH_TIMEOUT_MS });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function listDir(dir: string): Promise<string[]> {
+  try {
+    return await readdir(dir);
+  } catch {
+    return [];
+  }
+}
+
+// Find a whisper.cpp ggml model: an explicit override, else the HuggingFace cache
+// (models--ggerganov--whisper.cpp/**), else a whisper.cpp models dir. Returns an
+// absolute path or undefined.
+async function resolveWhisperCppModel(
+  env: NodeJS.ProcessEnv
+): Promise<string | undefined> {
+  const override = env.CANARY_WHISPER_MODEL?.trim();
+  if (override) {
+    return override;
+  }
+  const home = homedir();
+  // 1) HuggingFace cache: ~/.cache/huggingface/hub/models--ggerganov--whisper.cpp/snapshots/<rev>/*.bin
+  const hfHub = env.HF_HOME
+    ? path.join(env.HF_HOME, "hub")
+    : path.join(home, ".cache", "huggingface", "hub");
+  const repoDir = path.join(
+    hfHub,
+    "models--ggerganov--whisper.cpp",
+    "snapshots"
+  );
+  for (const rev of await listDir(repoDir)) {
+    const snap = path.join(repoDir, rev);
+    const pick = pickGgmlModel(await listDir(snap));
+    if (pick) {
+      return path.join(snap, pick);
+    }
+  }
+  // 2) Common whisper.cpp models dirs.
+  const modelDirs = [
+    path.join(home, "whisper.cpp", "models"),
+    "/usr/local/share/whisper.cpp/models",
+    "/opt/homebrew/share/whisper.cpp/models",
+  ];
+  for (const dir of modelDirs) {
+    const pick = pickGgmlModel(await listDir(dir));
+    if (pick) {
+      return path.join(dir, pick);
+    }
+  }
+  return;
+}
+
+// The backends to try, in order: an explicit $CANARY_TRANSCRIBER wins, else the
+// back-compat $CANARY_WHISPER_MODEL (no kind → whisper.cpp), else the full
+// autodetect order. Pure → unit-tested.
+export function transcriberOrder(env: NodeJS.ProcessEnv): TranscriberKind[] {
+  const forced = env.CANARY_TRANSCRIBER?.trim() as TranscriberKind | undefined;
+  if (forced && KIND_ORDER.includes(forced)) {
+    return [forced];
+  }
+  if (env.CANARY_WHISPER_MODEL?.trim()) {
+    return ["whisper-cpp"];
+  }
+  return KIND_ORDER;
+}
+
+// Resolve one backend to a runnable Transcriber, or null when it isn't available
+// (binary not found, or whisper.cpp with no model). `forced` is the explicit
+// $CANARY_TRANSCRIBER, used to scope the CLI override.
+async function resolveKind(
+  kind: TranscriberKind,
+  env: NodeJS.ProcessEnv,
+  forced: TranscriberKind | undefined
+): Promise<Transcriber | null> {
+  // A CANARY_WHISPER_CLI override only applies when the kind is forced (or it's
+  // the whisper-cpp back-compat path) — otherwise a stray override would hijack
+  // an autodetected backend it wasn't meant for.
+  const overrideApplies =
+    forced === kind || (kind === "whisper-cpp" && !forced);
+  const overrideCli = overrideApplies
+    ? env.CANARY_WHISPER_CLI?.trim() || undefined
+    : undefined;
+  const hasDirect = !overrideCli && (await onPath(DEFAULT_CLI[kind]));
+  const hasUvx =
+    !overrideCli && UVX_PACKAGE[kind] ? await onPath("uvx") : false;
+  const launch = launchFor(kind, { overrideCli, hasDirect, hasUvx });
+  if (!launch) {
+    return null;
+  }
+  // Confirm an explicit override binary actually resolves.
+  if (overrideCli && !(await onPath(launch.cli))) {
+    return null;
+  }
+  const model =
+    kind === "whisper-cpp"
+      ? await resolveWhisperCppModel(env)
+      : env.CANARY_WHISPER_MODEL?.trim() || DEFAULT_MODEL[kind];
+  return model ? { kind, ...launch, model } : null;
+}
+
+// Resolve which transcriber to use by trying transcriberOrder() and returning the
+// first that's actually available; null when none is.
+export async function resolveTranscriber(
+  env: NodeJS.ProcessEnv
+): Promise<Transcriber | null> {
+  const forced = env.CANARY_TRANSCRIBER?.trim() as TranscriberKind | undefined;
+  for (const kind of transcriberOrder(env)) {
+    const resolved = await resolveKind(kind, env, forced);
+    if (resolved) {
+      return resolved;
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Runner (I/O).
+// ---------------------------------------------------------------------------
+
 // Transcribe `audioPath` into timed segments, or null when unavailable/failed.
-// Converts to 16 kHz mono first (whisper's expected input), runs whisper-cli to
-// an `.srt`, parses it, and cleans up the temps. Never throws.
+// Converts to 16 kHz mono first (what every backend expects), runs the resolved
+// transcriber to an `.srt`, parses it, and cleans up the temps. Never throws.
 export async function transcribeSong(args: {
   audioPath: string;
   ffmpeg: string;
   env: NodeJS.ProcessEnv;
   echo?: Echo;
 }): Promise<Segment[] | null> {
-  const resolved = resolveWhisper(args.env);
-  if (!resolved) {
+  const transcriber = await resolveTranscriber(args.env);
+  if (!transcriber) {
     return null;
   }
-  const { cli, model } = resolved;
   const wav = `${args.audioPath}.16k.wav`;
+  const outDir = path.dirname(args.audioPath);
   const outBase = `${args.audioPath}.whisper`;
-  const srtPath = `${outBase}.srt`;
+  const srtPath = transcriptSrtPath(transcriber.kind, {
+    wav,
+    outDir,
+    outBase,
+  });
   try {
     await execFileAsync(
       args.ffmpeg,
-      ["-hide_banner", "-nostats", "-y", "-i", args.audioPath, "-ar", "16000", "-ac", "1", wav],
+      [
+        "-hide_banner",
+        "-nostats",
+        "-y",
+        "-i",
+        args.audioPath,
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        wav,
+      ],
       { timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER }
     );
-    args.echo?.(`$ ${cli} -m ${model} -f ${wav} -osrt`);
-    await execFileAsync(
-      cli,
-      ["-m", model, "-f", wav, "-osrt", "-of", outBase, "--no-prints"],
-      { timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER }
-    );
+    const cliArgs = [
+      ...transcriber.prefixArgs,
+      ...buildTranscribeArgs(transcriber, { wav, outDir, outBase }),
+    ];
+    args.echo?.(`$ ${transcriber.cli} ${cliArgs.join(" ")}`);
+    await execFileAsync(transcriber.cli, cliArgs, {
+      timeout: TIMEOUT_MS,
+      maxBuffer: MAX_BUFFER,
+    });
     const srt = await readFile(srtPath, "utf8");
     const segments = parseWhisperSrt(srt);
     return segments.length > 0 ? segments : null;

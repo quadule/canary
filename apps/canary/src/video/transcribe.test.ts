@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { resolveWhisper } from "./transcribe.js";
+import {
+  buildTranscribeArgs,
+  launchFor,
+  pickGgmlModel,
+  resolveWhisper,
+  transcriptSrtPath,
+} from "./transcribe.js";
 
 describe("resolveWhisper", () => {
   it("is disabled without a model path", () => {
@@ -17,5 +23,144 @@ describe("resolveWhisper", () => {
         CANARY_WHISPER_CLI: "/usr/local/bin/whisper-cli",
       })
     ).toEqual({ cli: "/usr/local/bin/whisper-cli", model: "/m/x.bin" });
+  });
+});
+
+describe("pickGgmlModel", () => {
+  it("prefers an English base/small build, ignores non-ggml files", () => {
+    expect(
+      pickGgmlModel([
+        "README.md",
+        "ggml-large-v3.bin",
+        "ggml-small.en.bin",
+        "ggml-base.en.bin",
+      ])
+    ).toBe("ggml-base.en.bin");
+  });
+  it("falls back to any ggml model when no English build exists", () => {
+    expect(pickGgmlModel(["ggml-large-v3.bin"])).toBe("ggml-large-v3.bin");
+  });
+  it("returns undefined when there's no ggml model", () => {
+    expect(pickGgmlModel(["notes.txt", "model.pt"])).toBeUndefined();
+  });
+});
+
+describe("transcriptSrtPath", () => {
+  it("whisper.cpp writes <outBase>.srt", () => {
+    expect(
+      transcriptSrtPath("whisper-cpp", {
+        wav: "/t/song.wav.16k.wav",
+        outDir: "/t",
+        outBase: "/t/song.wav.whisper",
+      })
+    ).toBe("/t/song.wav.whisper.srt");
+  });
+  it("whisperx/mlx name the srt after the input file in --output-dir", () => {
+    for (const kind of ["whisperx", "mlx-whisper"] as const) {
+      expect(
+        transcriptSrtPath(kind, {
+          wav: "/t/song.wav.16k.wav",
+          outDir: "/t",
+          outBase: "/t/song.wav.whisper",
+        })
+      ).toBe("/t/song.wav.16k.srt");
+    }
+  });
+});
+
+describe("launchFor", () => {
+  it("runs whisperx directly when it's on PATH", () => {
+    expect(launchFor("whisperx", { hasDirect: true, hasUvx: true })).toEqual({
+      cli: "whisperx",
+      prefixArgs: [],
+    });
+  });
+  it("falls back to `uvx whisperx` when only uvx is present", () => {
+    expect(launchFor("whisperx", { hasDirect: false, hasUvx: true })).toEqual({
+      cli: "uvx",
+      prefixArgs: ["whisperx"],
+    });
+  });
+  it("has no uvx path for whisper.cpp (a compiled binary)", () => {
+    expect(
+      launchFor("whisper-cpp", { hasDirect: false, hasUvx: true })
+    ).toBeNull();
+  });
+  it("honors an override CLI, splitting args (e.g. 'uvx whisperx')", () => {
+    expect(
+      launchFor("whisperx", {
+        overrideCli: "uvx whisperx",
+        hasDirect: false,
+        hasUvx: false,
+      })
+    ).toEqual({ cli: "uvx", prefixArgs: ["whisperx"] });
+  });
+  it("returns null when nothing can launch the backend", () => {
+    expect(
+      launchFor("mlx-whisper", { hasDirect: false, hasUvx: true })
+    ).toBeNull();
+  });
+});
+
+describe("buildTranscribeArgs", () => {
+  const io = { wav: "/t/a.wav", outDir: "/t", outBase: "/t/a.whisper" };
+
+  it("whisperx pins English and keeps its (default) alignment pass", () => {
+    const args = buildTranscribeArgs(
+      { kind: "whisperx", cli: "whisperx", prefixArgs: [], model: "small.en" },
+      io
+    );
+    expect(args).toEqual([
+      "/t/a.wav",
+      "--model",
+      "small.en",
+      "--language",
+      "en",
+      "--output_format",
+      "srt",
+      "--output_dir",
+      "/t",
+    ]);
+    // No flag disables alignment.
+    expect(args).not.toContain("--no_align");
+  });
+
+  it("mlx-whisper uses its hyphenated flags and an HF repo model", () => {
+    const args = buildTranscribeArgs(
+      {
+        kind: "mlx-whisper",
+        cli: "mlx_whisper",
+        prefixArgs: [],
+        model: "mlx-community/whisper-small.en-mlx",
+      },
+      io
+    );
+    expect(args).toContain("--output-format");
+    expect(args).toContain("--output-dir");
+    expect(args).toContain("mlx-community/whisper-small.en-mlx");
+  });
+
+  it("whisper.cpp uses -m/-f/-osrt with the ggml model", () => {
+    const args = buildTranscribeArgs(
+      {
+        kind: "whisper-cpp",
+        cli: "whisper-cli",
+        prefixArgs: [],
+        model: "/m/ggml-base.en.bin",
+      },
+      io
+    );
+    expect(args).toEqual([
+      "-m",
+      "/m/ggml-base.en.bin",
+      "-f",
+      "/t/a.wav",
+      "-l",
+      "en",
+      "-osrt",
+      "-of",
+      "/t/a.whisper",
+      "--no-prints",
+    ]);
   });
 });

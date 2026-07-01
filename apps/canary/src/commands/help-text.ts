@@ -132,11 +132,12 @@ SONG MODE (--song): score the whole video with ONE original song instead of spok
 An LLM writes ONE short, singable lyric line PER STEP and a music model sings them. Like narration,
 each step's frame is held for a readable beat (re-timing) so the body outlasts the song's short
 instrumental intro and the vocals play across it; an opening title card and credits are added.
-Captions are burned in (and a sibling .srt + .lyrics.txt are written). With a Whisper model set
-($CANARY_WHISPER_MODEL → a whisper.cpp ggml model, whisper-cli on PATH or $CANARY_WHISPER_CLI), the
-song is transcribed and the captions are timed to the ACTUAL singing — the instrumental intro is
-trimmed off and the clean lyric lines are placed at the vocals (only the lines the model actually
-sang). Without a model, captions fall back to step times. Use --no-captions to skip them. Needs the
+Captions are burned in (and a sibling .srt + .lyrics.txt are written). When a transcriber is found
+on PATH (autodetected, English-only, in order: whisperx → mlx_whisper → whisper.cpp's whisper-cli;
+models are pulled from the HuggingFace cache), the song is transcribed and the captions are timed to
+the ACTUAL singing — the instrumental intro is trimmed off and the clean lyric lines are placed at
+the vocals (only the lines the model actually sang). Without one, captions fall back to step times.
+Use --no-captions to skip them. Needs the
 'claude' CLI plus a lyrics-capable music model: the local ACE-Step server (see $CANARY_ACESTEP_URL)
 or a Gemini key (Lyria). Combine with --prompt to steer the genre.
 
@@ -160,6 +161,9 @@ or a Gemini key (Lyria). Combine with --prompt to steer the genre.
   $CANARY_ACESTEP_URL / $CANARY_ACESTEP_API_KEY / $CANARY_ACESTEP_MODEL   point at an ACE-Step server
                         (local default :8001, or a remote box with a better GPU) for generated music —
                         the bed, and the sung song in --song mode (a remote URL sends lyrics there)
+  $CANARY_TRANSCRIBER / $CANARY_WHISPER_CLI / $CANARY_WHISPER_MODEL   override caption transcription:
+                        force a backend (whisperx | mlx-whisper | whisper-cpp), its binary, or its
+                        model (a size/HF repo for whisperx/mlx, a ggml path for whisper.cpp)
 
   canary session end "$id"
   canary session end "$id" --cinematic
