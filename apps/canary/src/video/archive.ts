@@ -36,17 +36,17 @@ const SEARCH_ROWS = 25;
 type Echo = (line: string) => void;
 
 export interface ArchiveTrack {
-  identifier: string;
-  title: string;
   creator?: string;
+  identifier: string;
   licenseurl?: string;
+  title: string;
 }
 
 // Strip Lucene-significant characters from the free-text direction so it can be
 // dropped into a query clause safely, and cap length. Pure → unit-tested.
 export function sanitizeQuery(directionText: string): string {
   return directionText
-    .replace(/[+\-&|!(){}\[\]^"~*?:\\/]/g, " ")
+    .replace(/[+\-&|!(){}[\]^"~*?:\\/]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 120);
@@ -55,12 +55,24 @@ export function sanitizeQuery(directionText: string): string {
 // Build the advancedsearch.php URL. Constrains to CC netlabel audio that declares
 // a license; sorts by downloads so popular (usually higher-quality) tracks come
 // first. `instrumental` biases the text toward beds. Pure → unit-tested.
+//
+// The theme words are joined with OR, NOT left space-separated: archive.org's
+// Lucene default operator ANDs bare terms, so a multi-word direction like
+// "upbeat energetic pop" required ALL words in one track and matched (almost)
+// nothing — the provider then threw "no archive.org tracks matched". OR keeps the
+// thematic bias (download-sorted, so popular tracks that hit ANY theme word win)
+// while always returning a usable pool.
 export function buildSearchUrl(
   directionText: string,
   instrumental: boolean
 ): string {
-  const terms = sanitizeQuery(directionText);
-  const focus = instrumental ? `${terms} instrumental` : terms;
+  const words = sanitizeQuery(directionText).split(/\s+/).filter(Boolean);
+  if (instrumental) {
+    words.push("instrumental");
+  }
+  // Fall back to a broad term if the direction sanitized to nothing, so the
+  // query is always valid.
+  const focus = words.length > 0 ? words.join(" OR ") : "music";
   const q = `(${focus}) AND mediatype:audio AND collection:netlabels AND licenseurl:[* TO *]`;
   const params = new URLSearchParams({
     q,
@@ -73,6 +85,18 @@ export function buildSearchUrl(
     params.append("fl[]", f);
   }
   return `${SEARCH_URL}?${params.toString()}`;
+}
+
+// A field can come back as a string or a string[] (archive.org repeats some
+// fields); take the first string either way. Pure.
+function firstString(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value) && typeof value[0] === "string") {
+    return value[0];
+  }
+  return;
 }
 
 // Parse the advancedsearch response into tracks. Pure → unit-tested.
@@ -88,23 +112,11 @@ export function parseSearchDocs(body: unknown): ArchiveTrack[] {
       continue;
     }
     const titleRaw = (d as { title?: unknown }).title;
-    const creatorRaw = (d as { creator?: unknown }).creator;
-    const licRaw = (d as { licenseurl?: unknown }).licenseurl;
     tracks.push({
       identifier: id,
       title: typeof titleRaw === "string" ? titleRaw : id,
-      creator:
-        typeof creatorRaw === "string"
-          ? creatorRaw
-          : Array.isArray(creatorRaw) && typeof creatorRaw[0] === "string"
-            ? creatorRaw[0]
-            : undefined,
-      licenseurl:
-        typeof licRaw === "string"
-          ? licRaw
-          : Array.isArray(licRaw) && typeof licRaw[0] === "string"
-            ? licRaw[0]
-            : undefined,
+      creator: firstString((d as { creator?: unknown }).creator),
+      licenseurl: firstString((d as { licenseurl?: unknown }).licenseurl),
     });
   }
   return tracks;
@@ -161,8 +173,8 @@ function sq(s: string): string {
 }
 
 export interface ArchiveDeps {
-  ffmpeg: string;
   echo?: Echo;
+  ffmpeg: string;
   log: Logger;
   notes: string[];
   // Injectable for tests; defaults to Math.random.
@@ -392,8 +404,7 @@ function createMusicProvider(deps: ArchiveDeps): MusicProvider {
       return attributionFor(cachedBed);
     },
     async bed(directionText, seconds, outPath) {
-      const track =
-        cachedBed ?? (await selectTrack(deps, directionText, true));
+      const track = cachedBed ?? (await selectTrack(deps, directionText, true));
       await downloadAndTrim(deps, track, seconds, outPath);
     },
     async song(directionText, seconds, outPath) {
