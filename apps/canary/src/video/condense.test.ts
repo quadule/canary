@@ -7,6 +7,7 @@ import {
   mergeWindows,
   parseFreezeOutput,
   remapToCondensed,
+  subtractFreezesFromWindows,
 } from "./condense.js";
 
 const freezeLine = (kind: "start" | "end", t: number) =>
@@ -52,7 +53,10 @@ describe("computeKeepSegments", () => {
     expect(keeps).toEqual([{ start: 5, end: 20 }]);
   });
 
-  it("caps a mid-video freeze at the max still length", () => {
+  it("caps a mid-video freeze but keeps a glide lead-out before motion resumes", () => {
+    // Cut only the middle: keep the first maxStillSec AND a 1.5s tail (the
+    // cursor gliding into the next action lives there), so the join lands in
+    // parked-cursor idle and nothing snaps.
     const keeps = computeKeepSegments(
       {
         durationSec: 30,
@@ -62,12 +66,22 @@ describe("computeKeepSegments", () => {
     );
     expect(keeps).toEqual([
       { start: 0, end: 12 },
-      { start: 20, end: 30 },
+      { start: 18.5, end: 30 }, // 20 - 1.5 lead-out
     ]);
-    expect(keptSeconds(keeps)).toBe(22);
+    expect(keptSeconds(keeps)).toBe(23.5);
   });
 
-  it("caps a trailing freeze that runs to EOF", () => {
+  it("keeps a short freeze whole (no trimmable middle after the lead-out)", () => {
+    // A 2s freeze at maxStill=1 leaves no middle once the 1.5s tail is reserved
+    // (1 + 1.5 > 2), so it's kept entirely rather than snapping a glide inside it.
+    const keeps = computeKeepSegments({
+      durationSec: 20,
+      freezes: [{ start: 5, end: 7 }],
+    });
+    expect(keeps).toEqual([{ start: 0, end: 20 }]);
+  });
+
+  it("caps a trailing freeze that runs to EOF (no lead-out — nothing follows)", () => {
     const keeps = computeKeepSegments(
       {
         durationSec: 30,
@@ -91,7 +105,7 @@ describe("computeKeepSegments", () => {
     );
     expect(keeps).toEqual([
       { start: 4, end: 14 },
-      { start: 20, end: 40 },
+      { start: 18.5, end: 40 }, // 20 - 1.5 lead-out
     ]);
   });
 
@@ -109,6 +123,29 @@ describe("computeKeepSegments", () => {
   it("returns the full video when nothing froze", () => {
     const keeps = computeKeepSegments({ durationSec: 15, freezes: [] });
     expect(keeps).toEqual([{ start: 0, end: 15 }]);
+  });
+});
+
+describe("subtractFreezesFromWindows", () => {
+  it("cuts a dead wait inside a keep window but keeps a glide lead-out", () => {
+    // maxStill=1 (default), lead-out=1.5: the cut is [6, 16.5], so the tail
+    // [16.5, 18] (the glide into the next action) survives.
+    const keeps = subtractFreezesFromWindows(
+      [{ start: 0, end: 20 }],
+      [{ start: 5, end: 18 }]
+    );
+    expect(keeps).toEqual([
+      { start: 0, end: 6 },
+      { start: 16.5, end: 20 },
+    ]);
+  });
+
+  it("leaves a short internal freeze whole (no middle after the lead-out)", () => {
+    const keeps = subtractFreezesFromWindows(
+      [{ start: 0, end: 10 }],
+      [{ start: 4, end: 6 }]
+    );
+    expect(keeps).toEqual([{ start: 0, end: 10 }]);
   });
 });
 

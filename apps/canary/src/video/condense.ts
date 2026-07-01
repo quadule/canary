@@ -29,11 +29,28 @@ const execFileAsync = promisify(execFile);
 // and the animated cursor keeps real interactions moving, so a motionless
 // stretch carries no information worth keeping. (Overlays that must survive — a
 // held caption — animate continuously so their frames never read as "still".)
-export const MAX_STILL_SEC = 0;
+export const MAX_STILL_SEC = 1;
 
 // A freeze starting within this many seconds of t=0 counts as the pre-load
 // segment and is dropped entirely instead of capped.
 const LEADING_FREEZE_SEC = 1;
+
+// Lead-out kept at the END of every trimmed freeze. The virtual cursor glides to
+// its next target over up to GLIDE_MAX_MS (~1.1s in session-cursor.ts) plus a
+// short settle before it clicks — and that glide is only ~28px on screen, far
+// below FREEZE_NOISE, so freezedetect reports the whole park-idle-then-glide
+// stretch as ONE freeze that ends when the click's reaction paints. Capping such
+// a freeze to its first MAX_STILL_SEC would trim the glide and the cursor would
+// snap to position. Instead we cut only the MIDDLE of a long freeze and keep this
+// tail: the cut then lands inside pure idle (cursor parked at the same spot on
+// both sides → a seamless join) while the glide→click→reaction survives at the
+// end. A freeze shorter than MAX_STILL_SEC + this is kept whole.
+//
+// Limitation: a slow reaction (glide → click → multi-second wait → render) puts
+// the glide far from the freeze end, so it's still trimmed and that one snaps —
+// rare, and masked by the page changing anyway. Strictly better than trimming
+// every glide.
+const GLIDE_LEADOUT_SEC = 1.5;
 
 // freezedetect noise tolerance (0-1 mean-absolute-difference ratio). Decoded
 // static segments of a Playwright screencast are byte-identical (diff 0), so
@@ -120,10 +137,12 @@ export function parseFreezeOutput(
   return { durationSec, freezes };
 }
 
-// Given the detected freezes, compute the segments to KEEP. Every reported
-// freeze is longer than maxStillSec (freezedetect's `d` threshold), so each
-// one is capped to its first maxStillSec — except a leading freeze (the
-// pre-page-load white frames), which is dropped entirely.
+// Given the detected freezes, compute the segments to KEEP. A reported freeze is
+// capped to its first maxStillSec PLUS a GLIDE_LEADOUT_SEC tail (so a cursor
+// glide leading into the next action survives — see GLIDE_LEADOUT_SEC), by
+// trimming only the middle. A leading freeze (the pre-page-load white frames) is
+// dropped entirely, and a freeze too short to have a trimmable middle is kept
+// whole.
 export function computeKeepSegments(
   analysis: FreezeAnalysis,
   maxStillSec: number = MAX_STILL_SEC
@@ -137,10 +156,17 @@ export function computeKeepSegments(
     if (freeze.start <= LEADING_FREEZE_SEC && cuts.length === 0) {
       cuts.push({ start: 0, end: freeze.end });
     } else {
-      cuts.push({
-        start: Math.min(freeze.start + maxStillSec, durationSec),
-        end: freeze.end,
-      });
+      const cutStart = Math.min(freeze.start + maxStillSec, durationSec);
+      // Keep a glide lead-out only when motion RESUMES after this freeze (an
+      // action follows). A trailing freeze that runs to EOF has no next action,
+      // so trim it fully — a 1.5s still tail at the end is just dead air.
+      const resumes = freeze.end < durationSec;
+      const cutEnd = resumes ? freeze.end - GLIDE_LEADOUT_SEC : freeze.end;
+      // Only trim when there's a middle to remove; else keep the freeze whole so
+      // the cursor's glide (in the tail) is never cut.
+      if (cutEnd > cutStart) {
+        cuts.push({ start: cutStart, end: cutEnd });
+      }
     }
   }
 
@@ -405,7 +431,12 @@ export function subtractFreezesFromWindows(
   maxStillSec: number = MAX_STILL_SEC
 ): Segment[] {
   const cuts = freezes
-    .map((f) => ({ start: f.start + maxStillSec, end: f.end }))
+    // Keep a GLIDE_LEADOUT_SEC tail (cut only the middle) so a cursor glide into
+    // the next action survives — same reasoning as computeKeepSegments.
+    .map((f) => ({
+      start: f.start + maxStillSec,
+      end: f.end - GLIDE_LEADOUT_SEC,
+    }))
     .filter((c) => c.end > c.start);
 
   const result: Segment[] = [];
