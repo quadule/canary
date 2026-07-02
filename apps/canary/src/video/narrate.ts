@@ -32,7 +32,7 @@ import { promisify } from "node:util";
 import type { Logger } from "@usecanary/logger";
 import { resolveAceStepMusic } from "./acestep.js";
 import { alignLyricsToSegments, mainCluster, vocalRegion } from "./align.js";
-import { resolveArchiveMusic } from "./archive.js";
+import { pickLoudestOffset, resolveArchiveMusic } from "./archive.js";
 import {
   branchContributors,
   buildCreditSections,
@@ -168,6 +168,13 @@ export function titleStyle(category: ThemeCategory | undefined): {
 // like condense's encode pass.
 const VERSION_PROBE_TIMEOUT_MS = 10_000;
 const LLM_TIMEOUT_MS = 120_000;
+
+// Score gains: the single cinematic-mode song sits low under the spoken
+// narration, then swells to (near-)full for the credits roll. The ramp is the
+// cross-fade length in seconds between the two.
+const NARRATION_MUSIC_GAIN = 0.16;
+const CREDITS_MUSIC_GAIN = 0.6;
+const MUSIC_SWELL_RAMP_SEC = 1.5;
 
 // Flags that strip everything the narration/lyrics calls don't need from the
 // `claude -p` context: all MCP servers (their tool schemas can be huge), the
@@ -472,6 +479,14 @@ export function layoutSongCues(
 export interface AudioTrack {
   delayMs: number;
   volume?: number;
+  // Optional linear fades on the GLOBAL timeline (seconds — the same clock as
+  // delayMs, since adelay shifts the stream so its t matches video time). Used
+  // to cross the single score track from its quiet narration level into the full
+  // credits level without a second download or a volume-step pop.
+  fadeInAtSec?: number;
+  fadeInDurSec?: number;
+  fadeOutAtSec?: number;
+  fadeOutDurSec?: number;
 }
 
 // Build the ffmpeg `filter_complex` that delays each audio input to its place on
@@ -486,7 +501,15 @@ export function buildAudioMix(tracks: AudioTrack[]): string {
     .map((t, i) => {
       const vol =
         t.volume === undefined ? "" : `,volume=${t.volume.toFixed(3)}`;
-      return `[${i + 1}:a]adelay=${t.delayMs}|${t.delayMs}${vol}[a${i}]`;
+      const fadeOut =
+        t.fadeOutAtSec === undefined
+          ? ""
+          : `,afade=t=out:st=${t.fadeOutAtSec.toFixed(3)}:d=${(t.fadeOutDurSec ?? 1).toFixed(3)}`;
+      const fadeIn =
+        t.fadeInAtSec === undefined
+          ? ""
+          : `,afade=t=in:st=${t.fadeInAtSec.toFixed(3)}:d=${(t.fadeInDurSec ?? 1).toFixed(3)}`;
+      return `[${i + 1}:a]adelay=${t.delayMs}|${t.delayMs}${vol}${fadeOut}${fadeIn}[a${i}]`;
     })
     .join(";");
   const labels = tracks.map((_, i) => `[a${i}]`).join("");
@@ -1574,27 +1597,63 @@ async function generateMusic(args: {
     return [];
   }
   args.progress("composing the score…");
-  const tracks: MusicTrack[] = [];
+  // ONE song for the whole video (no second download): fetch a single bed, play
+  // it quietly UNDER the narration, then swell to full volume for the credits.
+  const bedPath = `${videoPath}.bed.wav`;
+  temps.push(bedPath);
   try {
-    const bedPath = `${videoPath}.bed.wav`;
-    temps.push(bedPath);
     await provider.bed(directionText, total, bedPath);
-    tracks.push({ path: bedPath, delaySec: 0, volume: 0.16 });
   } catch (err) {
-    log.debug({ err }, "cinematic: instrumental bed unavailable");
+    log.debug({ err }, "cinematic: instrumental score unavailable");
     notes.push("instrumental score unavailable");
+    return [];
   }
   const creditsStart = await audioDurationSec(ffmpeg, bodyPath);
-  if (creditsStart && total - creditsStart > 1) {
-    try {
-      const songPath = `${videoPath}.song.wav`;
-      temps.push(songPath);
-      await provider.song(directionText, total - creditsStart, songPath);
-      tracks.push({ path: songPath, delaySec: creditsStart, volume: 0.5 });
-    } catch (err) {
-      log.debug({ err }, "cinematic: credits song unavailable");
-      notes.push("credits song unavailable");
-    }
+  const hasCredits = Boolean(creditsStart && total - creditsStart > 1);
+  if (!hasCredits) {
+    // No credits region — just the quiet bed under the whole thing.
+    return [{ path: bedPath, delaySec: 0, volume: NARRATION_MUSIC_GAIN }];
+  }
+  const cs = creditsStart as number;
+  const ramp = MUSIC_SWELL_RAMP_SEC;
+  // Narration bed: quiet, faded out just before the credits so it doesn't stack
+  // with the swell below it.
+  const tracks: MusicTrack[] = [
+    {
+      path: bedPath,
+      delaySec: 0,
+      volume: NARRATION_MUSIC_GAIN,
+      fadeOutAtSec: Math.max(0, cs - ramp),
+      fadeOutDurSec: ramp,
+    },
+  ];
+  // Credits swell: the SAME song, seeked to its loudest (≈ highest-energy)
+  // window so the credits open on a strong section, at full volume, fading in at
+  // the credits start. One download → quiet bed + a full-energy credits swell.
+  try {
+    const creditsLen = total - cs;
+    const loudOff = await pickLoudestOffset(ffmpeg, bedPath, creditsLen);
+    const creditsClip = `${videoPath}.credits.wav`;
+    temps.push(creditsClip);
+    await trimAudio({
+      ffmpeg,
+      src: bedPath,
+      startSec: loudOff,
+      outPath: creditsClip,
+      echo: args.progress,
+    });
+    tracks.push({
+      path: creditsClip,
+      delaySec: cs,
+      volume: CREDITS_MUSIC_GAIN,
+      fadeInAtSec: cs,
+      fadeInDurSec: ramp,
+    });
+  } catch (err) {
+    // Couldn't make the swell — let the quiet bed carry the credits too (drop
+    // its fade-out so it doesn't cut to silence).
+    log.debug({ err }, "cinematic: credits swell unavailable; bed continues");
+    tracks[0] = { path: bedPath, delaySec: 0, volume: NARRATION_MUSIC_GAIN };
   }
   return tracks;
 }
@@ -1991,6 +2050,11 @@ interface MusicTrack {
   delaySec: number;
   path: string;
   volume: number;
+  // Optional cross-fade envelope (see AudioTrack), on the global timeline.
+  fadeInAtSec?: number;
+  fadeInDurSec?: number;
+  fadeOutAtSec?: number;
+  fadeOutDurSec?: number;
 }
 
 // How to turn narration text into a raw audio file: `ext` is that file's
@@ -2791,6 +2855,10 @@ async function mixAudioAndCaptions(args: {
     ...music.map((m) => ({
       delayMs: Math.round(m.delaySec * 1000),
       volume: m.volume,
+      fadeInAtSec: m.fadeInAtSec,
+      fadeInDurSec: m.fadeInDurSec,
+      fadeOutAtSec: m.fadeOutAtSec,
+      fadeOutDurSec: m.fadeOutDurSec,
     })),
   ];
   const filter = buildAudioMix(tracks);

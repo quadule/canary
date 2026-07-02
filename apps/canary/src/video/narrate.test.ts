@@ -100,6 +100,29 @@ describe("buildAudioMix", () => {
         "[a0][a1][a2]amix=inputs=3:normalize=0:dropout_transition=0[aout]"
     );
   });
+
+  it("cross-fades the single score track from quiet bed to credits swell", () => {
+    expect(
+      buildAudioMix([
+        {
+          delayMs: 0,
+          volume: 0.16,
+          fadeOutAtSec: 18.5,
+          fadeOutDurSec: 1.5,
+        },
+        {
+          delayMs: 20_000,
+          volume: 0.6,
+          fadeInAtSec: 20,
+          fadeInDurSec: 1.5,
+        },
+      ])
+    ).toBe(
+      "[1:a]adelay=0|0,volume=0.160,afade=t=out:st=18.500:d=1.500[a0];" +
+        "[2:a]adelay=20000|20000,volume=0.600,afade=t=in:st=20.000:d=1.500[a1];" +
+        "[a0][a1]amix=inputs=2:normalize=0:dropout_transition=0[aout]"
+    );
+  });
 });
 
 describe("parseNarrationJson", () => {

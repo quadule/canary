@@ -285,7 +285,7 @@ export function windowStarts(maxStart: number, count: number): number[] {
 // windows; the head is always one candidate so a track that's loudest up front
 // still works.
 const WINDOW_PROBES = 8;
-async function pickLoudestOffset(
+export async function pickLoudestOffset(
   ffmpeg: string,
   src: string,
   wantSec: number
