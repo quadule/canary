@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { copyFile, stat } from "node:fs/promises";
 import { formatDurationMs, requestId } from "@usecanary/cli-kit";
 import {
   sendRequest,
@@ -156,6 +156,20 @@ async function condenseSessionVideos(
       const to = formatDurationMs(Math.round((outcome.keptSec ?? 0) * 1000));
       process.stderr.write(`  ✓ ${from} → ${to}\n`);
       logger.info({ video: video.path }, `condensed video: ${from} → ${to}`);
+      // Preserve the condensed cut as the pre-cinematic source. Condensing is
+      // destructive + in-place, so this sidecar also MARKS the video as
+      // already-condensed: a later `session end` (especially --cinematic) reuses
+      // it instead of condensing the already-condensed file again — which would
+      // shrink it further and desync the stamped step times from the pixels.
+      await copyFile(
+        video.path,
+        precinematicVideoPath(video.path)
+      ).catch((err) =>
+        logger.warn(
+          { err, video: video.path },
+          "could not preserve condensed cut"
+        )
+      );
     } else if (outcome.reason === "nothing to trim") {
       logger.debug(
         { video: video.path, reason: outcome.reason },
@@ -345,19 +359,28 @@ export async function sessionEnd(
   const endResult =
     code === 0 && result ? result : await endResultFromDisk(record);
 
-  // A cinematic re-run (the preserved condensed cut already exists beside the
-  // video) skips condensing: the cinematic pass sources from that preserved cut
-  // and its preserved step timings, so re-condensing the prior cinematic output
-  // would be wasted work. First runs (and non-cinematic ends) condense normally.
+  // The preserved condensed cut (written by a prior condense) marks the video as
+  // already-condensed. Skip condensing then: it's destructive + in-place, so
+  // re-condensing an already-condensed video would shrink it again and desync the
+  // stamped step times. A later cinematic pass sources from the preserved cut and
+  // its stamped timings instead. First runs (raw video) condense normally.
   const videoArtifact = endResult.artifacts.find((a) => a.kind === "video");
   const cinematicRequested = opts.cinematic === true || opts.song === true;
-  const cinematicRerun =
-    cinematicRequested &&
+  const alreadyCondensed =
     videoArtifact !== undefined &&
     existsSync(precinematicVideoPath(videoArtifact.path));
-  if (opts.condense !== false && !cinematicRerun) {
+  if (opts.condense !== false && !alreadyCondensed) {
     await condenseSessionVideos(endResult, record);
-  } else if (cinematicRerun) {
+    // Persist the stamped step videoTimes now (not just in the cinematic branch)
+    // so a LATER `session end --cinematic` on this already-condensed session can
+    // source them without re-condensing.
+    await writeSessionRecord(record).catch((err) =>
+      logger.warn(
+        { err, sessionId: id },
+        "could not persist condensed step timings"
+      )
+    );
+  } else if (alreadyCondensed && cinematicRequested) {
     process.stderr.write(
       "  ↻ re-running cinematic from the preserved condensed cut\n"
     );
