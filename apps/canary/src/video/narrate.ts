@@ -425,6 +425,81 @@ export function songHoldSec(text: string): number {
   return Math.min(6.5, Math.max(3.5, words / 2.5 + 1));
 }
 
+// Minimum on-screen span a single sung lyric line should cover. Short QA steps
+// otherwise get one frantic line each; grouping consecutive steps up to this
+// span lets one verse breathe across 2+ steps.
+const GROUP_MIN_SEC = 5.5;
+
+// Each step's on-screen footage length in the condensed video, from the gaps
+// between successive step positions (the last step has no following boundary, so
+// fall back to its recorded duration). Pure → unit-tested.
+export function stepFootageSec(
+  steps: { videoTime: number; durationMs: number }[]
+): number[] {
+  return steps.map((s, i) => {
+    const next = steps[i + 1];
+    if (next) {
+      return Math.max(0.1, next.videoTime - s.videoTime);
+    }
+    return Math.max(0.1, s.durationMs / 1000);
+  });
+}
+
+// Group CONSECUTIVE steps so each group's footage totals at least `minSec` — so
+// one sung lyric line can cover 2+ short steps instead of one line per step. A
+// lone trailing step folds into the previous group (no stray one-step final
+// verse); a multi-step remainder keeps its own line. Returns arrays of step
+// indices, in order, partitioning every step exactly once. Pure → unit-tested.
+export function groupStepsForLyrics(
+  footageSec: number[],
+  minSec: number
+): number[][] {
+  const groups: number[][] = [];
+  let current: number[] = [];
+  let acc = 0;
+  for (let i = 0; i < footageSec.length; i++) {
+    current.push(i);
+    acc += footageSec[i] ?? 0;
+    if (acc >= minSec) {
+      groups.push(current);
+      current = [];
+      acc = 0;
+    }
+  }
+  if (current.length > 0) {
+    const last = groups.at(-1);
+    // Fold a LONE trailing step into the previous group (no stray one-step final
+    // verse); a multi-step remainder is substantial enough to keep its own line.
+    if (last && current.length < 2) {
+      last.push(...current);
+    } else {
+      groups.push(current);
+    }
+  }
+  return groups;
+}
+
+// Collapse grouped steps into ONE lyric-prompt entry per group: the members'
+// names joined, and their scripts concatenated so every member's captions/intent
+// feed the single line. `index` is the GROUP ordinal — i.e. the lyric line index
+// the model returns. Pure → unit-tested.
+export function groupedLyricSteps(
+  steps: { name: string; script?: string }[],
+  groups: number[][]
+): { index: number; name: string; script?: string }[] {
+  return groups.map((members, g) => ({
+    index: g,
+    name: members
+      .map((i) => steps[i]?.name ?? "")
+      .filter(Boolean)
+      .join(" → "),
+    script: members
+      .map((i) => steps[i]?.script)
+      .filter((s): s is string => Boolean(s))
+      .join("\n"),
+  }));
+}
+
 // Lay out song-mode caption cues so they never overlap. Each lyric line wants to
 // appear at its step's time, but condense can bunch several steps into the same
 // instant (a static stretch trimmed to one point), which would stack captions on
@@ -664,14 +739,14 @@ export function buildLyricsPrompt(args: {
     `Creative direction (the song's genre, mood, and voice): ${direction}`,
     "",
     ...changeLines,
-    `The video is about ${Math.round(videoSeconds)} seconds long. Write EXACTLY ONE singable lyric line for each step below — ${stepCount} line${stepCount === 1 ? "" : "s"} total, in order — so the song fits the runtime.`,
-    "Each step (one line of the song lands on each):",
+    `The video is about ${Math.round(videoSeconds)} seconds long. Write EXACTLY ONE singable lyric line for each section below — ${stepCount} line${stepCount === 1 ? "" : "s"} total, in order — so the song fits the runtime. A section may span a few moments of the session (its steps are joined with →); write one line that covers the whole section.`,
+    "Each section (one line of the song lands on each):",
     stepLines,
     "",
     "Rules:",
-    `- Write exactly one line per step (${stepCount} total). Each line must be SHORT and singable — at most ~${wordsPerLine} words — so it can be sung in roughly ${perStepSec.toFixed(1)}s, the time that step is on screen.`,
-    "- Each line is ABOUT its step (use the step's intent/what it does), but commit hard to the genre — be playful and vivid, never a dry play-by-play.",
-    "- Together the lines should read as one coherent song with a through-line; rhyme or repetition across lines is welcome, but keep the one-line-per-step mapping.",
+    `- Write exactly one line per section (${stepCount} total). Each line must be SHORT and singable — at most ~${wordsPerLine} words — so it can be sung in roughly ${perStepSec.toFixed(1)}s, the time that section is on screen.`,
+    "- Each line is ABOUT its section (use its intent/what it does), but commit hard to the genre — be playful and vivid, never a dry play-by-play.",
+    "- Together the lines should read as one coherent song with a through-line; rhyme or repetition across lines is welcome, but keep the one-line-per-section mapping.",
     "- Do NOT include section tags, chord names, timestamps, or stage directions — just the words to sing for each step.",
     '- Provide a punchy, dramatic, mostly-uppercase "title" for an opening title card. You may use a newline in the title to force a two-line layout.',
     "",
@@ -1370,6 +1445,7 @@ async function generateLyrics(
 async function planSong(args: {
   options: CinematicOptions;
   narratableSteps: CinematicStep[];
+  groups: number[][];
   videoSeconds: number;
   log: Logger;
   echo?: Echo;
@@ -1379,20 +1455,17 @@ async function planSong(args: {
   repoDir: string;
   base: string;
 } | null> {
-  const { options, narratableSteps, videoSeconds, log, echo } = args;
+  const { options, narratableSteps, groups, videoSeconds, log, echo } = args;
   const direction = resolveDirection(options.prompt, { song: true });
   const repoDir = options.repoDir ?? process.cwd();
   const base = await resolveBase(repoDir);
   const change = (await describeChange(repoDir, base)) ?? undefined;
+  // One prompt entry (and one lyric line) PER GROUP, not per step.
   const prompt = buildLyricsPrompt({
     direction: direction.text,
     change,
     videoSeconds,
-    steps: narratableSteps.map((step, index) => ({
-      index,
-      name: step.name,
-      script: step.script,
-    })),
+    steps: groupedLyricSteps(narratableSteps, groups),
   });
   const lyrics = await generateLyrics(prompt, log, echo);
   return lyrics ? { direction, lyrics, repoDir, base } : null;
@@ -3100,6 +3173,15 @@ export async function cinematicProcess(
         notes: [],
       };
 
+      // Group short consecutive steps so one sung line spans >= GROUP_MIN_SEC —
+      // fewer, longer verses instead of a frantic line per tiny step. Grouping
+      // is deterministic for a recording, so a pinned-song reuse maps back the
+      // same way.
+      const groups = groupStepsForLyrics(
+        stepFootageSec(narratableSteps),
+        GROUP_MIN_SEC
+      );
+
       // 0. Lyrics + direction: reuse a pinned song's saved lyrics when
       // $CANARY_SONG_FILE points at an existing song (+ its .json), else plan
       // fresh. Pinning lets an A/B reuse the SAME song + lyrics and vary only the
@@ -3124,13 +3206,14 @@ export async function cinematicProcess(
         base = await resolveBase(repoDir);
         notes.push(`reusing pinned song (${pinnedSong})`);
       } else {
-        // Size the lyric word-budget to the re-timed body length (steps × ~4s),
-        // not the (often tiny) condensed input — one short line per step.
-        const videoSeconds = Math.max(8, narratableSteps.length * 4);
+        // Size the lyric word-budget to the re-timed body length (one line per
+        // GROUP, ~GROUP_MIN_SEC each), not the (often tiny) condensed input.
+        const videoSeconds = Math.max(8, groups.length * GROUP_MIN_SEC);
         progress("writing the lyrics…");
         const planned = await planSong({
           options,
           narratableSteps,
+          groups,
           videoSeconds,
           log,
           echo,
@@ -3144,12 +3227,23 @@ export async function cinematicProcess(
         base = planned.base;
       }
 
-      // Lines in step order, and the lyric block the model sings (a [verse] tag
-      // helps it; the words are the per-step lines in order).
-      const byIndex = new Map(lyrics.lines.map((l) => [l.index, l.text]));
-      const ordered = narratableSteps
-        .map((_, i) => ({ i, text: byIndex.get(i) }))
-        .filter((x): x is { i: number; text: string } => Boolean(x.text));
+      // One entry per GROUP that got a line (the lyric index is the group
+      // ordinal); `stepIdxs` are the steps it spans and `firstStep` anchors its
+      // caption on the timeline. The lyric block the model sings is these group
+      // lines in order (a [verse] tag helps the model).
+      const byGroup = new Map(lyrics.lines.map((l) => [l.index, l.text]));
+      const ordered = groups
+        .map((stepIdxs, g) => ({
+          firstStep: stepIdxs[0] ?? 0,
+          stepIdxs,
+          text: byGroup.get(g),
+        }))
+        .filter(
+          (
+            x
+          ): x is { firstStep: number; stepIdxs: number[]; text: string } =>
+            Boolean(x.text)
+        );
       const orderedTexts = ordered.map((x) => x.text);
       const lyricBlock = `[verse]\n${orderedTexts.join("\n")}`;
 
@@ -3256,12 +3350,18 @@ export async function cinematicProcess(
           `captions timed to the detected vocals (${alignedCues.length}/${orderedTexts.length} lines sung)`
         );
       } else {
-        // No transcription: keep the raw song (capped by the mix), re-time by line
-        // length, and place captions at step times (vocals may land late).
-        holdDurSec = narratableSteps.map((_, i) => {
-          const text = byIndex.get(i);
-          return text ? songHoldSec(text) : 3.5;
-        });
+        // No transcription: keep the raw song (capped by the mix), and re-time so
+        // each GROUP is held long enough to sing its line (at least the group
+        // minimum), split across the group's steps. Captions land at group
+        // starts. Steps in a group with no line keep a small default.
+        holdDurSec = Array.from({ length: stepCount }, () => 3.5);
+        for (const grp of ordered) {
+          const groupHold = Math.max(GROUP_MIN_SEC, songHoldSec(grp.text));
+          const per = groupHold / grp.stepIdxs.length;
+          for (const i of grp.stepIdxs) {
+            holdDurSec[i] = per;
+          }
+        }
         notes.push(
           "vocal timing not detected (no whisper model) — captions placed at step times; set $CANARY_WHISPER_MODEL to align them to the singing"
         );
@@ -3315,7 +3415,7 @@ export async function cinematicProcess(
           ? alignedCues
           : layoutSongCues(
               ordered.map((x) => ({
-                start: stepTimes[x.i] ?? 0,
+                start: stepTimes[x.firstStep] ?? 0,
                 text: x.text,
               })),
               (await audioDurationSec(ffmpegPath, finalBody)) ?? 0

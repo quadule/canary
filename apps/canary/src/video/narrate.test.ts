@@ -23,8 +23,11 @@ import {
   precinematicVideoPath,
   sayCommand,
   secToSrtTimestamp,
+  groupStepsForLyrics,
+  groupedLyricSteps,
   songHoldSec,
   speechText,
+  stepFootageSec,
   songRetimeMode,
   songTargetSec,
   titleStyle,
@@ -284,6 +287,51 @@ describe("songRetimeMode", () => {
     expect(songRetimeMode({ CANARY_SONG_RETIME: "freeze" })).toBe("freeze");
     expect(songRetimeMode({ CANARY_SONG_RETIME: "STRETCH" })).toBe("stretch");
     expect(songRetimeMode({ CANARY_SONG_RETIME: "nonsense" })).toBe("freeze");
+  });
+});
+
+describe("stepFootageSec", () => {
+  it("uses gaps between step positions, and the last step's own duration", () => {
+    expect(
+      stepFootageSec([
+        { videoTime: 0, durationMs: 9999 },
+        { videoTime: 2, durationMs: 9999 },
+        { videoTime: 7, durationMs: 3000 }, // last: falls back to durationMs
+      ])
+    ).toEqual([2, 5, 3]);
+  });
+});
+
+describe("groupStepsForLyrics", () => {
+  it("groups consecutive steps until each group reaches the minimum span", () => {
+    // 2+2+2 -> [0,1,2] hits 6>=5.5; 2+2 -> [3,4] is 4<5.5 so folds trailing in
+    expect(groupStepsForLyrics([2, 2, 2, 2, 2], 5.5)).toEqual([
+      [0, 1, 2],
+      [3, 4],
+    ]);
+  });
+  it("keeps a long step as its own group and folds a short tail into the last", () => {
+    expect(groupStepsForLyrics([6, 1, 1], 5.5)).toEqual([[0], [1, 2]]);
+  });
+  it("returns a single group when nothing reaches the threshold", () => {
+    expect(groupStepsForLyrics([1, 1, 2], 5.5)).toEqual([[0, 1, 2]]);
+  });
+  it("handles an empty list", () => {
+    expect(groupStepsForLyrics([], 5.5)).toEqual([]);
+  });
+});
+
+describe("groupedLyricSteps", () => {
+  it("joins each group's names and scripts into one indexed entry", () => {
+    const steps = [
+      { name: "open", script: "goto('/')" },
+      { name: "search", script: "fill('q')" },
+      { name: "buy", script: "click('pay')" },
+    ];
+    expect(groupedLyricSteps(steps, [[0, 1], [2]])).toEqual([
+      { index: 0, name: "open → search", script: "goto('/')\nfill('q')" },
+      { index: 1, name: "buy", script: "click('pay')" },
+    ]);
   });
 });
 
