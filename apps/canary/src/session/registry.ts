@@ -39,9 +39,11 @@ export interface SessionRecord {
   // cinematic pass on a non-cinematic recording risks double captions.
   cinematic?: boolean;
   createdAt: string;
-  // When a session start --url was given, the ISO time it finished loading +
-  // settling (same clock basis as createdAt). session end trims the video head
-  // to (contentStartedAt - createdAt), dropping the pre-load blank.
+  // ISO time real content first appeared — the first non-about:blank page load
+  // (or, with `session start --url`, that page's post-settle time). Same clock
+  // basis as createdAt. session end trims the video head to
+  // (contentStartedAt - createdAt), dropping the leading blank (about:blank + the
+  // first navigation's white load screen).
   contentStartedAt?: string;
   endedAt?: string;
   headless: boolean;

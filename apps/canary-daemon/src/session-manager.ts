@@ -241,6 +241,24 @@ export class SessionManager {
     // untracked recording browser that SessionManager can never reach (it would
     // otherwise survive until daemon shutdown).
     try {
+      // Stamp when real content first paints — the first non-about:blank page
+      // load — so `session end` trims the pre-content blank (the initial
+      // about:blank AND the first navigation's white load screen) off the video
+      // head. Fires for a --url open and for the first step's own goto alike; the
+      // --url path below overwrites it with a more precise post-settle time.
+      // First writer wins (guard), so a later navigation doesn't move it.
+      const stampContentStart = (page: Page): void => {
+        page.on("load", () => {
+          if (!state.contentStartedAt && page.url() !== "about:blank") {
+            state.contentStartedAt = Date.now();
+          }
+        });
+      };
+      for (const page of entry.context.pages()) {
+        stampContentStart(page);
+      }
+      entry.context.on("page", stampContentStart);
+
       if (req.cursor !== false) {
         // Virtual cursor + click ripple so recorded video/screenshots show
         // where input happened. Applied via the manager so it shares the
