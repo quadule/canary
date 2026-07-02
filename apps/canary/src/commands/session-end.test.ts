@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SessionRecord, SessionStep } from "../session/registry.js";
 import {
+  contentStartFloorSec,
   STEP_PAD_AFTER_SEC,
   STEP_PAD_BEFORE_SEC,
   stepKeepWindows,
@@ -42,6 +43,23 @@ function step(
     ...partial,
   };
 }
+
+describe("contentStartFloorSec", () => {
+  it("is 0 with no start-URL content time", () => {
+    expect(contentStartFloorSec(recordWith([]))).toBe(0);
+  });
+  it("is the settle offset from createdAt when a start URL was used", () => {
+    const record = recordWith([]);
+    // 3.2s after createdAt
+    record.contentStartedAt = "2026-06-02T10:00:03.200Z";
+    expect(contentStartFloorSec(record)).toBeCloseTo(3.2, 3);
+  });
+  it("never goes negative", () => {
+    const record = recordWith([]);
+    record.contentStartedAt = "2026-06-02T09:59:59.000Z"; // before createdAt
+    expect(contentStartFloorSec(record)).toBe(0);
+  });
+});
 
 describe("stepKeepWindows", () => {
   it("maps a successful step to a padded window in video time", () => {

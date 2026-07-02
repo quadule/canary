@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chunk,
+  clampKeepsToFloor,
   computeKeepSegments,
   keptSeconds,
   MAX_SELECT_TERMS,
@@ -9,6 +10,28 @@ import {
   remapToCondensed,
   subtractFreezesFromWindows,
 } from "./condense.js";
+
+describe("clampKeepsToFloor", () => {
+  it("drops keeps before the floor and clamps the one spanning it", () => {
+    expect(
+      clampKeepsToFloor(
+        [
+          { start: 0, end: 2 }, // before floor → dropped
+          { start: 2.5, end: 6 }, // spans floor=3 → clamped to [3,6]
+          { start: 7, end: 9 }, // after floor → kept
+        ],
+        3
+      )
+    ).toEqual([
+      { start: 3, end: 6 },
+      { start: 7, end: 9 },
+    ]);
+  });
+  it("is a no-op for a zero/negative floor", () => {
+    const keeps = [{ start: 0, end: 2 }];
+    expect(clampKeepsToFloor(keeps, 0)).toBe(keeps);
+  });
+});
 
 const freezeLine = (kind: "start" | "end", t: number) =>
   `[freezedetect @ 0x600] lavfi.freezedetect.freeze_${kind}: ${t}\n`;

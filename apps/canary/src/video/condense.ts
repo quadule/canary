@@ -484,6 +484,29 @@ export interface CondenseOptions {
   // seconds) and trim everything else — the leading load, the idle gaps between
   // steps, and the trailing tail. When omitted, fall back to freezedetect.
   keepWindows?: Segment[];
+  // Hard floor (original video seconds) to trim off the HEAD regardless of the
+  // keep/freeze branch — e.g. the pre-load blank up to a session start URL's
+  // settle. Keeps entirely before it are dropped; one spanning it is clamped.
+  headTrimSec?: number;
+}
+
+// Drop the part of `keeps` before `floorSec` (sorted, disjoint in → out).
+// Pure → unit-tested.
+export function clampKeepsToFloor(
+  keeps: Segment[],
+  floorSec: number
+): Segment[] {
+  if (!(floorSec > 0)) {
+    return keeps;
+  }
+  const out: Segment[] = [];
+  for (const k of keeps) {
+    if (k.end <= floorSec) {
+      continue; // entirely in the trimmed head
+    }
+    out.push({ start: Math.max(k.start, floorSec), end: k.end });
+  }
+  return out;
 }
 
 // Condense one video in place (write to a sibling tmp file, then rename over
@@ -572,6 +595,12 @@ export async function condenseVideo(
         return { condensed: false, reason: "could not determine duration" };
       }
       keeps = computeKeepSegments(analysis);
+    }
+
+    // Trim the pre-load blank head (e.g. up to a session start URL's settle),
+    // regardless of which branch produced `keeps`.
+    if (options.headTrimSec) {
+      keeps = clampKeepsToFloor(keeps, options.headTrimSec);
     }
 
     const keptSec = keptSeconds(keeps);

@@ -116,6 +116,21 @@ export function stepKeepWindows(record: SessionRecord): Segment[] {
   return windows;
 }
 
+// Seconds into the recording where real content began — a session start --url's
+// settle time, relative to the video start (createdAt, same clock). 0 when no
+// start URL was used (no head trim). Exported for testing.
+export function contentStartFloorSec(record: SessionRecord): number {
+  if (!record.contentStartedAt) {
+    return 0;
+  }
+  const t0 = Date.parse(record.createdAt);
+  const content = Date.parse(record.contentStartedAt);
+  if (!(Number.isFinite(t0) && Number.isFinite(content))) {
+    return 0;
+  }
+  return Math.max(0, (content - t0) / 1000);
+}
+
 // Trim dead air from the recorded videos before the report is rendered,
 // refreshing each artifact's byte size so the manifest reflects the condensed
 // file. Interaction-aware when the session has timed steps: keep the step
@@ -136,6 +151,10 @@ async function condenseSessionVideos(
     return;
   }
   const keepWindows = stepKeepWindows(record);
+  // A session start --url stamped when its page finished settling; trim the video
+  // head to that (same clock basis as createdAt) so the pre-load about:blank is
+  // dropped even in the freezedetect / near-t0-first-step cases.
+  const headTrimSec = contentStartFloorSec(record);
   // Re-encoding can take a few seconds per video; without feedback the command
   // looks hung. Progress goes to stderr (stdout stays machine-readable).
   const label = videos.length === 1 ? "recording" : "recordings";
@@ -147,6 +166,7 @@ async function condenseSessionVideos(
   for (const video of videos) {
     const outcome = await condenseVideo(video.path, logger, {
       ffmpegPath: ffmpeg,
+      headTrimSec,
       keepWindows,
     });
     if (outcome.condensed) {

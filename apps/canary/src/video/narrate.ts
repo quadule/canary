@@ -428,7 +428,7 @@ export function songHoldSec(text: string): number {
 // Minimum on-screen span a single sung lyric line should cover. Short QA steps
 // otherwise get one frantic line each; grouping consecutive steps up to this
 // span lets one verse breathe across 2+ steps.
-const GROUP_MIN_SEC = 5.5;
+const GROUP_MIN_SEC = 7;
 
 // Each step's on-screen footage length in the condensed video, from the gaps
 // between successive step positions (the last step has no following boundary, so

@@ -64,6 +64,8 @@ interface SessionState {
   runCount: number;
   sessionId: string;
   startedAt: number;
+  // Wall-clock (ms) the start URL finished loading + settling, if one was given.
+  contentStartedAt?: number;
   videoDir: string;
 }
 
@@ -286,6 +288,23 @@ export class SessionManager {
       }
       if (req.capture.console) {
         this.attachConsole(state);
+      }
+      // Open the session on a loaded page (before any step) when a start URL is
+      // given, so the recording doesn't begin on the initial about:blank. Then
+      // settle and stamp contentStartedAt — `session end` trims the video head to
+      // it, dropping the pre-load blank. Best-effort: a bad/slow URL warns and
+      // leaves the session drivable rather than failing session start.
+      if (req.url) {
+        try {
+          await this.manager.navigateInitialPage(entry.name, req.url);
+          await this.manager.settleActivePage(entry.name);
+          state.contentStartedAt = Date.now();
+        } catch (err) {
+          this.log.warn(
+            { err, sessionId: req.sessionId, url: req.url },
+            "session start URL failed to load; continuing on a blank page"
+          );
+        }
       }
     } catch (err) {
       await this.swallow(() => this.manager.stopBrowser(entry.name));
@@ -641,6 +660,7 @@ export class SessionManager {
       runCount: state.runCount,
       sessionId: state.sessionId,
       startedAt: state.startedAt,
+      contentStartedAt: state.contentStartedAt,
     };
   }
 

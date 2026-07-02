@@ -114,6 +114,7 @@ interface SessionStartOpts {
   headless?: boolean;
   name?: string;
   trace: boolean;
+  url?: string;
   video: boolean;
   viewport?: string;
 }
@@ -190,6 +191,10 @@ export function buildProgram(): CommandType {
       "--cinematic",
       "Record for a cinematic edit: suppress page.showCaption overlays (their text still feeds the narration) so the burned captions added by `session end --cinematic` don't double up"
     )
+    .option(
+      "--url <url>",
+      "Open (and settle) this URL at session start so the recording begins on a loaded page, not a blank one — the pre-load blank is trimmed from the video head"
+    )
     .action(async (opts: SessionStartOpts) => {
       const code = await sessionStart({
         name: opts.name,
@@ -203,6 +208,7 @@ export function buildProgram(): CommandType {
         viewport: opts.viewport,
         cursor: opts.cursor,
         cinematic: opts.cinematic === true,
+        url: opts.url,
         json: isJson(program),
       });
       throw new ExitCodeError(code);

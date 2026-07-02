@@ -17,6 +17,8 @@ const STEP_SETTLE_LOAD_MS = 5000;
 const STEP_SETTLE_NETWORK_MS = 2000;
 const STEP_SETTLE_QUIET_MS = 400;
 const STEP_SETTLE_QUIESCENCE_MS = 3000;
+// Cap for the optional session start-URL navigation (navigateInitialPage).
+const START_URL_NAV_MS = 30_000;
 
 // DOM-mutation quiescence, injected as a STRING (the daemon's TS build has no
 // DOM lib — same reason addInitScript takes string content). Resolves once the
@@ -60,6 +62,11 @@ export interface BrowserEntry {
   // session never leaves an idle blank tab behind — which Playwright would
   // otherwise record as an empty video. Consumed once, then undefined.
   initialBlankPage?: Page;
+  // Set when we deliberately pre-navigated the initial page to a session start
+  // URL: it's no longer about:blank but MUST still be adopted by the first
+  // getPage (not orphaned for a fresh blank tab), so the recording continues on
+  // the loaded page.
+  initialPageSeeded?: boolean;
   // Session contexts are launched with recordVideo/recordHar + tracing and must
   // never be relaunched by a later execute (that would drop the recording).
   isSession: boolean;
@@ -1077,11 +1084,33 @@ export class BrowserManager {
   // prior target-id lookup), so callers fall back to opening a fresh tab.
   private takeInitialBlankPage(entry: BrowserEntry): Page | undefined {
     const page = entry.initialBlankPage;
+    const seeded = entry.initialPageSeeded;
     entry.initialBlankPage = undefined;
-    if (page && !page.isClosed() && page.url() === "about:blank") {
+    entry.initialPageSeeded = false;
+    // Adopt it if it's still the pristine about:blank, OR if we intentionally
+    // pre-navigated it to the session start URL (then its URL isn't about:blank
+    // but it's still the page to continue recording on).
+    if (page && !page.isClosed() && (seeded || page.url() === "about:blank")) {
       return page;
     }
     return;
+  }
+
+  // Navigate the initial (pre-first-step) page to a session start URL and mark it
+  // so the first getPage still adopts it. Best-effort; the caller decides how to
+  // handle a failure. Waits only for domcontentloaded here — the caller runs the
+  // full settle (settleActivePage) afterward and stamps the content-start time.
+  async navigateInitialPage(browserName: string, url: string): Promise<void> {
+    const entry = this.getBrowserEntry(browserName);
+    const page = entry.initialBlankPage;
+    if (!page || page.isClosed()) {
+      return;
+    }
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: START_URL_NAV_MS,
+    });
+    entry.initialPageSeeded = true;
   }
 
   private registerNamedPage(

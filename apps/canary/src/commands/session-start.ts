@@ -23,6 +23,9 @@ interface SessionStartArgs {
   headless: boolean;
   json: boolean;
   name?: string;
+  // Optional URL to open + settle at session start, so the recording begins on a
+  // loaded page (not the initial about:blank) and the pre-load blank is trimmed.
+  url?: string;
   // Raw `--viewport WxH` value; the daemon applies its 1280x720 default when
   // omitted.
   viewport?: string;
@@ -62,6 +65,7 @@ export async function sessionStart(args: SessionStartArgs): Promise<number> {
     viewport,
     cursor: args.cursor,
     cinematic: args.cinematic === true,
+    url: args.url,
   };
 
   let result: SessionStartResult | undefined;
@@ -84,6 +88,10 @@ export async function sessionStart(args: SessionStartArgs): Promise<number> {
       capture: session.capture,
       cinematic: args.cinematic === true,
       createdAt: new Date(session.startedAt).toISOString(),
+      contentStartedAt:
+        typeof session.contentStartedAt === "number"
+          ? new Date(session.contentStartedAt).toISOString()
+          : undefined,
       headless: session.headless,
       id,
       name: args.name,

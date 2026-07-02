@@ -100,6 +100,11 @@ export const SessionStartRequestSchema = RequestBaseSchema.extend({
   // at `session end` would otherwise double up). The call still runs, so its
   // text stays in the recorded script as narration context. Off by default.
   cinematic: z.boolean().default(false),
+  // Optional URL to open (and settle) at session start, before any step runs —
+  // so the recording begins on a loaded page instead of the initial about:blank.
+  // The daemon stamps `contentStartedAt` once it has settled, which `session end`
+  // uses to trim the pre-load blank off the video head.
+  url: z.string().min(1).optional(),
 });
 
 export const SessionEndRequestSchema = RequestBaseSchema.extend({
@@ -271,6 +276,10 @@ export interface SessionSummary {
   runCount: number;
   sessionId: string;
   startedAt: number;
+  // Wall-clock (ms) when the start `url` finished loading + settling, if one was
+  // given. Same clock as `startedAt`, so `session end` can trim the video head to
+  // (contentStartedAt - startedAt) and drop the pre-load blank.
+  contentStartedAt?: number;
 }
 
 export interface SessionStartResult {
