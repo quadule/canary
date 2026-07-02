@@ -251,8 +251,13 @@ jobs:
           echo "$OUT"
           ARTIFACT_DIR=$(echo "$OUT" | jq -r '.artifactsDir')
           REPORT=$(echo "$OUT" | jq -r '.reportPath')
+          # The run verdict (agent-declared via --pass/--fail, else the
+          # any-step-failed fallback). Captured now so the job can be failed
+          # AFTER the report/video have been uploaded (see the final gate step).
+          STATUS=$(echo "$OUT" | jq -r '.status // "unknown"')
           echo "artifact_dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
           echo "report=$REPORT" >> "$GITHUB_OUTPUT"
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
           # The cinematic cut is the (single) video in the session's video dir.
           VIDEO=$(find "$ARTIFACT_DIR" -name '*.webm' | head -1)
           echo "video=$VIDEO" >> "$GITHUB_OUTPUT"
@@ -280,3 +285,12 @@ jobs:
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           gh pr comment "${{ github.event.pull_request.number }}" --body \
             "🎬 **autodemo** is ready. The cinematic video and the full HTML report are attached to [this run]($RUN_URL#artifacts) — download **canary-demo-video** for the .webm, or **canary-report** for the trace/video/HAR/report bundle. (GitHub has no API to embed video inline; drag the .webm into a comment to play it here.)"
+
+      # Fail the job when the QA session's verdict was a failure — but only after
+      # the report + video are uploaded and the PR comment is posted above, so the
+      # evidence is preserved for triage. Runs regardless of earlier step outcomes.
+      - name: Gate the build on the session verdict
+        if: always() && steps.finalize.outputs.status == 'failed'
+        run: |
+          echo "::error::Canary QA session verdict: FAILED — see the uploaded report."
+          exit 1

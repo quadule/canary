@@ -428,8 +428,13 @@ export async function sessionEnd(
   // Resilient like `session abort`: a report-write failure must not crash the
   // command after the record was already flipped to "ended" (it can be rebuilt
   // by re-running `session end`, which is idempotent on an ended record).
+  // Capture the run's verdict from the manifest so CI can gate on it.
+  let runStatus: "passed" | "failed" | "aborted" | undefined;
+  let verdictReason: string | undefined;
   try {
-    await writeSessionReport(id, record, endResult);
+    const manifest = await writeSessionReport(id, record, endResult);
+    runStatus = manifest.status;
+    verdictReason = manifest.verdictReason;
   } catch (err) {
     degraded = true;
     logger.warn({ err, sessionId: id }, "failed to write the session report");
@@ -443,6 +448,10 @@ export async function sessionEnd(
           artifacts: endResult.artifacts,
           reportPath: sessionReportPath(id),
           resultsPath: sessionResultsPath(id),
+          // The run verdict (agent-declared or the fallback tally) + any reason,
+          // so a CI job can fail the build on a failed session.
+          status: runStatus,
+          verdictReason,
         },
         null,
         2
@@ -450,7 +459,7 @@ export async function sessionEnd(
     );
   } else {
     process.stdout.write(
-      `Session ${id} ended.\nArtifacts: ${endResult.session.artifactsDir}\nReport:    ${sessionReportPath(id)}\n`
+      `Session ${id} ended.\nArtifacts: ${endResult.session.artifactsDir}\nReport:    ${sessionReportPath(id)}\n${runStatus ? `Result:    ${runStatus.toUpperCase()}${verdictReason ? ` — ${verdictReason}` : ""}\n` : ""}`
     );
   }
 
