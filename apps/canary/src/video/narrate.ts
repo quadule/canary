@@ -1353,32 +1353,44 @@ export function changeScaleHint(commits: number, churn: number): string {
   return "large — go expansive; give it weight and a few more beats";
 }
 
-// Ask the LLM for narration JSON, or null on any failure.
-async function generateNarration(
-  prompt: string,
-  log: Logger,
-  echo?: Echo
-): Promise<Narration | null> {
+// Run a `claude -p` generation and parse its JSON reply. Returns the parsed
+// value, or a human-readable REASON the caller can surface instead of a bare
+// "generation failed": the claude call's own error (its stderr tail on a
+// spawn/timeout/non-zero exit — `run` already appends it) or a snippet of the
+// reply when it isn't the JSON we asked for. The prompt is multi-KB, so echo an
+// elided form (and don't pass echo to run(), so the blob isn't doubled).
+async function runClaudeJson<T>(args: {
+  label: string;
+  prompt: string;
+  parse: (raw: string) => T | null;
+  log: Logger;
+  echo?: Echo;
+}): Promise<{ value: T } | { error: string }> {
+  const { label, prompt, parse, log, echo } = args;
   let stdout: string;
   try {
-    // Echo an elided form: the narration prompt is multi-KB, and dumping it as
-    // one stderr line is noise (the reproducibility the user wants is about the
-    // voices/encodes, not this blob). Pass no echo to run() so it isn't doubled.
-    echo?.(`$ claude -p <narration prompt, ${prompt.length} chars>`);
+    echo?.(`$ claude -p <${label} prompt, ${prompt.length} chars>`);
     ({ stdout } = await run(
       "claude",
       ["-p", ...CLAUDE_MIN_CONTEXT_ARGS, prompt],
       LLM_TIMEOUT_MS
     ));
   } catch (err) {
-    log.debug({ err }, "cinematic: claude narration call failed");
-    return null;
+    log.debug({ err }, `cinematic: claude ${label} call failed`);
+    const detail = err instanceof Error ? err.message : String(err);
+    return { error: `the claude CLI call failed — ${detail}` };
   }
-  const narration = parseNarrationJson(stdout);
-  if (!narration) {
-    log.debug({ stdout }, "cinematic: could not parse narration JSON");
+  const value = parse(stdout);
+  if (value) {
+    return { value };
   }
-  return narration;
+  log.debug({ stdout }, `cinematic: could not parse ${label} JSON`);
+  const snippet = stdout.trim().replace(/\s+/g, " ").slice(0, 200);
+  return {
+    error: snippet
+      ? `the model's reply wasn't valid ${label} JSON — got: ${snippet}${stdout.trim().length > 200 ? "…" : ""}`
+      : `the model returned no output for the ${label}`,
+  };
 }
 
 // Resolve the creative direction (+ change-scale cue) and generate the narration.
@@ -1389,12 +1401,15 @@ async function planNarration(args: {
   narratableSteps: CinematicStep[];
   log: Logger;
   echo?: Echo;
-}): Promise<{
-  direction: ReturnType<typeof resolveDirection>;
-  narration: Narration;
-  repoDir: string;
-  base: string;
-} | null> {
+}): Promise<
+  | {
+      direction: ReturnType<typeof resolveDirection>;
+      narration: Narration;
+      repoDir: string;
+      base: string;
+    }
+  | { error: string }
+> {
   const { options, narratableSteps, log, echo } = args;
   const direction = resolveDirection(options.prompt);
   const repoDir = options.repoDir ?? process.cwd();
@@ -1409,39 +1424,22 @@ async function planNarration(args: {
       script: step.script,
     })),
   });
-  const narration = await generateNarration(prompt, log, echo);
-  return narration ? { direction, narration, repoDir, base } : null;
-}
-
-// Ask the LLM for song lyrics JSON, or null on any failure (mirrors
-// generateNarration). The prompt is multi-KB, so echo an elided form.
-async function generateLyrics(
-  prompt: string,
-  log: Logger,
-  echo?: Echo
-): Promise<Lyrics | null> {
-  let stdout: string;
-  try {
-    echo?.(`$ claude -p <lyrics prompt, ${prompt.length} chars>`);
-    ({ stdout } = await run(
-      "claude",
-      ["-p", ...CLAUDE_MIN_CONTEXT_ARGS, prompt],
-      LLM_TIMEOUT_MS
-    ));
-  } catch (err) {
-    log.debug({ err }, "cinematic: claude lyrics call failed");
-    return null;
+  const result = await runClaudeJson({
+    label: "narration",
+    prompt,
+    parse: parseNarrationJson,
+    log,
+    echo,
+  });
+  if ("error" in result) {
+    return { error: result.error };
   }
-  const lyrics = parseLyricsJson(stdout);
-  if (!lyrics) {
-    log.debug({ stdout }, "cinematic: could not parse lyrics JSON");
-  }
-  return lyrics;
+  return { direction, narration: result.value, repoDir, base };
 }
 
 // Song-mode counterpart of planNarration: resolve the creative direction (theme
 // as genre) and generate the lyrics. Returns the direction (for title styling +
-// reproducibility) and the lyrics, or null if generation failed.
+// reproducibility) and the lyrics, or a reason generation failed.
 async function planSong(args: {
   options: CinematicOptions;
   narratableSteps: CinematicStep[];
@@ -1449,12 +1447,15 @@ async function planSong(args: {
   videoSeconds: number;
   log: Logger;
   echo?: Echo;
-}): Promise<{
-  direction: ReturnType<typeof resolveDirection>;
-  lyrics: Lyrics;
-  repoDir: string;
-  base: string;
-} | null> {
+}): Promise<
+  | {
+      direction: ReturnType<typeof resolveDirection>;
+      lyrics: Lyrics;
+      repoDir: string;
+      base: string;
+    }
+  | { error: string }
+> {
   const { options, narratableSteps, groups, videoSeconds, log, echo } = args;
   const direction = resolveDirection(options.prompt, { song: true });
   const repoDir = options.repoDir ?? process.cwd();
@@ -1467,8 +1468,17 @@ async function planSong(args: {
     videoSeconds,
     steps: groupedLyricSteps(narratableSteps, groups),
   });
-  const lyrics = await generateLyrics(prompt, log, echo);
-  return lyrics ? { direction, lyrics, repoDir, base } : null;
+  const result = await runClaudeJson({
+    label: "lyrics",
+    prompt,
+    parse: parseLyricsJson,
+    log,
+    echo,
+  });
+  if ("error" in result) {
+    return { error: result.error };
+  }
+  return { direction, lyrics: result.value, repoDir, base };
 }
 
 // A friendly source name for the music provider, for the "Made with" block.
@@ -3218,8 +3228,8 @@ export async function cinematicProcess(
           log,
           echo,
         });
-        if (!planned) {
-          return notApplied("song lyrics generation failed");
+        if ("error" in planned) {
+          return notApplied(`song lyrics generation failed: ${planned.error}`);
         }
         direction = planned.direction;
         lyrics = planned.lyrics;
@@ -3499,8 +3509,8 @@ export async function cinematicProcess(
       log,
       echo,
     });
-    if (!planned) {
-      return notApplied("narration generation failed");
+    if ("error" in planned) {
+      return notApplied(`narration generation failed: ${planned.error}`);
     }
     const { direction, narration, repoDir, base } = planned;
 
