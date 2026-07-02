@@ -75,10 +75,18 @@ describe("launchFor", () => {
       prefixArgs: [],
     });
   });
-  it("falls back to `uvx whisperx` when only uvx is present", () => {
+  it("falls back to `uvx whisperx` (with torch pins) when only uvx is present", () => {
     expect(launchFor("whisperx", { hasDirect: false, hasUvx: true })).toEqual({
       cli: "uvx",
-      prefixArgs: ["whisperx"],
+      prefixArgs: [
+        "--python",
+        "3.12",
+        "--with",
+        "torch<2.9",
+        "--with",
+        "torchaudio<2.9",
+        "whisperx",
+      ],
     });
   });
   it("has no uvx path for whisper.cpp (a compiled binary)", () => {

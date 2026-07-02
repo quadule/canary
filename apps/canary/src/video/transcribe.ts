@@ -25,6 +25,11 @@ import { parseWhisperSrt, type Segment } from "./align.js";
 
 const execFileAsync = promisify(execFile);
 const TIMEOUT_MS = 300_000;
+// The transcriber itself gets a longer budget than the ffmpeg convert: a cold
+// `uvx whisperx` run installs the torch stack AND downloads a ~360 MB wav2vec2
+// alignment model before inference, which easily exceeds 5 minutes the first
+// time (subsequent runs are cached and fast).
+const TRANSCRIBE_TIMEOUT_MS = 900_000;
 const MAX_BUFFER = 64 * 1024 * 1024;
 const WHICH_TIMEOUT_MS = 5000;
 
@@ -61,6 +66,25 @@ const DEFAULT_MODEL: Partial<Record<TranscriberKind, string>> = {
 // pip package, so it has no uvx path.
 const UVX_PACKAGE: Partial<Record<TranscriberKind, string>> = {
   whisperx: "whisperx",
+};
+
+// Version pins inserted before the package name for `uvx <pkg>`. A bare
+// `uvx whisperx` resolves the newest torch stack (Python 3.14 + torchaudio
+// >=2.9); torchaudio 2.9 dropped `list_audio_backends()`, which crashes
+// whisperx's pyannote VAD import BEFORE any transcription runs
+// (`AttributeError: module 'torchaudio' has no attribute
+// 'list_audio_backends'`). Pin to a Python + torch that whisperx's pyannote
+// dependency still works against — verified small.en end-to-end on Apple
+// Silicon (the libtorchcodec dylib warning it prints is non-fatal).
+const UVX_PINS: Partial<Record<TranscriberKind, string[]>> = {
+  whisperx: [
+    "--python",
+    "3.12",
+    "--with",
+    "torch<2.9",
+    "--with",
+    "torchaudio<2.9",
+  ],
 };
 
 export interface Transcriber {
@@ -159,7 +183,7 @@ export function launchFor(
   }
   const pkg = UVX_PACKAGE[kind];
   if (pkg && opts.hasUvx) {
-    return { cli: "uvx", prefixArgs: [pkg] };
+    return { cli: "uvx", prefixArgs: [...(UVX_PINS[kind] ?? []), pkg] };
   }
   return null;
 }
@@ -388,13 +412,25 @@ export async function transcribeSong(args: {
     ];
     args.echo?.(`$ ${transcriber.cli} ${cliArgs.join(" ")}`);
     await execFileAsync(transcriber.cli, cliArgs, {
-      timeout: TIMEOUT_MS,
+      timeout: TRANSCRIBE_TIMEOUT_MS,
       maxBuffer: MAX_BUFFER,
     });
     const srt = await readFile(srtPath, "utf8");
     const segments = parseWhisperSrt(srt);
     return segments.length > 0 ? segments : null;
-  } catch {
+  } catch (err) {
+    // Transcription is optional (captions fall back to step timing), so we
+    // still degrade gracefully — but surface WHY, since a silent null left
+    // users guessing which backend/env-var was at fault. Show the tool's own
+    // stderr tail (e.g. a missing model, a torch import crash).
+    const e = err as { stderr?: string; message?: string };
+    const detail =
+      (e.stderr ?? "").trim().split("\n").slice(-3).join(" ") ||
+      e.message ||
+      String(err);
+    args.echo?.(
+      `caption transcription (${transcriber.kind}) failed, using step-timed captions: ${detail}`
+    );
     return null;
   } finally {
     await rm(wav, { force: true });
