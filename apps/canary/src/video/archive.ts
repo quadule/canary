@@ -414,21 +414,34 @@ function createMusicProvider(deps: ArchiveDeps): MusicProvider {
   };
 }
 
-// Resolve the archive.org music provider when enabled. Opt-in via
-// $CANARY_ARCHIVE_MUSIC=1 (it reaches out to the network and licensing/quality
-// vary, so it's not on by default). Returns just notes when disabled.
+// Resolve the archive.org music provider. Enabled either explicitly
+// ($CANARY_ARCHIVE_MUSIC=1) or, when `allowFallback` is set, as the default
+// score when no music MODEL is configured — so a plain `--cinematic` run still
+// gets music with no key/GPU. Because it reaches out to the network and
+// licensing/quality vary, an auto-enable is announced in the run notes and can
+// be turned off with $CANARY_ARCHIVE_MUSIC=0. Returns just notes when disabled.
 export function resolveArchiveMusic(opts: {
   env: NodeJS.ProcessEnv;
   ffmpeg: string;
   log: Logger;
   notes: string[];
   echo?: Echo;
+  allowFallback?: boolean;
 }): Pick<MediaProviders, "music"> & { enabled: boolean } {
-  const { env, ffmpeg, log, notes, echo } = opts;
-  if (env.CANARY_ARCHIVE_MUSIC !== "1") {
+  const { env, ffmpeg, log, notes, echo, allowFallback } = opts;
+  const flag = env.CANARY_ARCHIVE_MUSIC?.trim();
+  const explicit = flag === "1";
+  // "0" is a hard off switch that also blocks the no-model fallback.
+  const auto = allowFallback === true && flag !== "0";
+  if (!(explicit || auto)) {
     return { enabled: false };
   }
-  log.debug("archive.org music provider enabled");
+  log.debug({ auto }, "archive.org music provider enabled");
+  if (auto) {
+    notes.push(
+      "no music model configured — scoring with free Creative-Commons music from archive.org (reaches out to the network; set CANARY_ARCHIVE_MUSIC=0 to disable)"
+    );
+  }
   return {
     enabled: true,
     music: createMusicProvider({ ffmpeg, echo, log, notes }),

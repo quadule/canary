@@ -2955,26 +2955,32 @@ export async function cinematicProcess(
     // probed (it lists its loaded models) only when it's configured.
     const omlx = await resolveOmlxProviders({ env: process.env, log, echo });
     const acestep = await resolveAceStepMusic({ env: process.env, log, echo });
-    // Stock music from archive.org (opt-in): pushes a per-track attribution note
-    // into `notes` at fetch time, so it takes the shared array by reference.
+    const gemini = resolveMediaProviders({ env: process.env, log });
+    // Title-background sources: a configured local image server ($CANARY_IMAGE_URL)
+    // wins (explicit user config), then Gemini (Nano Banana), then Wikimedia
+    // Commons real imagery; the always-available local gradient is added later
+    // (once the theme is known) as the final fallback.
+    const localImage = resolveLocalImage({ env: process.env, log, echo });
+    // Stock/free fallbacks: archive.org music and Wikimedia images turn ON
+    // automatically when no corresponding AI MODEL is configured, so a plain
+    // `--cinematic` run still gets a score + real title imagery with no key/GPU.
+    // An explicit $CANARY_ARCHIVE_MUSIC/$CANARY_WIKIMEDIA_IMAGES=1 forces them on
+    // (and, for music, takes precedence over the models); =0 forces them off.
+    // Both push per-track attribution into `notes` at fetch time by reference.
     const archive = resolveArchiveMusic({
       env: process.env,
       ffmpeg: ffmpegPath,
       log,
       notes,
       echo,
+      allowFallback: !(acestep.music || gemini.music),
     });
-    const gemini = resolveMediaProviders({ env: process.env, log });
-    // Title-background sources: a configured local image server ($CANARY_IMAGE_URL)
-    // wins (explicit user config), then Gemini (Nano Banana), then opt-in Wikimedia
-    // Commons ($CANARY_WIKIMEDIA_IMAGES) real imagery; the always-available local
-    // gradient is added later (once the theme is known) as the final fallback.
-    const localImage = resolveLocalImage({ env: process.env, log, echo });
     const wikimedia = resolveWikimediaImage({
       env: process.env,
       notes,
       log,
       echo,
+      allowFallback: !(localImage.titleBackground || gemini.titleBackground),
     });
     const providers: MediaProviders = {
       tts: omlx.tts ?? gemini.tts,

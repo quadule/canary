@@ -252,19 +252,34 @@ function createProvider(notes: string[], echo?: Echo): TitleBackgroundProvider {
   };
 }
 
-// Resolve the Wikimedia title-background provider when opted in via
-// $CANARY_WIKIMEDIA_IMAGES=1. Attribution is pushed into `notes` by reference at
-// render time (mirrors archive.ts). Returns just { enabled: false } when off.
+// Resolve the Wikimedia title-background provider. Enabled either explicitly
+// ($CANARY_WIKIMEDIA_IMAGES=1) or, when `allowFallback` is set, as the default
+// title imagery when no image MODEL is configured — so a plain `--cinematic` run
+// gets a real photo with no key/GPU (the always-available local gradient is
+// still the final fallback below it). Because it reaches out to the network and
+// licenses vary, an auto-enable is announced in the run notes and can be turned
+// off with $CANARY_WIKIMEDIA_IMAGES=0. Attribution is pushed into `notes` by
+// reference at render time (mirrors archive.ts).
 export function resolveWikimediaImage(opts: {
   env: NodeJS.ProcessEnv;
   notes: string[];
   log: Logger;
   echo?: Echo;
+  allowFallback?: boolean;
 }): Pick<MediaProviders, "titleBackground"> & { enabled: boolean } {
-  const { env, notes, log, echo } = opts;
-  if (env.CANARY_WIKIMEDIA_IMAGES !== "1") {
+  const { env, notes, log, echo, allowFallback } = opts;
+  const flag = env.CANARY_WIKIMEDIA_IMAGES?.trim();
+  const explicit = flag === "1";
+  // "0" is a hard off switch that also blocks the no-model fallback.
+  const auto = allowFallback === true && flag !== "0";
+  if (!(explicit || auto)) {
     return { enabled: false };
   }
-  log.debug("Wikimedia Commons title-image provider enabled");
+  log.debug({ auto }, "Wikimedia Commons title-image provider enabled");
+  if (auto) {
+    notes.push(
+      "no image model configured — using an openly-licensed Wikimedia Commons photo for the title card (reaches out to the network; set CANARY_WIKIMEDIA_IMAGES=0 to disable)"
+    );
+  }
   return { enabled: true, titleBackground: createProvider(notes, echo) };
 }

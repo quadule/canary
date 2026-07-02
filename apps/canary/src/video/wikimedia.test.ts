@@ -6,8 +6,54 @@ import {
   imageKeywords,
   isPermissiveLicense,
   pickCommonsImage,
+  resolveWikimediaImage,
   sanitizeImageQuery,
 } from "./wikimedia.js";
+
+// biome-ignore lint/suspicious/noExplicitAny: tiny logger stub for tests
+const stubLog = { debug() {}, info() {}, warn() {}, error() {} } as any;
+
+describe("resolveWikimediaImage gating", () => {
+  it("stays off with no env and no fallback allowance", () => {
+    expect(
+      resolveWikimediaImage({ env: {}, notes: [], log: stubLog }).enabled
+    ).toBe(false);
+  });
+  it("auto-enables as a fallback (with a run note) when allowed", () => {
+    const notes: string[] = [];
+    const r = resolveWikimediaImage({
+      env: {},
+      notes,
+      log: stubLog,
+      allowFallback: true,
+    });
+    expect(r.enabled).toBe(true);
+    expect(notes.some((n) => n.includes("no image model configured"))).toBe(
+      true
+    );
+  });
+  it("honors the =0 off switch even when a fallback is allowed", () => {
+    expect(
+      resolveWikimediaImage({
+        env: { CANARY_WIKIMEDIA_IMAGES: "0" },
+        notes: [],
+        log: stubLog,
+        allowFallback: true,
+      }).enabled
+    ).toBe(false);
+  });
+  it("enables explicitly with =1 and adds no auto note", () => {
+    const notes: string[] = [];
+    expect(
+      resolveWikimediaImage({
+        env: { CANARY_WIKIMEDIA_IMAGES: "1" },
+        notes,
+        log: stubLog,
+      }).enabled
+    ).toBe(true);
+    expect(notes).toHaveLength(0);
+  });
+});
 
 describe("sanitizeImageQuery", () => {
   it("collapses whitespace and caps length", () => {

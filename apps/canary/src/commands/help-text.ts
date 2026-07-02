@@ -156,8 +156,9 @@ or a Gemini key (Lyria). Combine with --prompt to steer the genre.
                         "$CANARY_SAY_VOICE" -o "$CANARY_SAY_OUTPUT" "$1")
   $CANARY_OMLX_URL / $CANARY_OMLX_API_KEY / $CANARY_OMLX_TTS_MODEL   use a local oMLX server for
                         TTS (narration stays on your machine); key also read from ~/.omlx
-  $CANARY_ARCHIVE_MUSIC=1   score the video with free Creative-Commons music from archive.org
-                        (attribution is added to the run notes); needs ffmpeg, no model download
+  $CANARY_ARCHIVE_MUSIC   free Creative-Commons music from archive.org (attribution added to the
+                        run notes; needs ffmpeg, no model download). Used AUTOMATICALLY when no
+                        music model is configured; =1 forces it on (over any model), =0 off
   $CANARY_ACESTEP_URL / $CANARY_ACESTEP_API_KEY / $CANARY_ACESTEP_MODEL   point at an ACE-Step server
                         (local default :8001, or a remote box with a better GPU) for generated music —
                         the bed, and the sung song in --song mode (a remote URL sends lyrics there)
@@ -166,8 +167,9 @@ or a Gemini key (Lyria). Combine with --prompt to steer the genre.
                         model (a size/HF repo for whisperx/mlx, a ggml path for whisper.cpp)
   $CANARY_IMAGE_URL / $CANARY_IMAGE_API_KEY / $CANARY_IMAGE_MODEL   generate the title-card background
                         with a local OpenAI-images-compatible server (POST /v1/images/generations)
-  $CANARY_WIKIMEDIA_IMAGES=1   use a real, openly-licensed photo from Wikimedia Commons for the title
-                        card (permissive licenses only; attribution added to the run notes)
+  $CANARY_WIKIMEDIA_IMAGES   a real, openly-licensed photo from Wikimedia Commons for the title card
+                        (permissive licenses only; attribution added to the run notes). Used
+                        AUTOMATICALLY when no image model is configured; =1 forces on, =0 off.
                         Title-background order: local image server, then Gemini (Nano Banana), then
                         Wikimedia, then a themed local gradient (always available, no key/network)
 

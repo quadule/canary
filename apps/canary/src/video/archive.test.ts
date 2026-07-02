@@ -5,9 +5,60 @@ import {
   loudestIndex,
   parseSearchDocs,
   pickAudioFile,
+  resolveArchiveMusic,
   sanitizeQuery,
   windowStarts,
 } from "./archive.js";
+
+// biome-ignore lint/suspicious/noExplicitAny: tiny logger stub for tests
+const stubLog = { debug() {}, info() {}, warn() {}, error() {} } as any;
+
+describe("resolveArchiveMusic gating", () => {
+  it("stays off with no env and no fallback allowance", () => {
+    const notes: string[] = [];
+    expect(
+      resolveArchiveMusic({ env: {}, ffmpeg: "ffmpeg", log: stubLog, notes })
+        .enabled
+    ).toBe(false);
+  });
+  it("auto-enables as a fallback (with a run note) when allowed", () => {
+    const notes: string[] = [];
+    const r = resolveArchiveMusic({
+      env: {},
+      ffmpeg: "ffmpeg",
+      log: stubLog,
+      notes,
+      allowFallback: true,
+    });
+    expect(r.enabled).toBe(true);
+    expect(notes.some((n) => n.includes("no music model configured"))).toBe(
+      true
+    );
+  });
+  it("honors the =0 off switch even when a fallback is allowed", () => {
+    const notes: string[] = [];
+    expect(
+      resolveArchiveMusic({
+        env: { CANARY_ARCHIVE_MUSIC: "0" },
+        ffmpeg: "ffmpeg",
+        log: stubLog,
+        notes,
+        allowFallback: true,
+      }).enabled
+    ).toBe(false);
+  });
+  it("enables explicitly with =1 and adds no auto note", () => {
+    const notes: string[] = [];
+    const r = resolveArchiveMusic({
+      env: { CANARY_ARCHIVE_MUSIC: "1" },
+      ffmpeg: "ffmpeg",
+      log: stubLog,
+      notes,
+    });
+    expect(r.enabled).toBe(true);
+    expect(notes).toHaveLength(0);
+  });
+});
 
 describe("loudestIndex", () => {
   it("returns the index of the max level (first wins on ties)", () => {
