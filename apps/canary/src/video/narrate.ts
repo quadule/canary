@@ -887,18 +887,57 @@ function stripCodeFences(raw: string): string {
 // Parse the model's reply leniently: try the fence-stripped text, then fall back
 // to the first `{`…last `}` slice so a chatty preamble ("Here's the narration:")
 // doesn't abort the whole pass. Returns the parsed value or null.
+// Slice the FIRST balanced JSON object out of a string, tracking string/escape
+// state so braces inside string values don't miscount. Returns null when there's
+// no `{` or the object never closes (a truncated reply). Beats a naive
+// firstOpen..lastClose: it survives a model preamble AND trailing prose that
+// itself contains braces (which would otherwise drag `lastIndexOf("}")` past the
+// real end). Pure → unit-tested.
+function extractBalancedJson(s: string): string | null {
+  const start = s.indexOf("{");
+  if (start < 0) {
+    return null;
+  }
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < s.length; i++) {
+    const c = s[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (c === "\\") {
+        escaped = true;
+      } else if (c === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+    } else if (c === "{") {
+      depth++;
+    } else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        return s.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
 function tryParseJson(raw: string): unknown {
   const stripped = stripCodeFences(raw);
   try {
     return JSON.parse(stripped);
   } catch {
-    // fall through to brace extraction
+    // fall through to balanced-object extraction
   }
-  const open = stripped.indexOf("{");
-  const close = stripped.lastIndexOf("}");
-  if (open >= 0 && close > open) {
+  const balanced = extractBalancedJson(stripped);
+  if (balanced) {
     try {
-      return JSON.parse(stripped.slice(open, close + 1));
+      return JSON.parse(balanced);
     } catch {
       return null;
     }
@@ -1213,11 +1252,12 @@ function resolveDirection(
   opts: { song?: boolean } = {}
 ): {
   text: string;
-  // Theme only, WITHOUT the narration-style directive ("Render it as natural
-  // prose narration."). The music and title-art providers get this: the style
-  // shapes how the spoken WORDS are written, and feeding it to a music model
-  // told the score to be spoken-word prose. Equals `text` for a --prompt or in
-  // song mode (no style suffix is appended there).
+  // The clean SUBJECT — the theme label(s) only, without the narration-style
+  // directive ("Render it as natural prose narration.") OR the multi-theme blend
+  // scaffolding ("commit to X as the dominant voice…"). The music and title-art
+  // providers (incl. the Wikimedia keyword search) get this, so they key off the
+  // actual themes rather than styling/blend words. Equals `text` for a --prompt
+  // (the user's own words are the subject).
   theme: string;
   label: string;
   category?: ThemeCategory;
@@ -1229,23 +1269,29 @@ function resolveDirection(
   const count = Math.random() < 0.5 ? 1 : 2;
   const drawn = selectThemes(count);
   const themes = drawn.map((theme) => theme.label);
-  const themePart =
+  // `subject` is the clean theme label(s) — what the score and the title imagery
+  // (incl. the Wikimedia keyword search) should key off. The blend scaffolding
+  // ("commit to X as the dominant voice…") is GUIDANCE for the narration/lyrics
+  // LLM only; leaving it in `theme` made an image search hunt for "commit" /
+  // "dominant" instead of the actual themes.
+  const subject = themes.filter(Boolean).join(", ");
+  const blend =
     themes.length === 1
       ? (themes[0] ?? "")
       : `commit to "${themes[0]}" as the dominant voice, optionally borrowing a flourish from "${themes[1]}"`;
   if (opts.song) {
     return {
-      text: themePart,
-      theme: themePart,
+      text: blend,
+      theme: subject,
       label: `theme: ${themes.join(" + ")} · song`,
       category: drawn[0]?.category,
     };
   }
   const style = selectStyle();
-  const text = `${themePart}. Render it as ${STYLE_DIRECTIVES[style]}`;
+  const text = `${blend}. Render it as ${STYLE_DIRECTIVES[style]}`;
   return {
     text,
-    theme: themePart,
+    theme: subject,
     label: `theme: ${themes.join(" + ")} · style: ${style}`,
     category: drawn[0]?.category,
   };
@@ -1367,30 +1413,51 @@ async function runClaudeJson<T>(args: {
   echo?: Echo;
 }): Promise<{ value: T } | { error: string }> {
   const { label, prompt, parse, log, echo } = args;
-  let stdout: string;
-  try {
-    echo?.(`$ claude -p <${label} prompt, ${prompt.length} chars>`);
-    ({ stdout } = await run(
-      "claude",
-      ["-p", ...CLAUDE_MIN_CONTEXT_ARGS, prompt],
-      LLM_TIMEOUT_MS
-    ));
-  } catch (err) {
-    log.debug({ err }, `cinematic: claude ${label} call failed`);
-    const detail = err instanceof Error ? err.message : String(err);
-    return { error: `the claude CLI call failed — ${detail}` };
+  const MAX_ATTEMPTS = 2; // the model is stochastic — one retry recovers most
+  let lastError = `the model returned no usable ${label}`;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    let stdout: string;
+    try {
+      const retry = attempt > 1 ? `, retry ${attempt}/${MAX_ATTEMPTS}` : "";
+      echo?.(`$ claude -p <${label} prompt, ${prompt.length} chars${retry}>`);
+      ({ stdout } = await run(
+        "claude",
+        ["-p", ...CLAUDE_MIN_CONTEXT_ARGS, prompt],
+        LLM_TIMEOUT_MS
+      ));
+    } catch (err) {
+      // A CLI error (bad auth, missing binary, timeout) is unlikely to fix
+      // itself on a retry — fail fast with the tool's own message.
+      log.debug({ err }, `cinematic: claude ${label} call failed`);
+      const detail = err instanceof Error ? err.message : String(err);
+      return { error: `the claude CLI call failed — ${detail}` };
+    }
+    const value = parse(stdout);
+    if (value) {
+      return { value };
+    }
+    // Parseable-looking but rejected (truncated, trailing prose, wrong shape):
+    // describe it head+tail so truncation/junk is visible, then regenerate once.
+    log.debug({ stdout, attempt }, `cinematic: could not parse ${label} JSON`);
+    lastError = `the model's reply wasn't valid ${label} JSON (${describeReply(stdout)})`;
   }
-  const value = parse(stdout);
-  if (value) {
-    return { value };
+  return { error: lastError };
+}
+
+// A compact description of a reply that failed to parse: its length plus the
+// head and (for a long reply) the tail — where truncation or trailing prose
+// shows. Pure → unit-tested.
+function describeReply(raw: string): string {
+  const s = raw.trim();
+  if (!s) {
+    return "empty output";
   }
-  log.debug({ stdout }, `cinematic: could not parse ${label} JSON`);
-  const snippet = stdout.trim().replace(/\s+/g, " ").slice(0, 200);
-  return {
-    error: snippet
-      ? `the model's reply wasn't valid ${label} JSON — got: ${snippet}${stdout.trim().length > 200 ? "…" : ""}`
-      : `the model returned no output for the ${label}`,
-  };
+  const head = s.slice(0, 140).replace(/\s+/g, " ");
+  if (s.length <= 280) {
+    return `${s.length} chars — ${head}`;
+  }
+  const tail = s.slice(-100).replace(/\s+/g, " ");
+  return `${s.length} chars — starts: ${head}… ends: …${tail}`;
 }
 
 // Resolve the creative direction (+ change-scale cue) and generate the narration.

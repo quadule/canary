@@ -190,6 +190,25 @@ describe("parseNarrationJson", () => {
     expect(parseNarrationJson("[]")).toBeNull();
     expect(parseNarrationJson("null")).toBeNull();
   });
+
+  it("recovers valid JSON despite a preamble or trailing prose (incl. braces)", () => {
+    const body = '{"title":"T","steps":[{"index":0,"narration":"clean line"}]}';
+    const expected = { title: "T", steps: [{ index: 0, narration: "clean line" }] };
+    expect(parseNarrationJson(`Sure! Here is the narration:\n${body}`)).toEqual(
+      expected
+    );
+    // Trailing prose that itself contains a brace must not drag the parse past
+    // the real closing brace (the old firstOpen..lastClose slice would break).
+    expect(parseNarrationJson(`${body}\n\nNote: adjust {as needed}.`)).toEqual(
+      expected
+    );
+  });
+
+  it("returns null on a truncated (unbalanced) reply", () => {
+    expect(
+      parseNarrationJson('{"title":"T","steps":[{"index":0,"narration":"cut off')
+    ).toBeNull();
+  });
 });
 
 describe("buildNarrationPrompt", () => {
