@@ -168,6 +168,29 @@ export function titleStyle(category: ThemeCategory | undefined): {
 // like condense's encode pass.
 const VERSION_PROBE_TIMEOUT_MS = 10_000;
 const LLM_TIMEOUT_MS = 120_000;
+
+// Flags that strip everything the narration/lyrics calls don't need from the
+// `claude -p` context: all MCP servers (their tool schemas can be huge), the
+// user's settings/CLAUDE.md/skills, every built-in tool schema, and the
+// coding-agent system prompt (replaced with a one-liner — our prompt already
+// specifies the full JSON contract). This keeps the logged-in auth token (we do
+// NOT use `--bare`, which skips the keychain read and would break auth). The
+// model is pinned because `--setting-sources ""` also drops the user's model
+// preference, and we don't want the CLI default to silently change output
+// quality between environments.
+const CLAUDE_MIN_CONTEXT_ARGS: string[] = [
+  "--strict-mcp-config",
+  "--mcp-config",
+  '{"mcpServers":{}}',
+  "--setting-sources",
+  "",
+  "--tools",
+  "",
+  "--system-prompt",
+  "You are a precise generator. Output only what the user's message asks for, with no preamble or commentary.",
+  "--model",
+  "sonnet",
+];
 const SAY_TIMEOUT_MS = 60_000;
 const PROBE_TIMEOUT_MS = 30_000;
 const ENCODE_TIMEOUT_MS = 300_000;
@@ -1244,7 +1267,11 @@ async function generateNarration(
     // one stderr line is noise (the reproducibility the user wants is about the
     // voices/encodes, not this blob). Pass no echo to run() so it isn't doubled.
     echo?.(`$ claude -p <narration prompt, ${prompt.length} chars>`);
-    ({ stdout } = await run("claude", ["-p", prompt], LLM_TIMEOUT_MS));
+    ({ stdout } = await run(
+      "claude",
+      ["-p", ...CLAUDE_MIN_CONTEXT_ARGS, prompt],
+      LLM_TIMEOUT_MS
+    ));
   } catch (err) {
     log.debug({ err }, "cinematic: claude narration call failed");
     return null;
@@ -1298,7 +1325,11 @@ async function generateLyrics(
   let stdout: string;
   try {
     echo?.(`$ claude -p <lyrics prompt, ${prompt.length} chars>`);
-    ({ stdout } = await run("claude", ["-p", prompt], LLM_TIMEOUT_MS));
+    ({ stdout } = await run(
+      "claude",
+      ["-p", ...CLAUDE_MIN_CONTEXT_ARGS, prompt],
+      LLM_TIMEOUT_MS
+    ));
   } catch (err) {
     log.debug({ err }, "cinematic: claude lyrics call failed");
     return null;
@@ -2082,6 +2113,23 @@ async function resolveSpeech(
 // duration (for caption end-times). Pushes its temps for cleanup. Returns null
 // if the clip can't be produced. Throws if `synth.run` throws (caller may retry
 // with a fallback synth).
+// Rewrite narration for the ear before handing it to a TTS engine. macOS `say`
+// (and some other engines) read a slash aloud as the word "slash" and stumble on
+// a pipe — but verse/poem narration uses "/" (and "|") as LINE separators. Turn
+// any run of them into a comma so it becomes a natural spoken pause instead.
+// Only the SPOKEN audio is affected — captions keep the original text (with its
+// slashes), so this must be applied at the synth boundary, not to the stored
+// narration. Kept deliberately narrow (per "without getting too complicated").
+// Pure → unit-tested.
+export function speechText(narration: string): string {
+  return narration
+    .replace(/\s*[/|]+\s*/g, ", ") // slash/pipe separators → a spoken pause
+    .replace(/\s+([,.;:!?])/g, "$1") // drop space left before punctuation
+    .replace(/([,;:])(?:\s*\1)+/g, "$1") // collapse doubled separators
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 async function renderClip(args: {
   ffmpeg: string;
   synth: SpeechSynth;
@@ -2098,7 +2146,8 @@ async function renderClip(args: {
   const m4aPath = `${videoPath}.step${index}.m4a`;
   temps.push(rawPath, m4aPath);
 
-  await synth.run(narration, rawPath);
+  // Speak a for-the-ear rewrite; the caption/return value keeps the original.
+  await synth.run(speechText(narration), rawPath);
   await run(
     ffmpeg,
     [
@@ -3174,48 +3223,45 @@ export async function cinematicProcess(
       const { finalBody, stepTimes, titleOffsetSec } = assembled;
 
       // 5. Captions: the vocal-aligned cues when we have them, else step-timed.
-      // BURN them into the video (when this ffmpeg can) so they're visible in any
-      // player — a sibling .srt isn't loaded by QuickTime or the report viewer.
-      // The .srt is still written beside the video (for editing / soft-sub
-      // players). --no-captions skips both.
+      // The sibling .srt is ALWAYS written beside the video (a deliverable for
+      // editing / soft-sub players) — this is the documented contract.
+      // --no-captions only skips BURNING the captions into the pixels, not the
+      // .srt. We also BURN them (when this ffmpeg can) so they're visible in any
+      // player, since a sibling .srt isn't loaded by QuickTime or the report
+      // viewer.
       const wantCaptions = options.captions !== false;
       const srtPath = srtPathFor(videoPath);
       let wroteSrt = false;
       let burnCaptions = false;
-      if (wantCaptions) {
-        const srtGeometry = await probeVideo(ffmpegPath, input);
-        // Vocal-aligned cues when we actually matched some; otherwise step-timed
-        // (e.g. whisper found no usable lyrics in an instrumental-leaning song).
-        const cues =
-          alignedCues && alignedCues.length > 0
-            ? alignedCues
-            : layoutSongCues(
-                ordered.map((x) => ({
-                  start: stepTimes[x.i] ?? 0,
-                  text: x.text,
-                })),
-                (await audioDurationSec(ffmpegPath, finalBody)) ?? 0
-              );
-        if (cues.length > 0) {
-          temps.push(srtPath);
-          await writeFile(
-            srtPath,
-            buildSrt(cues, captionLineMax(srtGeometry?.width))
-          );
-          wroteSrt = true;
-          burnCaptions = hasSubtitles;
-          if (!hasSubtitles) {
-            const note =
-              "captions not burned — this ffmpeg has no `subtitles` filter; wrote a soft-sub .srt instead";
-            notes.push(note);
-            log.warn({ ffmpeg: ffmpegPath }, `cinematic: ${note}`);
-          }
-        } else {
-          // Nothing to caption — never burn an empty .srt (it errors the filter).
-          await rm(srtPath, { force: true });
+      const srtGeometry = await probeVideo(ffmpegPath, input);
+      // Vocal-aligned cues when we actually matched some; otherwise step-timed
+      // (e.g. whisper found no usable lyrics in an instrumental-leaning song).
+      const cues =
+        alignedCues && alignedCues.length > 0
+          ? alignedCues
+          : layoutSongCues(
+              ordered.map((x) => ({
+                start: stepTimes[x.i] ?? 0,
+                text: x.text,
+              })),
+              (await audioDurationSec(ffmpegPath, finalBody)) ?? 0
+            );
+      if (cues.length > 0) {
+        temps.push(srtPath);
+        await writeFile(
+          srtPath,
+          buildSrt(cues, captionLineMax(srtGeometry?.width))
+        );
+        wroteSrt = true;
+        burnCaptions = wantCaptions && hasSubtitles;
+        if (wantCaptions && !hasSubtitles) {
+          const note =
+            "captions not burned — this ffmpeg has no `subtitles` filter; wrote a soft-sub .srt instead";
+          notes.push(note);
+          log.warn({ ffmpeg: ffmpegPath }, `cinematic: ${note}`);
         }
       } else {
-        // No captions: drop any stale .srt from a prior run beside the video.
+        // Nothing to caption — drop any stale .srt from a prior run.
         await rm(srtPath, { force: true });
       }
 

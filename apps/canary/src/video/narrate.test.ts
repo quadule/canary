@@ -24,6 +24,7 @@ import {
   sayCommand,
   secToSrtTimestamp,
   songHoldSec,
+  speechText,
   songRetimeMode,
   songTargetSec,
   titleStyle,
@@ -260,6 +261,25 @@ describe("songRetimeMode", () => {
     expect(songRetimeMode({ CANARY_SONG_RETIME: "freeze" })).toBe("freeze");
     expect(songRetimeMode({ CANARY_SONG_RETIME: "STRETCH" })).toBe("stretch");
     expect(songRetimeMode({ CANARY_SONG_RETIME: "nonsense" })).toBe("freeze");
+  });
+});
+
+describe("speechText", () => {
+  it("turns verse slash/pipe separators into spoken pauses", () => {
+    expect(speechText("roses are red / violets are blue")).toBe(
+      "roses are red, violets are blue"
+    );
+    expect(speechText("dawn|dusk|night")).toBe("dawn, dusk, night");
+    expect(speechText("a // b")).toBe("a, b");
+  });
+  it("does not leave doubled commas or stray spaces", () => {
+    expect(speechText("one , / two")).toBe("one, two");
+    expect(speechText("  keep   it  tidy  ")).toBe("keep it tidy");
+  });
+  it("leaves ordinary prose untouched", () => {
+    expect(speechText("The quick brown fox jumps.")).toBe(
+      "The quick brown fox jumps."
+    );
   });
 });
 
