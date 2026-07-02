@@ -1399,32 +1399,121 @@ export function changeScaleHint(commits: number, churn: number): string {
   return "large — go expansive; give it weight and a few more beats";
 }
 
-// Run a `claude -p` generation and parse its JSON reply. Returns the parsed
-// value, or a human-readable REASON the caller can surface instead of a bare
-// "generation failed": the claude call's own error (its stderr tail on a
-// spawn/timeout/non-zero exit — `run` already appends it) or a snippet of the
-// reply when it isn't the JSON we asked for. The prompt is multi-KB, so echo an
-// elided form (and don't pass echo to run(), so the blob isn't doubled).
+// JSON Schemas passed to `claude --json-schema` to FORCE a conforming reply.
+// They mirror what parseNarrationJson / parseLyricsJson validate (title + one
+// entry per step/section); parse still runs afterward for the exact checks and
+// narration sanitizing.
+const NARRATION_SCHEMA = {
+  additionalProperties: false,
+  properties: {
+    steps: {
+      items: {
+        additionalProperties: false,
+        properties: {
+          index: { type: "integer" },
+          narration: { type: "string" },
+        },
+        required: ["index", "narration"],
+        type: "object",
+      },
+      type: "array",
+    },
+    title: { type: "string" },
+  },
+  required: ["title", "steps"],
+  type: "object",
+};
+
+const LYRICS_SCHEMA = {
+  additionalProperties: false,
+  properties: {
+    steps: {
+      items: {
+        additionalProperties: false,
+        properties: {
+          index: { type: "integer" },
+          lyric: { type: "string" },
+        },
+        required: ["index", "lyric"],
+        type: "object",
+      },
+      type: "array",
+    },
+    title: { type: "string" },
+  },
+  required: ["title", "steps"],
+  type: "object",
+};
+
+// Pull the schema-forced object out of the `--output-format json` envelope. The
+// CLI emits a wrapper whose `structured_output` is the already-validated object
+// (from the forced tool call) and whose `result` is the same as a JSON string —
+// prefer the former, fall back to parsing the latter, then to treating stdout as
+// the bare object (older CLI). Returns undefined on an errored/empty envelope.
+function extractStructuredOutput(stdout: string): unknown {
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(stdout);
+  } catch {
+    return tryParseJson(stdout) ?? undefined;
+  }
+  if (!envelope || typeof envelope !== "object") {
+    return;
+  }
+  const env = envelope as {
+    is_error?: boolean;
+    structured_output?: unknown;
+    result?: unknown;
+  };
+  if (env.is_error) {
+    return;
+  }
+  if (env.structured_output !== undefined && env.structured_output !== null) {
+    return env.structured_output;
+  }
+  if (typeof env.result === "string") {
+    return tryParseJson(env.result) ?? undefined;
+  }
+  return;
+}
+
+// Run a `claude -p` generation that MUST return an object matching `schema`.
+// Passing --json-schema forces the model through a structured-output tool call,
+// so it can't emit prose, fences, or a truncated blob — the CLI hands back the
+// validated object. We still run `parse` on it for our exact shape + narration
+// sanitizing. Returns the value, or a human-readable REASON the caller surfaces
+// instead of a bare "generation failed": the claude call's own error, or a
+// head+tail description of an unexpected envelope. Retries once (the model is
+// stochastic); a CLI error (bad auth/binary/timeout) fails fast. The prompt is
+// multi-KB, so echo an elided form.
 async function runClaudeJson<T>(args: {
   label: string;
   prompt: string;
+  schema: unknown;
   parse: (raw: string) => T | null;
   log: Logger;
   echo?: Echo;
 }): Promise<{ value: T } | { error: string }> {
-  const { label, prompt, parse, log, echo } = args;
+  const { label, prompt, schema, parse, log, echo } = args;
+  const cliArgs = [
+    "-p",
+    ...CLAUDE_MIN_CONTEXT_ARGS,
+    "--output-format",
+    "json",
+    "--json-schema",
+    JSON.stringify(schema),
+    prompt,
+  ];
   const MAX_ATTEMPTS = 2; // the model is stochastic — one retry recovers most
   let lastError = `the model returned no usable ${label}`;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let stdout: string;
     try {
       const retry = attempt > 1 ? `, retry ${attempt}/${MAX_ATTEMPTS}` : "";
-      echo?.(`$ claude -p <${label} prompt, ${prompt.length} chars${retry}>`);
-      ({ stdout } = await run(
-        "claude",
-        ["-p", ...CLAUDE_MIN_CONTEXT_ARGS, prompt],
-        LLM_TIMEOUT_MS
-      ));
+      echo?.(
+        `$ claude -p --json-schema … <${label} prompt, ${prompt.length} chars${retry}>`
+      );
+      ({ stdout } = await run("claude", cliArgs, LLM_TIMEOUT_MS));
     } catch (err) {
       // A CLI error (bad auth, missing binary, timeout) is unlikely to fix
       // itself on a retry — fail fast with the tool's own message.
@@ -1432,14 +1521,17 @@ async function runClaudeJson<T>(args: {
       const detail = err instanceof Error ? err.message : String(err);
       return { error: `the claude CLI call failed — ${detail}` };
     }
-    const value = parse(stdout);
-    if (value) {
-      return { value };
+    const output = extractStructuredOutput(stdout);
+    if (output !== undefined) {
+      const value = parse(JSON.stringify(output));
+      if (value) {
+        return { value };
+      }
     }
-    // Parseable-looking but rejected (truncated, trailing prose, wrong shape):
-    // describe it head+tail so truncation/junk is visible, then regenerate once.
-    log.debug({ stdout, attempt }, `cinematic: could not parse ${label} JSON`);
-    lastError = `the model's reply wasn't valid ${label} JSON (${describeReply(stdout)})`;
+    // Schema forcing should make this rare; if it still happens, describe the
+    // envelope head+tail so it's diagnosable, then regenerate once.
+    log.debug({ stdout, attempt }, `cinematic: could not read ${label} output`);
+    lastError = `the model's reply wasn't usable ${label} JSON (${describeReply(stdout)})`;
   }
   return { error: lastError };
 }
@@ -1494,6 +1586,7 @@ async function planNarration(args: {
   const result = await runClaudeJson({
     label: "narration",
     prompt,
+    schema: NARRATION_SCHEMA,
     parse: parseNarrationJson,
     log,
     echo,
@@ -1538,6 +1631,7 @@ async function planSong(args: {
   const result = await runClaudeJson({
     label: "lyrics",
     prompt,
+    schema: LYRICS_SCHEMA,
     parse: parseLyricsJson,
     log,
     echo,
