@@ -388,6 +388,20 @@ export async function sessionEnd(
   const endResult =
     code === 0 && result ? result : await endResultFromDisk(record);
 
+  // The daemon stamps contentStartedAt when real content first painted (the first
+  // non-about:blank load). For a normal session that happens DURING step 1 —
+  // after session start already wrote the record — so it isn't on the record yet;
+  // pull it from the end result now (a --url session already has it from start).
+  // condense's head-trim uses it to drop the pre-content blank.
+  if (
+    !record.contentStartedAt &&
+    typeof endResult.session.contentStartedAt === "number"
+  ) {
+    record.contentStartedAt = new Date(
+      endResult.session.contentStartedAt
+    ).toISOString();
+  }
+
   // The preserved condensed cut (written by a prior condense) marks the video as
   // already-condensed. Skip condensing then: it's destructive + in-place, so
   // re-condensing an already-condensed video would shrink it again and desync the
