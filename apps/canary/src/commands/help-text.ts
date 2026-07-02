@@ -176,6 +176,10 @@ or a Gemini key (Lyria). Combine with --prompt to steer the genre.
   $CANARY_TRANSCRIBER / $CANARY_WHISPER_CLI / $CANARY_WHISPER_MODEL   override caption transcription:
                         force a backend (whisperx | mlx-whisper | whisper-cpp), its binary, or its
                         model (a size/HF repo for whisperx/mlx, a ggml path for whisper.cpp)
+  $CANARY_TRANSCRIBE_URL / $CANARY_TRANSCRIBE_MODEL / $CANARY_TRANSCRIBE_API_KEY   transcribe song
+                        captions with an OpenAI-compatible server (POST /v1/audio/transcriptions) —
+                        e.g. a local Whisper-Large-v3-Turbo. Wins over the CLI backends and gives the
+                        tightest caption timing. URL is the host root; model defaults to whisper-1
   $CANARY_IMAGE_URL / $CANARY_IMAGE_API_KEY / $CANARY_IMAGE_MODEL   generate the title-card background
                         with a local OpenAI-images-compatible server (POST /v1/images/generations)
   $CANARY_WIKIMEDIA_IMAGES   a real, openly-licensed photo from Wikimedia Commons for the title card

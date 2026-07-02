@@ -21,7 +21,11 @@ import { access, readdir, readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { parseWhisperSrt, type Segment } from "./align.js";
+import {
+  parseWhisperSrt,
+  type Segment,
+  segmentsFromOpenAI,
+} from "./align.js";
 
 const execFileAsync = promisify(execFile);
 const TIMEOUT_MS = 300_000;
@@ -364,9 +368,68 @@ export async function resolveTranscriber(
   return null;
 }
 
+// An OpenAI-compatible transcription endpoint (whisper `/v1/audio/transcriptions`
+// — e.g. a Lemonade / speaches / faster-whisper-server on localhost). Preferred
+// over the CLI backends when configured: it can serve a much stronger model
+// (Whisper-Large-v3-Turbo) than a locally-installed whisper.cpp, which markedly
+// improves song-caption alignment.
+export interface OpenAiTranscriber {
+  url: string; // full /v1/audio/transcriptions endpoint
+  model: string;
+  apiKey?: string;
+}
+
+// Resolve the OpenAI-compatible transcriber when $CANARY_TRANSCRIBE_URL is set
+// (the host root, e.g. http://localhost:13305 — the /v1/audio/transcriptions path
+// is appended). $CANARY_TRANSCRIBE_MODEL picks the model (default "whisper-1");
+// $CANARY_TRANSCRIBE_API_KEY adds a Bearer header. Pure → unit-tested.
+export function resolveOpenAiTranscriber(
+  env: NodeJS.ProcessEnv
+): OpenAiTranscriber | null {
+  const base = env.CANARY_TRANSCRIBE_URL?.trim();
+  if (!base) {
+    return null;
+  }
+  return {
+    url: `${base.replace(/\/+$/, "")}/v1/audio/transcriptions`,
+    model: env.CANARY_TRANSCRIBE_MODEL?.trim() || "whisper-1",
+    apiKey: env.CANARY_TRANSCRIBE_API_KEY?.trim() || undefined,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Runner (I/O).
 // ---------------------------------------------------------------------------
+
+// Transcribe a 16 kHz wav via the OpenAI-compatible endpoint, returning cleaned
+// segments (or null on any failure). Requests verbose_json so the reply carries
+// per-segment start/end times. Never throws.
+async function transcribeViaOpenAi(
+  t: OpenAiTranscriber,
+  wav: string,
+  echo?: Echo
+): Promise<Segment[] | null> {
+  echo?.(
+    `$ curl -s ${t.url} -F file=@<wav> -F model=${t.model} -F response_format=verbose_json`
+  );
+  const bytes = await readFile(wav);
+  const form = new FormData();
+  form.append("file", new Blob([bytes], { type: "audio/wav" }), "audio.wav");
+  form.append("model", t.model);
+  form.append("response_format", "verbose_json");
+  form.append("language", "en");
+  const res = await fetch(t.url, {
+    method: "POST",
+    headers: t.apiKey ? { authorization: `Bearer ${t.apiKey}` } : undefined,
+    body: form,
+    signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS),
+  });
+  if (!res.ok) {
+    throw new Error(`transcription HTTP ${res.status}`);
+  }
+  const segments = segmentsFromOpenAI(await res.json());
+  return segments.length > 0 ? segments : null;
+}
 
 // Transcribe `audioPath` into timed segments, or null when unavailable/failed.
 // Converts to 16 kHz mono first (what every backend expects), runs the resolved
@@ -377,19 +440,23 @@ export async function transcribeSong(args: {
   env: NodeJS.ProcessEnv;
   echo?: Echo;
 }): Promise<Segment[] | null> {
-  const transcriber = await resolveTranscriber(args.env);
-  if (!transcriber) {
+  // An OpenAI-compatible endpoint ($CANARY_TRANSCRIBE_URL) wins over the CLI
+  // backends — it can serve a far stronger model for tighter caption timing.
+  const openai = resolveOpenAiTranscriber(args.env);
+  const transcriber = openai ? null : await resolveTranscriber(args.env);
+  if (!(openai || transcriber)) {
     return null;
   }
+  const backend = openai ? "openai" : (transcriber?.kind ?? "?");
   const wav = `${args.audioPath}.16k.wav`;
   const outDir = path.dirname(args.audioPath);
   const outBase = `${args.audioPath}.whisper`;
-  const srtPath = transcriptSrtPath(transcriber.kind, {
-    wav,
-    outDir,
-    outBase,
-  });
+  // Only the CLI backends write a sidecar .srt to clean up.
+  const srtPath = transcriber
+    ? transcriptSrtPath(transcriber.kind, { wav, outDir, outBase })
+    : "";
   try {
+    // Every backend wants 16 kHz mono.
     await execFileAsync(
       args.ffmpeg,
       [
@@ -406,6 +473,12 @@ export async function transcribeSong(args: {
       ],
       { timeout: TIMEOUT_MS, maxBuffer: MAX_BUFFER }
     );
+    if (openai) {
+      return await transcribeViaOpenAi(openai, wav, args.echo);
+    }
+    if (!transcriber) {
+      return null;
+    }
     const cliArgs = [
       ...transcriber.prefixArgs,
       ...buildTranscribeArgs(transcriber, { wav, outDir, outBase }),
@@ -422,18 +495,20 @@ export async function transcribeSong(args: {
     // Transcription is optional (captions fall back to step timing), so we
     // still degrade gracefully — but surface WHY, since a silent null left
     // users guessing which backend/env-var was at fault. Show the tool's own
-    // stderr tail (e.g. a missing model, a torch import crash).
+    // stderr tail (e.g. a missing model, a torch import crash, an HTTP error).
     const e = err as { stderr?: string; message?: string };
     const detail =
       (e.stderr ?? "").trim().split("\n").slice(-3).join(" ") ||
       e.message ||
       String(err);
     args.echo?.(
-      `caption transcription (${transcriber.kind}) failed, using step-timed captions: ${detail}`
+      `caption transcription (${backend}) failed, using step-timed captions: ${detail}`
     );
     return null;
   } finally {
     await rm(wav, { force: true });
-    await rm(srtPath, { force: true });
+    if (srtPath) {
+      await rm(srtPath, { force: true });
+    }
   }
 }

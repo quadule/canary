@@ -44,29 +44,63 @@ export function parseWhisperSrt(srt: string): Segment[] {
       Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4]) / 1000;
     const end =
       Number(m[5]) * 3600 + Number(m[6]) * 60 + Number(m[7]) + Number(m[8]) / 1000;
-    const text = lines
-      .slice(lines.indexOf(timeLine) + 1)
-      .join(" ")
-      .replace(/♪/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!text) {
-      continue;
-    }
-    // Drop sound-effect / non-lyrical cues: ASR non-speech markers in (parens) or
-    // [brackets] (e.g. "(upbeat music)", "[BLANK_AUDIO]", "[Music]"), or a bare
-    // filler vocalization with no real word.
-    const cleaned = text
-      .replace(/\([^)]*\)/g, "")
-      .replace(/\[[^\]]*\]/g, "")
-      .replace(/\s+/g, " ")
-      .trim();
-    if (!cleaned || isFiller(cleaned)) {
+    const cleaned = cleanSegmentText(
+      lines.slice(lines.indexOf(timeLine) + 1).join(" ")
+    );
+    if (!cleaned) {
       continue;
     }
     segments.push({ start, end, text: cleaned });
   }
   return segments;
+}
+
+// Normalize a transcript cue's raw text to a lyric line, or null to drop it.
+// Strips the `♪…♪` wrappers whisper adds to singing and the sound-effect / ASR
+// non-speech markers in (parens) or [brackets] (e.g. "(upbeat music)",
+// "[BLANK_AUDIO]"), and rejects bare filler vocalizations ("oh", "la"). Shared by
+// the SRT parser and the OpenAI verbose_json mapper. Pure → unit-tested.
+export function cleanSegmentText(raw: string): string | null {
+  const text = raw.replace(/♪/g, " ").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return null;
+  }
+  const cleaned = text
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\[[^\]]*\]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned || isFiller(cleaned)) {
+    return null;
+  }
+  return cleaned;
+}
+
+// Map an OpenAI-compatible `verbose_json` transcription (whisper `/v1/audio/
+// transcriptions`) into our Segment[]: each `segments[]` entry carries start/end
+// (seconds) + text. Applies the same cleaning as the SRT parser. Tolerant of a
+// missing/!array `segments` field. Pure → unit-tested.
+export function segmentsFromOpenAI(body: unknown): Segment[] {
+  const raw = (body as { segments?: unknown })?.segments;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const out: Segment[] = [];
+  for (const entry of raw) {
+    const seg = entry as { start?: unknown; end?: unknown; text?: unknown };
+    if (
+      typeof seg.start !== "number" ||
+      typeof seg.end !== "number" ||
+      typeof seg.text !== "string"
+    ) {
+      continue;
+    }
+    const cleaned = cleanSegmentText(seg.text);
+    if (cleaned) {
+      out.push({ start: seg.start, end: seg.end, text: cleaned });
+    }
+  }
+  return out;
 }
 
 // A cue that's just a filler vocalization (oh/ah/yeah/la/ooh/mmm), not a lyric.

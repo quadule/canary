@@ -3,9 +3,32 @@ import {
   buildTranscribeArgs,
   launchFor,
   pickGgmlModel,
+  resolveOpenAiTranscriber,
   resolveWhisper,
   transcriptSrtPath,
 } from "./transcribe.js";
+
+describe("resolveOpenAiTranscriber", () => {
+  it("is off without $CANARY_TRANSCRIBE_URL", () => {
+    expect(resolveOpenAiTranscriber({})).toBeNull();
+  });
+  it("builds the endpoint, defaults the model, and reads the key", () => {
+    expect(
+      resolveOpenAiTranscriber({
+        CANARY_TRANSCRIBE_URL: "http://localhost:13305/",
+        CANARY_TRANSCRIBE_MODEL: "Whisper-Large-v3-Turbo",
+        CANARY_TRANSCRIBE_API_KEY: "sk-x",
+      })
+    ).toEqual({
+      url: "http://localhost:13305/v1/audio/transcriptions",
+      model: "Whisper-Large-v3-Turbo",
+      apiKey: "sk-x",
+    });
+    expect(
+      resolveOpenAiTranscriber({ CANARY_TRANSCRIBE_URL: "http://h:1" })?.model
+    ).toBe("whisper-1");
+  });
+});
 
 describe("resolveWhisper", () => {
   it("is disabled without a model path", () => {

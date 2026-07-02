@@ -1,12 +1,53 @@
 import { describe, expect, it } from "vitest";
 import {
   alignLyricsToSegments,
+  cleanSegmentText,
   mainCluster,
   parseWhisperSrt,
+  segmentsFromOpenAI,
   similarity,
   tokenize,
   vocalRegion,
 } from "./align.js";
+
+describe("segmentsFromOpenAI", () => {
+  it("maps verbose_json segments to start/end/text and cleans them", () => {
+    const body = {
+      segments: [
+        { start: 0, end: 2.5, text: " ♪ Walk through the door ♪" },
+        { start: 2.5, end: 4, text: "(upbeat music)" }, // dropped: non-lyrical
+        { start: 4, end: 6.2, text: "oh oh oh" }, // dropped: filler
+        { start: 6.2, end: 9, text: "seal this fate" },
+      ],
+    };
+    expect(segmentsFromOpenAI(body)).toEqual([
+      { start: 0, end: 2.5, text: "Walk through the door" },
+      { start: 6.2, end: 9, text: "seal this fate" },
+    ]);
+  });
+  it("tolerates a missing/!array segments field", () => {
+    expect(segmentsFromOpenAI({})).toEqual([]);
+    expect(segmentsFromOpenAI({ segments: "nope" })).toEqual([]);
+    expect(segmentsFromOpenAI(null)).toEqual([]);
+  });
+  it("skips entries missing numeric times or text", () => {
+    expect(
+      segmentsFromOpenAI({
+        segments: [{ start: 0, text: "no end" }, { start: 1, end: 2, text: 5 }],
+      })
+    ).toEqual([]);
+  });
+});
+
+describe("cleanSegmentText", () => {
+  it("strips music notes / non-speech markers and rejects filler", () => {
+    expect(cleanSegmentText("♪ hello world ♪")).toBe("hello world");
+    expect(cleanSegmentText("[BLANK_AUDIO]")).toBeNull();
+    expect(cleanSegmentText("(applause)")).toBeNull();
+    expect(cleanSegmentText("la la la")).toBeNull();
+    expect(cleanSegmentText("   ")).toBeNull();
+  });
+});
 
 describe("mainCluster", () => {
   it("drops an isolated early blip before a long gap, keeping the dominant run", () => {
