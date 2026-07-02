@@ -904,13 +904,13 @@ export class QuickJSSandbox {
                       el.style.cssText =
                         "position:fixed;left:50%;bottom:36px;" +
                         "transform:translateX(-50%) translateY(8px);" +
-                        "max-width:85vw;padding:12px 20px;border-radius:10px;" +
+                        "width:auto;max-width:90vw;padding:12px 20px;border-radius:10px;" +
                         "background:rgba(17,17,17,0.86);color:#fff;" +
                         "font:500 18px/1.45 system-ui,-apple-system,sans-serif;" +
                         "z-index:2147483646;pointer-events:none;white-space:pre-wrap;" +
                         "text-align:center;box-shadow:0 4px 18px rgba(0,0,0,0.35);opacity:0;" +
                         "display:-webkit-box;-webkit-box-orient:vertical;" +
-                        "-webkit-line-clamp:2;line-clamp:2;overflow:hidden;";
+                        "overflow:hidden;";
                       host.appendChild(el);
                       const FADE = 250;
                       const hold = Math.max(0, arg.ms - FADE * 2);

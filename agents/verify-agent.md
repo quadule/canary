@@ -116,9 +116,11 @@ You turn a code change into a prioritized Canary QA plan, then — on approval �
   (still record with `session start --cinematic` to suppress overlays). Steer it with
   `--prompt "<genre/vibe>"`; `--no-captions` drops the burned lyric subtitles. Needs the `claude`
   CLI plus a lyrics-capable music model — a local/remote ACE-Step server (`$CANARY_ACESTEP_URL`) or
-  a Gemini key. Optional: `$CANARY_WHISPER_MODEL` (a whisper.cpp ggml model) times captions to the
-  actual vocals; `$CANARY_SONG_RETIME=freeze|stretch` (default freeze); `$CANARY_SONG_FILE` reuses a
-  generated song. The voice/music env vars ($CANARY_SAY_COMMAND, $CANARY_OMLX_URL, …) are listed in
+  a Gemini key. Captions are timed to the actual vocals when a transcriber is found on PATH
+  (autodetected, English-only: `whisperx` → `mlx_whisper` → whisper.cpp `whisper-cli`; models come
+  from the HuggingFace cache); override with `$CANARY_TRANSCRIBER`, `$CANARY_WHISPER_CLI`,
+  `$CANARY_WHISPER_MODEL`. Also: `$CANARY_SONG_RETIME=freeze|stretch` (default freeze);
+  `$CANARY_SONG_FILE` reuses a generated song. The voice/music env vars ($CANARY_SAY_COMMAND, $CANARY_OMLX_URL, …) are listed in
   `canary session end --help`.
 <!-- canary:end rule-caption -->
 - In a verify recording, lean especially hard on captions to explain the **why relative to the

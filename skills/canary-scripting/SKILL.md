@@ -109,7 +109,14 @@ console.log(snap.full); // aria outline — pick a role/text selector from this
     drops repeated nav/sidebar chrome. Use it only after a full snapshot proves the page is
     overwhelmingly large or dominated by irrelevant chrome, or when an active dialog/form is the
     whole task surface. Do not default to truncating or shallow snapshots; that hides late-page
-    fields and causes extra observe/retry loops.
+    fields and causes extra observe/retry loops. `selector` must resolve to exactly ONE element
+    (Playwright strict mode) — a multi-target selector (comma list like `"nav, aside, .sidebar"`,
+    or a broad tag name that recurs) throws a "strict mode violation: resolved to N elements" and
+    burns a whole round-trip, with no hint what the matches were. Don't reach for one hoping to
+    "grab whichever matches." Snapshot the whole page first (no selector) to see the structure,
+    then scope to ONE unique selector — an id, a `data-testid`, a specific descendant chain, or
+    `.first()`/`.nth()` to disambiguate. If you're unsure a selector is unique, don't scope: an
+    oversized full snapshot is cheaper than a strict-mode error plus a retry.
   - `{ track }` returns only what CHANGED since your last snapshot with the same key —
     `page.snapshotForAI({ track: "main" })` after an interaction. The first tracked call returns the
     full tree to set the baseline; later calls (this step or a future one) return just the diff in
@@ -184,6 +191,12 @@ console.log(snap.full); // aria outline — pick a role/text selector from this
   "not clickable" means something is on top: deal with that overlay first (act within the modal,
   accept/close the banner, wait for the spinner to clear), then retry — don't `{ force: true }`
   through it. Right after a navigation, check for such overlays before starting the main flow.
+- When several `<dialog>` elements coexist in the DOM at once (a modal, a drawer, …), don't rely
+  on `isVisible()` / `isHidden()` to pick the active one — frameworks often show/hide a `<dialog>`
+  with CSS while it stays `open` in the DOM, so Playwright's visibility heuristic can report the
+  truly-shown one as `false`. Identify it by content instead: `page.locator("dialog", { hasText:
+  "…" })` / `page.getByRole("dialog", { name: "…" })`, or scope straight to a known descendant
+  inside it — rather than testing `.isVisible()` across every match and trusting the boolean.
 - Move between pages the way a user does: click links and buttons, don't `goto` internal URLs.
   The lone exception is the flow's entry point — the first navigation is a `page.goto(...)`;
   after that, reach each new page by clicking your way there.

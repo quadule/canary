@@ -29,6 +29,12 @@
   "not clickable" means something is on top: deal with that overlay first (act within the modal,
   accept/close the banner, wait for the spinner to clear), then retry — don't `{ force: true }`
   through it. Right after a navigation, check for such overlays before starting the main flow.
+- When several `<dialog>` elements coexist in the DOM at once (a modal, a drawer, …), don't rely
+  on `isVisible()` / `isHidden()` to pick the active one — frameworks often show/hide a `<dialog>`
+  with CSS while it stays `open` in the DOM, so Playwright's visibility heuristic can report the
+  truly-shown one as `false`. Identify it by content instead: `page.locator("dialog", { hasText:
+  "…" })` / `page.getByRole("dialog", { name: "…" })`, or scope straight to a known descendant
+  inside it — rather than testing `.isVisible()` across every match and trusting the boolean.
 - Move between pages the way a user does: click links and buttons, don't `goto` internal URLs.
   The lone exception is the flow's entry point — the first navigation is a `page.goto(...)`;
   after that, reach each new page by clicking your way there.

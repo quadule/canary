@@ -86,7 +86,9 @@
   with `writeFile(name, data)` first, or have the user drop it in via takeover). The bytes are read
   host-side — confined to that dir — and handed to the browser as an in-memory payload, so a script
   can only upload files it put there. Glides the cursor to the control when it's visible. `target`
-  is a selector or locator
+  is a selector or locator. Call this on `page`, not on a locator — `locator.setInputFiles(name)`
+  is raw Playwright, which tries to resolve `name` as a real filesystem path and throws (the sandbox
+  has none); `page.setInputFiles(target, name)` is the only form that reads the sandbox temp file.
 - `page.screenshot({ fullPage })` — capture a screenshot Buffer; save it with `saveScreenshot(...)`
 - `page.evaluate(fn[, arg])` / `page.$eval(sel, fn)` / `page.$$eval(sel, fn)` — run plain
   JavaScript in the page context (real DOM; args/returns must be serializable)

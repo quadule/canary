@@ -10,7 +10,14 @@
     drops repeated nav/sidebar chrome. Use it only after a full snapshot proves the page is
     overwhelmingly large or dominated by irrelevant chrome, or when an active dialog/form is the
     whole task surface. Do not default to truncating or shallow snapshots; that hides late-page
-    fields and causes extra observe/retry loops.
+    fields and causes extra observe/retry loops. `selector` must resolve to exactly ONE element
+    (Playwright strict mode) — a multi-target selector (comma list like `"nav, aside, .sidebar"`,
+    or a broad tag name that recurs) throws a "strict mode violation: resolved to N elements" and
+    burns a whole round-trip, with no hint what the matches were. Don't reach for one hoping to
+    "grab whichever matches." Snapshot the whole page first (no selector) to see the structure,
+    then scope to ONE unique selector — an id, a `data-testid`, a specific descendant chain, or
+    `.first()`/`.nth()` to disambiguate. If you're unsure a selector is unique, don't scope: an
+    oversized full snapshot is cheaper than a strict-mode error plus a retry.
   - `{ track }` returns only what CHANGED since your last snapshot with the same key —
     `page.snapshotForAI({ track: "main" })` after an interaction. The first tracked call returns the
     full tree to set the baseline; later calls (this step or a future one) return just the diff in
