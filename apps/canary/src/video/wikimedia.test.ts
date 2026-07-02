@@ -3,6 +3,7 @@ import {
   attributionFor,
   buildCommonsSearchUrl,
   cleanArtist,
+  imageKeywords,
   isPermissiveLicense,
   pickCommonsImage,
   sanitizeImageQuery,
@@ -12,6 +13,19 @@ describe("sanitizeImageQuery", () => {
   it("collapses whitespace and caps length", () => {
     expect(sanitizeImageQuery("  noir   city  ")).toBe("noir city");
     expect(sanitizeImageQuery("a".repeat(200)).length).toBe(120);
+  });
+});
+
+describe("imageKeywords", () => {
+  it("splits hyphens, drops stopwords/short tokens, de-dupes, and caps at 6", () => {
+    expect(
+      imageKeywords(
+        "A lone detective in a rain-soaked neon city at midnight. Cinematic noir."
+      )
+    ).toEqual(["lone", "detective", "rain", "soaked", "neon", "city"]);
+  });
+  it("returns an empty list when there's nothing evocative", () => {
+    expect(imageKeywords("the a of in on")).toEqual([]);
   });
 });
 

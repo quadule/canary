@@ -38,10 +38,40 @@ export interface CommonsImage {
 // Pure helpers (unit-tested).
 // ---------------------------------------------------------------------------
 
-// Collapse whitespace and cap length; CirrusSearch handles multi-word relevance
-// ranking, so no operator juggling is needed (unlike archive.org's Lucene).
+// Collapse whitespace and cap length.
 export function sanitizeImageQuery(directionText: string): string {
   return directionText.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+// Common words carrying no visual signal — dropped so the search terms are just
+// the evocative nouns/adjectives.
+const IMAGE_STOPWORDS = new Set([
+  "a","an","the","of","in","on","at","and","or","to","with","as","is","it",
+  "its","into","for","by","from","over","under","near","this","that","these",
+  "those","be","being","amid","up","down","out","off","then","than","render",
+  "style","scene","shot","image","photo","picture","background","cinematic",
+]);
+
+// Extract a few evocative keywords from a (possibly long, multi-theme) creative
+// direction. Commons CirrusSearch treats file-search terms as an AND, so feeding
+// it a whole styled sentence — or a hyphenated compound like "rain-soaked" —
+// matches nothing; a short list of plain content words is what actually hits.
+// Splits on any non-alphanumeric (so hyphens break apart), drops stopwords and
+// very short tokens, de-dupes, and caps the count. Pure → unit-tested.
+export function imageKeywords(directionText: string): string[] {
+  const seen = new Set<string>();
+  const words: string[] = [];
+  for (const raw of directionText.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length < 3 || IMAGE_STOPWORDS.has(raw) || seen.has(raw)) {
+      continue;
+    }
+    seen.add(raw);
+    words.push(raw);
+    if (words.length >= 6) {
+      break;
+    }
+  }
+  return words;
 }
 
 // Build the Commons API URL: a generator=search over the File namespace,
@@ -197,9 +227,20 @@ function createProvider(notes: string[], echo?: Echo): TitleBackgroundProvider {
   return {
     id: "wikimedia-image",
     async render(directionText, width, _height, outPath) {
-      const searchUrl = buildCommonsSearchUrl(directionText, width);
-      echo?.(`$ curl -s ${searchUrl}`);
-      const image = pickCommonsImage(await getJson(searchUrl));
+      // Progressively relax the query: start with all extracted keywords and
+      // drop the trailing (less salient) ones until a permissive image matches —
+      // down to a single keyword, then buildCommonsSearchUrl's generic fallback.
+      // This is why a long/multi-theme direction still lands an image.
+      const keywords = imageKeywords(directionText);
+      let image: CommonsImage | null = null;
+      for (let n = Math.max(1, keywords.length); n >= 1 && !image; n--) {
+        const searchUrl = buildCommonsSearchUrl(
+          keywords.slice(0, n).join(" "),
+          width
+        );
+        echo?.(`$ curl -s ${searchUrl}`);
+        image = pickCommonsImage(await getJson(searchUrl));
+      }
       if (!image) {
         throw new Error("no permissively-licensed Wikimedia image matched");
       }
