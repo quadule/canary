@@ -122,15 +122,18 @@ to keep the raw recordings.
 CINEMATIC MODE (--cinematic): turn the silent recording into a narrated short.
 An LLM writes themed narration per step, a voice reads it, and each step's frame is held just
 long enough for its line; an opening title card and burned-in captions are added, plus a sibling
-.srt. Requires the 'claude' CLI; voicing uses a local oMLX TTS model if available, else macOS
+.srt. A single background song plays quietly under the narration and swells to full for the
+credits. Requires the 'claude' CLI; voicing uses a local oMLX TTS model if available, else macOS
 'say', else a Gemini key (so it can run off macOS with oMLX or a key). The title card needs an
 ffmpeg built with drawtext and burned captions need the subtitles filter (otherwise it writes a
 soft-sub .srt and tells you). Every generation command (say/ffmpeg/claude, and a redacted curl
-for HTTP TTS) is printed so a run is easy to reproduce and tweak.
+for HTTP TTS) is printed so a run is easy to reproduce and tweak. Re-running --cinematic on an
+already-condensed session reuses the preserved pre-cinematic cut (it won't re-condense).
 
 SONG MODE (--song): score the whole video with ONE original song instead of spoken narration.
-An LLM writes ONE short, singable lyric line PER STEP and a music model sings them. Like narration,
-each step's frame is held for a readable beat (re-timing) so the body outlasts the song's short
+An LLM writes ONE short, singable lyric line per SECTION (consecutive short steps are grouped so a
+verse spans a few seconds, not one frantic line per step) and a music model sings them. Like
+narration, each frame is held for a readable beat (re-timing) so the body outlasts the song's short
 instrumental intro and the vocals play across it; an opening title card and credits are added.
 Captions are burned in (and a sibling .srt + .lyrics.txt are written). When a transcriber is found
 on PATH (autodetected, English-only, in order: whisperx → mlx_whisper → whisper.cpp's whisper-cli;
