@@ -52,22 +52,33 @@ const IMAGE_STOPWORDS = new Set([
   "style","scene","shot","image","photo","picture","background","cinematic",
 ]);
 
+// How many keywords the FIRST Commons search uses. CirrusSearch ANDs file-search
+// terms, so a long conjunction matches nothing (e.g. six evocative-but-unrelated
+// words never co-occur in one file). Two–three plain terms reliably return
+// images, so we lead with a broad query and relax from there.
+const MAX_SEARCH_TERMS = 3;
+
 // Extract a few evocative keywords from a (possibly long, multi-theme) creative
 // direction. Commons CirrusSearch treats file-search terms as an AND, so feeding
 // it a whole styled sentence — or a hyphenated compound like "rain-soaked" —
 // matches nothing; a short list of plain content words is what actually hits.
-// Splits on any non-alphanumeric (so hyphens break apart), drops stopwords and
-// very short tokens, de-dupes, and caps the count. Pure → unit-tested.
+// Strips accents (so "exposé" → "expose", not a truncated "expos"), splits on any
+// non-alphanumeric (hyphens break apart), drops stopwords and very short tokens,
+// de-dupes, and caps the count. Pure → unit-tested.
 export function imageKeywords(directionText: string): string[] {
   const seen = new Set<string>();
   const words: string[] = [];
-  for (const raw of directionText.toLowerCase().split(/[^a-z0-9]+/)) {
+  const normalized = directionText
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  for (const raw of normalized.split(/[^a-z0-9]+/)) {
     if (raw.length < 3 || IMAGE_STOPWORDS.has(raw) || seen.has(raw)) {
       continue;
     }
     seen.add(raw);
     words.push(raw);
-    if (words.length >= 6) {
+    if (words.length >= 5) {
       break;
     }
   }
@@ -233,7 +244,8 @@ function createProvider(notes: string[], echo?: Echo): TitleBackgroundProvider {
       // This is why a long/multi-theme direction still lands an image.
       const keywords = imageKeywords(directionText);
       let image: CommonsImage | null = null;
-      for (let n = Math.max(1, keywords.length); n >= 1 && !image; n--) {
+      const start = Math.min(Math.max(1, keywords.length), MAX_SEARCH_TERMS);
+      for (let n = start; n >= 1 && !image; n--) {
         const searchUrl = buildCommonsSearchUrl(
           keywords.slice(0, n).join(" "),
           width

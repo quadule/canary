@@ -63,12 +63,18 @@ describe("sanitizeImageQuery", () => {
 });
 
 describe("imageKeywords", () => {
-  it("splits hyphens, drops stopwords/short tokens, de-dupes, and caps at 6", () => {
+  it("splits hyphens, drops stopwords/short tokens, de-dupes, and caps the count", () => {
     expect(
       imageKeywords(
         "A lone detective in a rain-soaked neon city at midnight. Cinematic noir."
       )
-    ).toEqual(["lone", "detective", "rain", "soaked", "neon", "city"]);
+    ).toEqual(["lone", "detective", "rain", "soaked", "neon"]);
+  });
+  it("strips accents so a word isn't truncated at the accent", () => {
+    expect(imageKeywords("investigative exposé")).toEqual([
+      "investigative",
+      "expose",
+    ]);
   });
   it("returns an empty list when there's nothing evocative", () => {
     expect(imageKeywords("the a of in on")).toEqual([]);
