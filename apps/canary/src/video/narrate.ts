@@ -593,6 +593,15 @@ export function buildAudioMix(tracks: AudioTrack[]): string {
   return `${chains};${labels}amix=inputs=${tracks.length}:normalize=0:dropout_transition=0[aout]`;
 }
 
+// The model — especially through structured output (--json-schema) — often writes
+// a two-line title as a LITERAL backslash-n instead of a real newline. Convert it
+// to a real newline so wrapTitle splits it into two title-card lines and the
+// credits roll collapses it to a space (instead of showing "\n" / a stray "n").
+// Pure → unit-tested.
+export function normalizeTitle(title: string): string {
+  return title.replace(/\\r\\n|\\n|\\r/g, "\n").trim();
+}
+
 // Wrap a title into lines of at most `maxChars`, honoring any explicit newlines
 // the model included (so it can force a layout) and greedily word-wrapping the
 // rest. A single word longer than the limit is kept whole rather than split.
@@ -794,7 +803,7 @@ export function parseNarrationJson(raw: string): Narration | null {
       narration: stripOverrideTags(stepRecord.narration),
     });
   }
-  return { title: record.title, steps };
+  return { title: normalizeTitle(record.title), steps };
 }
 
 // Parse the SONG-mode LLM response into a validated Lyrics, or null on any
@@ -832,7 +841,7 @@ export function parseLyricsJson(raw: string): Lyrics | null {
   if (lines.length === 0) {
     return null;
   }
-  return { title: record.title, lines };
+  return { title: normalizeTitle(record.title), lines };
 }
 
 // Parse `say -v '?'` output into structured voices. Each line is
@@ -1805,6 +1814,23 @@ async function renderTitleBackground(args: {
     notes.push("title background unavailable — used a solid card");
     return;
   }
+}
+
+// Push music tracks past the opening title card: the score is timed against the
+// body, but it's mixed onto the title-prefixed final video, so add the title
+// offset to each track's delay and its fade envelope. Pure.
+function shiftMusic(tracks: MusicTrack[], leadSec: number): MusicTrack[] {
+  if (leadSec <= 0) {
+    return tracks;
+  }
+  const add = (v: number | undefined): number | undefined =>
+    v === undefined ? undefined : v + leadSec;
+  return tracks.map((t) => ({
+    ...t,
+    delaySec: t.delaySec + leadSec,
+    fadeInAtSec: add(t.fadeInAtSec),
+    fadeOutAtSec: add(t.fadeOutAtSec),
+  }));
 }
 
 // Generate music tracks for the mix: a low instrumental bed under the whole
@@ -3583,7 +3609,14 @@ export async function cinematicProcess(
       // (e.g. whisper found no usable lyrics in an instrumental-leaning song).
       const cues =
         alignedCues && alignedCues.length > 0
-          ? alignedCues
+          ? // Vocal-aligned cues are song-relative (0-based); the song is delayed
+            // past the title card below, so shift them by the same offset. (The
+            // step-timed fallback already uses stepTimes, which include it.)
+            alignedCues.map((c) => ({
+              start: c.start + titleOffsetSec,
+              end: c.end + titleOffsetSec,
+              text: c.text,
+            }))
           : layoutSongCues(
               ordered.map((x) => ({
                 start: stepTimes[x.firstStep] ?? 0,
@@ -3632,7 +3665,8 @@ export async function cinematicProcess(
         videoPath: finalBody,
         clips: [],
         offsetsSec: [],
-        music: [{ path: songClip, delaySec: 0, volume: 0.9 }],
+        // Start the song after the title card, not under it.
+        music: [{ path: songClip, delaySec: titleOffsetSec, volume: 0.9 }],
         srtPath: burnCaptions ? srtPath : "",
         burnCaptions,
         outPath: finalPath,
@@ -3780,7 +3814,10 @@ export async function cinematicProcess(
       videoPath: finalBody,
       clips,
       offsetsSec: clipOffsetsSec,
-      music,
+      // The music is timed against the body; shift it past the title card so the
+      // score doesn't play over the opening title (clips/captions are already
+      // offset by titleOffsetSec).
+      music: shiftMusic(music, titleOffsetSec),
       srtPath,
       burnCaptions,
       outPath: finalPath,

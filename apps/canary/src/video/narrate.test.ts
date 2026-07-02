@@ -25,6 +25,7 @@ import {
   secToSrtTimestamp,
   groupStepsForLyrics,
   groupedLyricSteps,
+  normalizeTitle,
   songHoldSec,
   speechText,
   stepFootageSec,
@@ -351,6 +352,20 @@ describe("groupedLyricSteps", () => {
       { index: 0, name: "open → search", script: "goto('/')\nfill('q')" },
       { index: 1, name: "buy", script: "click('pay')" },
     ]);
+  });
+});
+
+describe("normalizeTitle", () => {
+  it("turns a literal backslash-n into a real newline (for two-line titles)", () => {
+    expect(normalizeTitle("SHE FORGOT\\nEVERYTHING")).toBe(
+      "SHE FORGOT\nEVERYTHING"
+    );
+    // wrapTitle then splits it into two lines.
+    expect(wrapTitle(normalizeTitle("A\\nB"), 40)).toEqual(["A", "B"]);
+  });
+  it("leaves a real newline and plain title untouched (trimmed)", () => {
+    expect(normalizeTitle("THE\nCAPER")).toBe("THE\nCAPER");
+    expect(normalizeTitle("  PLAIN TITLE  ")).toBe("PLAIN TITLE");
   });
 });
 
