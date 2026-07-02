@@ -94,7 +94,9 @@ act, adapt — not as a pre-written script.
 4. READ stdout + exit code. Failed? Observe where the page is, then retry as a NEW step (duplicates
    are honest evidence; a failed step doesn't end the session).
 5. Loop 2–4 until done; finish with explicit assertion step(s) that log `PASS`/`FAIL`.
-6. End + render: `npx @usecanary/cli session end "$id"`.
+6. End + render, declaring your verdict against the success criteria:
+   `npx @usecanary/cli session end "$id" --pass` (or `--fail "<reason>"`). A step that failed and
+   was retried/recovered stays as honest evidence but won't fail the run — your verdict decides.
 7. Report the `~/.canary/sessions/<id>/report.html` path with a one-line pass/fail summary; offer to
    open it (`review-agent` / `npx @usecanary/ui`).
 8. If the user is done, free resources: `npx @usecanary/cli stop` (stops the daemon + all browsers), or
@@ -244,9 +246,13 @@ last-opened tab and binds it to that step in the report. So:
 
 <!-- canary:snippet rule-pass-fail -->
 - Decide pass/fail ONLY against the flow's stated success criteria — the behavior you set out to
-  verify. A step fails (exit non-zero, or log `FAIL`) when THAT behavior is wrong; otherwise it
-  passes. The session is marked failed if any step's script exits non-zero, so reserve a non-zero
-  exit / `FAIL` for a genuine criteria miss — not incidental noise.
+  verify. YOU own the run's verdict: declare it when you finish with `session end --pass` or
+  `session end --fail "<reason>"`. A failed INTERMEDIATE step is not a failed run — a click that
+  timed out, a dead end you backed out of, or a retry you abandoned are honest evidence in the
+  report but do NOT decide the outcome; only your declared verdict does. So don't contort the flow
+  to keep every step green — take the obvious path, and if a step fails, recover and carry on, then
+  judge the whole run at the end. (Declare no verdict and the run falls back to "failed if any step
+  exited non-zero" — fine for a quick human run, but as the agent you should almost always declare.)
 - Console and page errors are captured as evidence, not verdicts. They DON'T by themselves fail a
   run — most are pre-existing noise (third-party scripts, analytics, unrelated warnings). Treat an
   error as a failure only when it IS the thing under test or actually blocks the flow.

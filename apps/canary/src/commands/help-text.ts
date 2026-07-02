@@ -114,6 +114,14 @@ export const SESSION_END_LONG_ABOUT = `Stop recording, collect artifacts, and re
 Writes ~/.canary/sessions/<id>/report.html (self-contained) plus results.json. Pass --stop-daemon to
 shut the daemon down afterward if no other sessions or browsers remain.
 
+RUN VERDICT: declare the outcome against the flow's success criteria — --pass, or --fail "<reason>".
+Your verdict decides the report's PASS/FAIL, so a failed INTERMEDIATE step (a timed-out click, a
+dead end you recovered from, an abandoned retry) is kept as honest evidence but doesn't fail the run.
+Declare neither and the run falls back to "failed if any step exited non-zero".
+
+  --pass              mark the run PASSED — the workflow met its criteria (recovered step failures ok)
+  --fail "<reason>"   mark the run FAILED with a reason — the workflow did not meet its criteria
+
 Videos are condensed when ffmpeg is available (PATH, $CANARY_FFMPEG, or Playwright's bundled
 copy): the pre-page-load segment is dropped and motionless stretches are trimmed out with a
 frame-accurate re-encode that keeps real motion (cursor, typing, captions). Pass --no-condense

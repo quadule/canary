@@ -69,6 +69,7 @@ body{margin:0;background:var(--surface);color:var(--ink);
   margin:14px 0 20px;color:var(--ink);word-break:break-word}
 .status-row{display:flex;align-items:center;justify-content:center;gap:14px;flex-wrap:wrap}
 .dur{color:var(--muted);font-size:16px}
+.verdict-reason{text-align:center;color:var(--muted);font-size:14px;margin-top:8px;font-style:italic}
 /* badges */
 .badge{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;border-radius:var(--r-full);
   font-size:13px;font-weight:700;letter-spacing:.04em;border:1px solid transparent;white-space:nowrap}
@@ -343,7 +344,11 @@ function renderHeader(m: SessionManifest): string {
     <div class="status-row">
       <span class="badge ${m.status}">${statusIcon(m.status)}${m.status.toUpperCase()}</span>
       <span class="dur">${fmtMs(m.durationMs)} duration</span>
-    </div>
+    </div>${
+      m.verdictReason
+        ? `\n    <div class="verdict-reason">${escapeHtml(m.verdictReason)}</div>`
+        : ""
+    }
   </header>`;
 }
 

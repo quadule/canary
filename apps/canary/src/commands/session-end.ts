@@ -41,6 +41,10 @@ interface SessionEndOpts {
   // instead of per-step spoken narration. A flavor of the cinematic pass.
   song?: boolean;
   stopDaemon?: boolean;
+  // The agent's explicit run verdict (session end --pass/--fail). Stamped on the
+  // record so the report's pass/fail reflects the agent's judgment, not just the
+  // per-step exit codes.
+  verdict?: { status: "pass" | "fail"; reason?: string };
 }
 
 // Open a file/URL in the OS default app, detached and best-effort: opening the
@@ -344,6 +348,11 @@ export async function sessionEnd(
       r.status = "ended";
     }
     r.endedAt = new Date(result?.session.endedAt ?? Date.now()).toISOString();
+    // Record the agent's explicit verdict (if given) so it drives the report's
+    // pass/fail and survives a later re-render.
+    if (opts.verdict) {
+      r.verdict = opts.verdict;
+    }
   });
 
   // Degraded = the daemon did not cleanly finalize the live session (it was

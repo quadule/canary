@@ -46,6 +46,12 @@ export interface SessionRecord {
   schemaVersion: number;
   status: "active" | "ended" | "aborted";
   steps: SessionStep[];
+  // The agent's explicit run verdict, declared at `session end --pass/--fail`.
+  // When set, it decides the report's pass/fail — a failed intermediate step
+  // (a timed-out click, an abandoned retry, a dead end the agent recovered from)
+  // no longer forces the whole run to "failed". Absent → fall back to the
+  // mechanical "any step exited non-zero" rule. Per-step statuses stay honest.
+  verdict?: { status: "pass" | "fail"; reason?: string };
 }
 
 async function atomicWriteJson(file: string, data: unknown): Promise<void> {

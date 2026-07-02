@@ -86,6 +86,10 @@ export interface SessionManifest {
   status: "passed" | "failed" | "aborted";
   steps: ManifestStep[];
   summary: ManifestSummary;
+  // When the agent declared the verdict explicitly (session end --fail "reason"),
+  // the human-readable reason — shown by the report so a PASS/FAIL that overrides
+  // the per-step tallies is explained.
+  verdictReason?: string;
 }
 
 export interface BuildManifestInput {
@@ -209,10 +213,21 @@ export function buildManifest(input: BuildManifestInput): SessionManifest {
   const createdMs = Date.parse(record.createdAt) || Date.now();
   const endedMs = Date.parse(record.endedAt ?? "") || Date.now();
 
-  let status: SessionManifest["status"] = stepsFailed > 0 ? "failed" : "passed";
+  // The run verdict: the agent's explicit declaration (session end --pass/--fail)
+  // wins when present, so a failed INTERMEDIATE step (a timed-out click, an
+  // abandoned retry, a recovered dead end) doesn't force the whole run to
+  // "failed". Without a declared verdict, fall back to the mechanical rule (any
+  // step failed → failed). Per-step statuses above stay honest either way.
+  let status: SessionManifest["status"];
+  if (record.verdict) {
+    status = record.verdict.status === "pass" ? "passed" : "failed";
+  } else {
+    status = stepsFailed > 0 ? "failed" : "passed";
+  }
   if (record.status === "aborted") {
     status = "aborted";
   }
+  const verdictReason = record.verdict?.reason;
 
   return {
     artifactList,
@@ -233,6 +248,7 @@ export function buildManifest(input: BuildManifestInput): SessionManifest {
     name: record.name,
     status,
     steps,
+    verdictReason,
     summary: {
       commandCount,
       consoleErrors,

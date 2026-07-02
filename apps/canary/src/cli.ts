@@ -49,6 +49,24 @@ function isJson(program: CommandType): boolean {
   return program.opts<{ json?: boolean }>().json === true;
 }
 
+// Map the --pass / --fail[reason] flags to a run verdict, or undefined when the
+// agent declared neither (then the report falls back to the per-step tally).
+// commander gives `fail` as `true` (bare --fail) or the reason string.
+function resolveVerdict(
+  opts: SessionEndOpts
+): { status: "pass" | "fail"; reason?: string } | undefined {
+  if (opts.pass === true) {
+    return { status: "pass" };
+  }
+  if (opts.fail !== undefined) {
+    return {
+      status: "fail",
+      reason: typeof opts.fail === "string" ? opts.fail : undefined,
+    };
+  }
+  return;
+}
+
 function parseTimeout(value: string): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed) || String(parsed) !== value || parsed < 1) {
@@ -110,7 +128,9 @@ interface SessionEndOpts {
   captions?: boolean;
   cinematic?: boolean;
   condense?: boolean;
+  fail?: boolean | string;
   open?: boolean;
+  pass?: boolean;
   prompt?: string;
   song?: boolean;
   stopDaemon?: boolean;
@@ -215,7 +235,19 @@ export function buildProgram(): CommandType {
     )
     .option("--no-captions", "With --cinematic, skip burning in subtitles")
     .option("--open", "Open the rendered report.html in your default browser")
+    .option(
+      "--pass",
+      "Mark the run PASSED regardless of individual step exit codes — the agent judged the workflow succeeded (a failed step it recovered from won't fail the run)"
+    )
+    .option(
+      "--fail [reason]",
+      "Mark the run FAILED with an optional reason — the workflow did not meet its success criteria (overrides the per-step tally)"
+    )
     .action(async (id: string, opts: SessionEndOpts) => {
+      if (opts.pass === true && opts.fail !== undefined) {
+        process.stderr.write("Pass --pass or --fail, not both.\n");
+        throw new ExitCodeError(2);
+      }
       const code = await sessionEnd(id, isJson(program), {
         stopDaemon: opts.stopDaemon === true,
         condense: opts.condense,
@@ -224,6 +256,7 @@ export function buildProgram(): CommandType {
         prompt: opts.prompt,
         captions: opts.captions,
         open: opts.open === true,
+        verdict: resolveVerdict(opts),
       });
       throw new ExitCodeError(code);
     });

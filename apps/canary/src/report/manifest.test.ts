@@ -116,6 +116,51 @@ describe("buildManifest", () => {
     expect(m.status).toBe("aborted");
   });
 
+  it("lets an explicit PASS verdict override a failed step (keeps per-step honesty)", () => {
+    const record = makeRecord(); // has one failed step
+    record.verdict = { status: "pass", reason: "login worked after a retry" };
+    const m = buildManifest({
+      consoleErrors: 0,
+      endResult: makeEndResult(),
+      networkFailures: 0,
+      record,
+    });
+    expect(m.status).toBe("passed");
+    expect(m.verdictReason).toBe("login worked after a retry");
+    // The failed attempt is still reported honestly as a failed step.
+    expect(m.steps[1]?.status).toBe("fail");
+    expect(m.summary.stepsFailed).toBe(1);
+  });
+
+  it("lets an explicit FAIL verdict fail a run whose steps all passed", () => {
+    const record = makeRecord();
+    for (const s of record.steps) {
+      s.ok = true;
+      s.exitCode = 0;
+    }
+    record.verdict = { status: "fail", reason: "wrong total shown" };
+    const m = buildManifest({
+      consoleErrors: 0,
+      endResult: makeEndResult(),
+      networkFailures: 0,
+      record,
+    });
+    expect(m.status).toBe("failed");
+  });
+
+  it("keeps aborted winning over a declared verdict", () => {
+    const record = makeRecord();
+    record.status = "aborted";
+    record.verdict = { status: "pass" };
+    const m = buildManifest({
+      consoleErrors: 0,
+      endResult: makeEndResult(),
+      networkFailures: 0,
+      record,
+    });
+    expect(m.status).toBe("aborted");
+  });
+
   it("attaches per-step script + trace actions and rolls up commandCount", () => {
     const record = makeRecord();
     const login = record.steps[0];
