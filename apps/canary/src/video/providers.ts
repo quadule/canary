@@ -56,6 +56,14 @@ export interface TitleBackgroundProvider {
   ): Promise<void>;
 }
 
+// What a music provider's `song()` may hand back besides the audio file: the
+// model's own lyric timestamps, when it can produce them (see MusicProvider.song).
+export interface SongResult {
+  // Standard LRC ("[mm:ss.xx]line" per line) timing the SUPPLIED lyrics to the
+  // generated vocals. Present only when the provider/server exposes it.
+  lrcText?: string;
+}
+
 export interface MusicProvider {
   // Write a themed instrumental bed of ~`seconds` to `outPath`. Throws on failure.
   bed(directionText: string, seconds: number, outPath: string): Promise<void>;
@@ -65,12 +73,18 @@ export interface MusicProvider {
   // without it the provider writes its own themed vocals/instrumental. Throws on
   // failure. A provider that can't sing supplied lyrics (e.g. stock music) leaves
   // `singsLyrics` unset and simply ignores `lyrics`.
+  //
+  // May return a SongResult carrying the model's OWN per-line lyric timestamps
+  // (`lrcText`, standard `[mm:ss.xx]` LRC) when it can produce them — the ideal
+  // caption source (the model's alignment of the exact lyrics it sang, no
+  // transcription). Providers that can't return void; the caller then falls back
+  // to transcribe-and-align.
   song(
     directionText: string,
     seconds: number,
     outPath: string,
     lyrics?: string
-  ): Promise<void>;
+  ): Promise<SongResult | void>;
   // True when `song(..., lyrics)` actually sings the supplied lyrics (a generative
   // model like ACE-Step or Lyria). Stock-track providers leave it unset, so song
   // mode can pick a lyrics-capable provider rather than relying on chain order.

@@ -36,6 +36,7 @@ import {
   alignLyricsToWords,
   layoutAlignedCues,
   mainCluster,
+  parseLrc,
   vocalRegion,
   vocalRegionExcludingTail,
 } from "./align.js";
@@ -2138,32 +2139,24 @@ async function generateRawSong(args: {
   directionText: string;
   lyrics: string;
   targetSec: number;
-  videoPath: string;
+  outPath: string;
   temps: string[];
   notes: string[];
   log: Logger;
-}): Promise<string | null> {
-  const {
-    provider,
-    directionText,
-    lyrics,
-    targetSec,
-    videoPath,
-    temps,
-    notes,
-    log,
-  } = args;
+}): Promise<{ path: string; lrcText?: string } | null> {
+  const { provider, directionText, lyrics, targetSec, outPath, temps, notes, log } =
+    args;
   if (!provider) {
     return null;
   }
-  const songPath = `${videoPath}.rawsong.wav`;
-  temps.push(songPath);
+  temps.push(outPath);
   try {
-    // ACE-Step ignores `seconds` for a lyric song (it omits duration so the model
-    // sings); Gemini Lyria uses it as a target length. The pipeline transcribes,
-    // trims to the vocal region, and the mix caps it to the video either way.
-    await provider.song(directionText, targetSec, songPath, lyrics);
-    return songPath;
+    // The length is what we request (honored exactly by ACE-Step); the model sings
+    // the lyrics then repeats to fill, and the caller trims the tail. The provider
+    // may also hand back its OWN per-line lyric timestamps (LRC) — the ideal caption
+    // source; the caller uses them when present, else transcribes.
+    const result = await provider.song(directionText, targetSec, outPath, lyrics);
+    return { path: outPath, lrcText: result?.lrcText };
   } catch (err) {
     log.debug({ err }, "cinematic: song generation failed");
     notes.push("song unavailable — generation failed");
@@ -3460,13 +3453,16 @@ export async function cinematicProcess(
       const reusing = Boolean(
         pinnedSong && existsSync(pinnedSong) && existsSync(songCache)
       );
+      let lrcText: string | undefined;
       if (reusing) {
         const saved = JSON.parse(await readFile(songCache, "utf8")) as {
           direction: ReturnType<typeof resolveDirection>;
           lyrics: Lyrics;
+          lrcText?: string;
         };
         direction = saved.direction;
         lyrics = saved.lyrics;
+        lrcText = saved.lrcText;
         repoDir = options.repoDir ?? process.cwd();
         base = await resolveBase(repoDir);
         notes.push(`reusing pinned song (${pinnedSong})`);
@@ -3524,8 +3520,8 @@ export async function cinematicProcess(
       };
       log.info(meta, "cinematic: song parameters");
 
-      // 1. The raw song. Reuse the pinned file, or generate (the model chooses the
-      // length — pinning a duration yields instrumental) and persist when pinning.
+      // 1. The raw song. Reuse the pinned file, or generate (duration honored; the
+      // model may also return its own LRC lyric timestamps) and persist when pinning.
       let rawSong: string;
       if (reusing && pinnedSong) {
         rawSong = pinnedSong;
@@ -3536,7 +3532,7 @@ export async function cinematicProcess(
           directionText: direction.theme,
           lyrics: lyricBlock,
           targetSec: songTargetSec(narratableSteps.length),
-          videoPath,
+          outPath: `${videoPath}.rawsong.wav`,
           temps,
           notes,
           log,
@@ -3546,50 +3542,57 @@ export async function cinematicProcess(
           // plain condensed cut rather than ship a silent "song" video.
           return notApplied("song audio could not be generated");
         }
-        rawSong = generated;
+        rawSong = generated.path;
+        lrcText = generated.lrcText;
         if (pinnedSong) {
-          await copyFile(generated, pinnedSong);
-          await writeFile(songCache, JSON.stringify({ direction, lyrics }));
+          await copyFile(generated.path, pinnedSong);
+          await writeFile(
+            songCache,
+            JSON.stringify({ direction, lyrics, lrcText })
+          );
           rawSong = pinnedSong;
         }
       }
 
-      // 2. Transcribe (best-effort) — for the vocal region AND, when the backend
-      // emits them, the per-WORD timings that drive caption alignment.
-      progress("listening for the vocals…");
-      const transcript = await transcribeSong({
-        audioPath: rawSong,
-        ffmpeg: ffmpegPath,
-        env: process.env,
-        echo,
-      });
-      const segments = transcript?.segments ?? [];
-      const words = transcript?.words ?? [];
-
-      // 3. Decide the song clip, per-step holds, and (when transcribed) the cues.
-      const stepCount = Math.max(1, narratableSteps.length);
-      let songClip = rawSong;
-      let alignedCues: { start: number; end: number; text: string }[] | null =
-        null;
-      let holdDurSec: number[];
-      if (transcript && (segments.length > 0 || words.length > 0)) {
-        // Prefer WORD-level alignment: assign each transcript word to the lyric
-        // line it belongs to (alignLyricsToWords). This captions every SUNG line at
-        // its real moment even when the transcriber mashes several sung lines into
-        // one segment (whisper does this constantly on singing — segment matching
-        // then recovered only one line of the blob). The kept region is the sung
-        // span (first→last aligned line); ACE-Step's looped tail produces no new
-        // cues once our lines are exhausted, so it's excluded for free. Fall back to
-        // segment fuzzy-matching + content-novelty region when there are no word
-        // timings (a segment-only backend) or nothing aligned (singing too garbled).
+      // 2. Caption source + vocal region. Prefer the model's OWN per-line
+      // timestamps (LRC) when the server returned them — the exact alignment of the
+      // lyrics it sang, no transcription. Otherwise transcribe the audio and align:
+      // WORD-level when the backend emits word timings (assigns each word to its
+      // lyric line, so a mashed transcript segment still yields per-line cues), else
+      // segment-level. `region` is the sung span; `clipCues` are the timed lines in
+      // the RAW-song timebase (rebased below).
+      let region: { start: number; end: number } | null = null;
+      let clipCues: { start: number; end: number; text: string }[] = [];
+      let sourceLabel = "";
+      const lrcSegs = lrcText ? parseLrc(lrcText) : [];
+      if (lrcSegs.length > 0) {
+        const cues = alignLyricsToSegments(orderedTexts, lrcSegs);
+        if (cues.length > 0) {
+          clipCues = cues;
+          region =
+            vocalRegionExcludingTail(lrcSegs, {
+              lead: TITLE_SEC + 0.5,
+              tail: 1.5,
+            }) ??
+            vocalRegion(lrcSegs, { lead: TITLE_SEC + 0.5, tail: 1.5 });
+          sourceLabel = "the model's own lyric timestamps";
+        }
+      }
+      if (!region) {
+        progress("listening for the vocals…");
+        const transcript = await transcribeSong({
+          audioPath: rawSong,
+          ffmpeg: ffmpegPath,
+          env: process.env,
+          echo,
+        });
+        const segments = transcript?.segments ?? [];
+        const words = transcript?.words ?? [];
         const aligned =
           words.length > 0 ? alignLyricsToWords(orderedTexts, words) : [];
         const anchors = aligned.filter(
           (a) => a.start !== null && a.end !== null
         );
-        let region: { start: number; end: number };
-        let clipCues: { start: number; end: number; text: string }[];
-        let wordTimed = false;
         if (anchors.length > 0) {
           const first = Math.min(...anchors.map((a) => a.start ?? 0));
           const last = Math.max(...anchors.map((a) => a.end ?? 0));
@@ -3603,8 +3606,8 @@ export async function cinematicProcess(
             maxCueSec: MAX_CUE_SEC,
             minDurSec: 1.3,
           });
-          wordTimed = true;
-        } else {
+          sourceLabel = "the detected vocals, word-timed";
+        } else if (segments.length > 0) {
           region =
             vocalRegionExcludingTail(segments, {
               lead: TITLE_SEC + 0.5,
@@ -3613,9 +3616,19 @@ export async function cinematicProcess(
             vocalRegion(mainCluster(segments), {
               lead: TITLE_SEC + 0.5,
               tail: 1.5,
-            }) ?? { start: 0, end: 0 };
+            });
           clipCues = alignLyricsToSegments(orderedTexts, segments);
+          sourceLabel = "the detected vocals";
         }
+      }
+
+      // 3. Per-step holds + rebased cues.
+      const stepCount = Math.max(1, narratableSteps.length);
+      let songClip = rawSong;
+      let alignedCues: { start: number; end: number; text: string }[] | null =
+        null;
+      let holdDurSec: number[];
+      if (region) {
         const trimStart = region.start;
         if (trimStart > 0.05) {
           songClip = `${videoPath}.song.wav`;
@@ -3629,9 +3642,8 @@ export async function cinematicProcess(
           });
         }
         // Rebase to the trimmed song by a pure time shift (it plays at delay 0, so
-        // clip time maps to the final-video time before the title shift). layout
-        // already guaranteed non-overlapping, readable, in-region cues, and a shift
-        // preserves that — so no re-flooring here (which would re-introduce overlap).
+        // clip time maps to the final-video time before the title shift). The cues
+        // are already non-overlapping and in-region, and a shift preserves that.
         alignedCues = clipCues
           .map((c) => ({
             start: c.start - trimStart,
@@ -3646,7 +3658,7 @@ export async function cinematicProcess(
           () => bodyLen / stepCount
         );
         notes.push(
-          `captions aligned to the vocals (${alignedCues.length}/${orderedTexts.length} lines sung${wordTimed ? ", word-timed" : ""})`
+          `captions aligned to ${sourceLabel} (${alignedCues.length}/${orderedTexts.length} lines sung)`
         );
       } else {
         // No transcription: keep the raw song (capped by the mix), and re-time so

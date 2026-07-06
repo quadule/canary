@@ -142,6 +142,17 @@ export function audioFromResponse(body: unknown): Buffer | null {
   return parseAudioDataUrl(url);
 }
 
+// Pull the model's LRC (per-line lyric timestamps) out of a chat-completions
+// response, when present. The stock ACE-Step server does NOT return this; a server
+// patched to run get_lyric_timestamp surfaces it at `choices[0].message.lrc`
+// (a string of "[mm:ss.xx]line" lines). Returns undefined when absent. Pure.
+export function lrcFromResponse(body: unknown): string | undefined {
+  const choice = (body as { choices?: Array<{ message?: unknown }> })
+    ?.choices?.[0];
+  const lrc = (choice?.message as { lrc?: unknown })?.lrc;
+  return typeof lrc === "string" && lrc.trim() ? lrc : undefined;
+}
+
 function sq(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
@@ -209,7 +220,7 @@ async function generate(args: {
   lyrics?: string;
   outPath: string;
   echo?: Echo;
-}): Promise<void> {
+}): Promise<{ lrcText?: string }> {
   const { config, directionText, seconds, instrumental, lyrics, outPath, echo } =
     args;
   const payload = buildMusicPayload({
@@ -241,11 +252,15 @@ async function generate(args: {
   if (!res.ok) {
     throw new Error(`ACE-Step returned HTTP ${res.status}`);
   }
-  const bytes = audioFromResponse(await res.json());
+  const body = await res.json();
+  const bytes = audioFromResponse(body);
   if (!bytes) {
     throw new Error("ACE-Step response had no audio");
   }
   await writeFileAtomic(outPath, bytes);
+  // The model's own per-line lyric timestamps, when the server exposes them (a
+  // patched server that runs get_lyric_timestamp) — the ideal caption source.
+  return { lrcText: lrcFromResponse(body) };
 }
 
 function createMusicProvider(config: AceStepConfig, echo?: Echo): MusicProvider {
@@ -258,15 +273,16 @@ function createMusicProvider(config: AceStepConfig, echo?: Echo): MusicProvider 
           isLocalUrl(config.baseUrl) ? "locally" : "on a local-network server"
         }`
       ),
-    bed: (directionText, seconds, outPath) =>
-      generate({
+    bed: async (directionText, seconds, outPath) => {
+      await generate({
         config,
         directionText,
         seconds,
         instrumental: true,
         outPath,
         echo,
-      }),
+      });
+    },
     song: (directionText, seconds, outPath, lyrics) =>
       generate({
         config,

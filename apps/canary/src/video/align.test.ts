@@ -6,6 +6,7 @@ import {
   estimateSyllables,
   layoutAlignedCues,
   mainCluster,
+  parseLrc,
   parseWhisperSrt,
   parseWhisperxJson,
   segmentsFromOpenAI,
@@ -406,5 +407,38 @@ describe("wordsFromOpenAI", () => {
   });
   it("returns [] when there is no words array", () => {
     expect(wordsFromOpenAI({ segments: [] })).toEqual([]);
+  });
+});
+
+describe("parseLrc", () => {
+  it("parses [mm:ss.xx] lines into timed segments (end = next start)", () => {
+    const lrc = [
+      "[ti:My Song]", // metadata → no timestamp → dropped
+      "[00:05.00]She opens up the page",
+      "[00:09.50]Green lights are shining",
+      "[00:14.00]The tests all pass",
+    ].join("\n");
+    expect(parseLrc(lrc)).toEqual([
+      { start: 5, end: 9.5, text: "She opens up the page" },
+      { start: 9.5, end: 14, text: "Green lights are shining" },
+      { start: 14, end: 18, text: "The tests all pass" }, // last → +tailSec(4)
+    ]);
+  });
+
+  it("drops structure-tag / filler lines and handles multiple tags per line", () => {
+    const lrc = [
+      "[00:02.00][verse]", // becomes "[verse]" → cleaned to empty → dropped
+      "[00:03.00]la la la", // filler → dropped
+      "[00:04.00][00:20.00]Real words here", // two tags, same text
+    ].join("\n");
+    expect(parseLrc(lrc)).toEqual([
+      { start: 4, end: 20, text: "Real words here" },
+      { start: 20, end: 24, text: "Real words here" },
+    ]);
+  });
+
+  it("returns [] for empty / tagless input", () => {
+    expect(parseLrc("")).toEqual([]);
+    expect(parseLrc("just prose, no timestamps")).toEqual([]);
   });
 });

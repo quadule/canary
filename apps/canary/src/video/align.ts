@@ -208,6 +208,49 @@ export function parseWhisperxJson(json: unknown): {
   return { segments, words };
 }
 
+// Parse an LRC lyric-timestamp document ("[mm:ss.xx]line", one or more time tags
+// per line) into timed segments: each line's start is its (first) tag, its end the
+// NEXT line's start (the last line gets `tailSec`). This is the model's own
+// alignment of the lyrics it sang (ACE-Step's get_lyric_timestamp), so feeding the
+// result through alignLyricsToSegments maps our CLEAN lines onto it exactly, with
+// unsung lines naturally dropped. Structure tags / metadata ("[verse]", "[ti:…]")
+// carry no timestamp or clean to empty, so they fall out. Pure → unit-tested.
+export function parseLrc(lrcText: string, tailSec = 4): Segment[] {
+  const timed: { start: number; text: string }[] = [];
+  for (const rawLine of lrcText.split(/\r?\n/)) {
+    const tags = [
+      ...rawLine.matchAll(/\[(\d+):(\d+)(?:[.:](\d+))?\]/g),
+    ];
+    if (tags.length === 0) {
+      continue;
+    }
+    const text = rawLine.replace(/\[[^\]]*\]/g, "").trim();
+    const cleaned = cleanSegmentText(text);
+    if (!cleaned) {
+      continue; // a structure tag / metadata / filler line
+    }
+    for (const m of tags) {
+      const min = Number(m[1]);
+      const sec = Number(m[2]);
+      const frac = m[3] ? Number(`0.${m[3]}`) : 0;
+      if (Number.isFinite(min) && Number.isFinite(sec)) {
+        timed.push({ start: min * 60 + sec + frac, text: cleaned });
+      }
+    }
+  }
+  timed.sort((a, b) => a.start - b.start);
+  const segments: Segment[] = [];
+  for (let i = 0; i < timed.length; i++) {
+    const cur = timed[i];
+    if (!cur) {
+      continue;
+    }
+    const end = timed[i + 1]?.start ?? cur.start + tailSec;
+    segments.push({ start: cur.start, end: Math.max(end, cur.start + 0.5), text: cur.text });
+  }
+  return segments;
+}
+
 // A cue that's just a filler vocalization (oh/ah/yeah/la/ooh/mmm), not a lyric.
 function isFiller(text: string): boolean {
   const words = tokenize(text);
