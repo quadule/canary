@@ -79,10 +79,10 @@ describe("buildMusicPayload", () => {
     expect(p.audio_config).toEqual({ duration: 30, vocal_language: "en" });
   });
 
-  it("sings supplied lyrics in tagged mode, OMITTING duration so it isn't instrumental", () => {
+  it("sings supplied lyrics in tagged mode, PINNING the duration (honored + still sings)", () => {
     const p = buildMusicPayload({
       directionText: "upbeat pop",
-      seconds: 25,
+      seconds: 90,
       instrumental: false,
       lyrics: "[chorus]\nCanary sings",
     });
@@ -95,8 +95,9 @@ describe("buildMusicPayload", () => {
           "<prompt>upbeat pop</prompt><lyrics>[chorus]\nCanary sings</lyrics>",
       },
     ]);
-    // CRITICAL: no duration — pinning it makes a lyric song come out instrumental.
-    expect(p.audio_config).toEqual({ vocal_language: "en" });
+    // Duration IS pinned for a lyric song: verified live that it's honored exactly
+    // and still sings (the old "pinning → instrumental" note was stale).
+    expect(p.audio_config).toEqual({ duration: 90, vocal_language: "en" });
   });
 
   it("rounds duration up to >=1 and includes model only when set", () => {

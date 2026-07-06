@@ -31,7 +31,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { Logger } from "@usecanary/logger";
 import { resolveAceStepMusic } from "./acestep.js";
-import { alignLyricsToSegments, mainCluster, vocalRegion } from "./align.js";
+import {
+  alignLyricsToSegments,
+  mainCluster,
+  vocalRegion,
+  vocalRegionExcludingTail,
+} from "./align.js";
 import { pickLoudestOffset, resolveArchiveMusic } from "./archive.js";
 import {
   branchContributors,
@@ -430,6 +435,13 @@ export function songHoldSec(text: string): number {
 // span lets one verse breathe across 2+ steps.
 const GROUP_MIN_SEC = 7;
 
+// The longest a single sung lyric line may hold on screen — and the cap on how
+// far one cue can extend the kept vocal region. ACE-Step loops/sustains its final
+// line to fill a long generation; without this cap that one line's cue stretches
+// across the whole tail (minutes), dragging both the caption and the trimmed body
+// out into droning dead air. 8s comfortably covers any real sung line.
+const MAX_CUE_SEC = 8;
+
 // Each step's on-screen footage length in the condensed video, from the gaps
 // between successive step positions (the last step has no following boundary, so
 // fall back to its recorded duration). Pure → unit-tested.
@@ -717,11 +729,14 @@ export function buildLyricsPrompt(args: {
 }): string {
   const { direction, change, steps, videoSeconds } = args;
   const stepCount = Math.max(1, steps.length);
-  // Singing runs ~2.5 words/sec; give each step its share of the runtime and cap
-  // the line length to what can actually be sung in that window (floor of 4 words
-  // so a line is never trivially short).
-  const perStepSec = Math.max(1, videoSeconds / stepCount);
-  const wordsPerLine = Math.max(4, Math.round(perStepSec * 2.5));
+  // Keep every line SHORT and singable — ACE-Step aligns syllables to beats, so a
+  // ~6–10-syllable line (one breath) sings cleanly while a long line ("no
+  // breathing room") comes out sparse or makes the model loop/hold notes (the
+  // official ACE-Step lyric guidance, and the failure mode we saw with long
+  // lines). Crucially, the line length does NOT scale with how long a section is
+  // on screen: a long section just holds its frame longer; its lyric line stays
+  // short. Range kept tight and uniform so successive lines share a rhythm.
+  const wordsPerLine = 8;
   const stepLines = steps
     .map((step) => {
       const slice = step.script?.slice(0, SCRIPT_SLICE_CHARS).trim();
@@ -748,12 +763,15 @@ export function buildLyricsPrompt(args: {
     `Creative direction (the song's genre, mood, and voice): ${direction}`,
     "",
     ...changeLines,
-    `The video is about ${Math.round(videoSeconds)} seconds long. Write EXACTLY ONE singable lyric line for each section below — ${stepCount} line${stepCount === 1 ? "" : "s"} total, in order — so the song fits the runtime. A section may span a few moments of the session (its steps are joined with →); write one line that covers the whole section.`,
+    `The video is about ${Math.round(videoSeconds)} seconds long. Write EXACTLY ONE singable lyric line for each section below — ${stepCount} line${stepCount === 1 ? "" : "s"} total, in order — so the song tells the whole story. A section may span a few moments of the session (its steps are joined with →); write one line that covers the whole section.`,
     "Each section (one line of the song lands on each):",
     stepLines,
     "",
     "Rules:",
-    `- Write exactly one line per section (${stepCount} total). Each line must be SHORT and singable — at most ~${wordsPerLine} words — so it can be sung in roughly ${perStepSec.toFixed(1)}s, the time that section is on screen.`,
+    `- Write exactly one line per section (${stepCount} total). Each line must be SHORT and singable — about 6–10 syllables, roughly ${wordsPerLine} words or fewer, sung comfortably in ONE breath. This matters: a long, wordy line comes out sparse or makes the singer stumble. Keep the lines' lengths similar so they share a rhythm.`,
+    "- Do NOT make a line longer just because its section is long — a longer section simply lingers on screen; its line stays short.",
+    "- Use plain, singable words with open vowels. AVOID proper nouns, product/UI names, technical jargon, acronyms, and abbreviations — the singer garbles them. Rephrase the idea in everyday language (e.g. not \"the Super Admin approaches the file\" but \"she steps up to the case\").",
+    "- Write the words as they should be SUNG: no em-dashes, colons, semicolons, slashes, parentheses, or ellipses inside a line. A comma or nothing is fine; keep punctuation minimal.",
     "- Each line is ABOUT its section (use its intent/what it does), but commit hard to the genre — be playful and vivid, never a dry play-by-play.",
     "- Together the lines should read as one coherent song with a through-line; rhyme or repetition across lines is welcome, but keep the one-line-per-section mapping.",
     "- Do NOT include section tags, chord names, timestamps, or stage directions — just the words to sing for each step.",
@@ -1994,6 +2012,7 @@ async function assembleVideo(args: {
     clipDurSec,
     frameRate,
     temps,
+    gapSec: narrationGapSec(process.env),
   });
   if (!retimed) {
     return null;
@@ -2083,19 +2102,35 @@ async function assembleVideo(args: {
   return { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec, music };
 }
 
-// Song length to request from a provider, scaled to the expected video so a Lyria
-// song doesn't run out before the end: title card + a per-step body (~5s each) +
-// credits, floored at 60s. ACE-Step ignores it (it picks its own length); the
-// result is trimmed to its vocal region and capped to the video either way, so
-// over-requesting only wastes generation we trim off. Pure → unit-tested.
+// The minimum a generated song should run — 1:30. A short session still gets a
+// full-length piece rather than a song that ends early.
+export const MIN_SONG_SEC = 90;
+
+// The maximum song length to REQUEST. The model honors the duration exactly, so an
+// unbounded request would literally generate that many seconds (a long session ×
+// ~5s/step reaches minutes) only for the caller to trim most of it to the sung
+// region. Cap it: the distinct written lines are exhausted within ~1–2 minutes
+// regardless (the rest repeats), so a longer request buys nothing but generation
+// time. 2:45 leaves comfortable headroom over MIN_SONG_SEC.
+export const MAX_SONG_SEC = 165;
+
+// Song length to request from the music provider. Honored exactly by ACE-Step
+// (and used as the target by Gemini Lyria), so it sets the real generated length:
+// title card + a per-step body (~5s each) + credits, clamped to
+// [MIN_SONG_SEC, MAX_SONG_SEC]. The song sings the written lyrics and then repeats
+// to fill any remainder; the caller trims that tail back to the last distinct sung
+// line, so over-requesting only wastes generation time, never quality. Pure →
+// unit-tested.
 export function songTargetSec(stepCount: number): number {
-  return Math.max(60, Math.round(TITLE_SEC + Math.max(0, stepCount) * 5 + 15));
+  const scaled = Math.round(TITLE_SEC + Math.max(0, stepCount) * 5 + 15);
+  return Math.min(MAX_SONG_SEC, Math.max(MIN_SONG_SEC, scaled));
 }
 
 // Generate the raw SONG file (the model SINGS the supplied lyrics). Returns its
-// path, or null on failure. The length is the MODEL's choice (acestep omits the
-// duration for lyric songs — pinning it yields instrumental), so this file is
-// long with the vocals somewhere inside; the caller transcribes + trims it.
+// path, or null on failure. The length is what we REQUEST (`targetSec`) — ACE-Step
+// honors the duration exactly and still sings — so the file is that long, singing
+// the lyrics and then repeating to fill any remainder; the caller transcribes and
+// trims that tail back to the last distinct sung line.
 async function generateRawSong(args: {
   provider: MusicProvider | undefined;
   directionText: string;
@@ -2820,15 +2855,26 @@ async function concatSegments(
 // never bleeds into the next step. `startPadSec` freezes the first frame for a
 // beat BEFORE each step's footage (so the action doesn't start cold); the
 // returned `starts` point at the action (after that pad), where narration/captions
-// land. Pure → unit-tested.
+// land.
+//
+// `gapSec` guarantees a MINIMUM silent beat between consecutive narration clips:
+// without it, a step whose line runs longer than its footage holds only exactly
+// long enough for the line, so the next line starts the instant this one ends and
+// the narration sounds breathless. Adding `gapSec` to each non-last step's hold
+// floors the inter-clip gap at `gapSec` (and adds nothing when the footage already
+// leaves that much slack — `clipDur − f + gapSec` goes ≤ 0, so the hold stays 0
+// and the natural gap already covers it). The last step gets no trailing gap.
+// Pure → unit-tested.
 export function planRetime(args: {
   stepTimes: number[];
   clipDurSec: number[];
   totalSec: number;
   startPadSec?: number;
+  gapSec?: number;
 }): { starts: number[]; footage: number[]; holds: number[]; leadSec: number } {
   const { stepTimes, clipDurSec, totalSec } = args;
   const startPad = Math.max(0, args.startPadSec ?? 0);
+  const gap = Math.max(0, args.gapSec ?? 0);
   const n = stepTimes.length;
   const starts: number[] = [];
   const footage: number[] = [];
@@ -2839,7 +2885,9 @@ export function planRetime(args: {
     const start = stepTimes[i] ?? 0;
     const next = i < n - 1 ? (stepTimes[i + 1] ?? totalSec) : totalSec;
     const f = Math.max(0.1, next - start);
-    const hold = Math.max(0, (clipDurSec[i] ?? 0) - f);
+    // No trailing gap after the final clip (nothing follows it to breathe from).
+    const isLast = i === n - 1;
+    const hold = Math.max(0, (clipDurSec[i] ?? 0) - f + (isLast ? 0 : gap));
     // The action (and its narration) starts after the leading still.
     starts.push(acc + startPad);
     footage.push(f);
@@ -2855,6 +2903,20 @@ export function planRetime(args: {
 // exactly like cinematic/narration mode — keeps the motion clean.
 const STEP_START_PAD_SEC = 0;
 
+// Minimum silent beat held between consecutive narration lines so they don't run
+// together (a short step's line used to end and the next begin in the same frame).
+// A freeze on the current step's last frame fills the gap. Override with
+// $CANARY_NARRATION_GAP_SEC (0 restores the old back-to-back pacing).
+const DEFAULT_NARRATION_GAP_SEC = 0.6;
+export function narrationGapSec(
+  env: NodeJS.ProcessEnv = process.env
+): number {
+  const override = Number(env.CANARY_NARRATION_GAP_SEC);
+  return Number.isFinite(override) && override >= 0
+    ? override
+    : DEFAULT_NARRATION_GAP_SEC;
+}
+
 // Re-time the video so each step holds its frame long enough for its narration.
 // Returns the new video path and each step's new start (pre-title-card). Null if
 // the source duration can't be probed.
@@ -2865,6 +2927,9 @@ async function retimeForNarration(args: {
   clipDurSec: number[];
   frameRate: number;
   temps: string[];
+  // Minimum silent beat between consecutive lines (narration mode passes a value;
+  // song mode leaves it 0 — the song's own pacing carries the gaps).
+  gapSec?: number;
 }): Promise<{ path: string; starts: number[] } | null> {
   const { ffmpeg, videoPath, steps, clipDurSec, frameRate, temps } = args;
   const totalSec = await audioDurationSec(ffmpeg, videoPath);
@@ -2876,6 +2941,7 @@ async function retimeForNarration(args: {
     clipDurSec,
     totalSec,
     startPadSec: STEP_START_PAD_SEC,
+    gapSec: args.gapSec,
   });
   const segs: string[] = [];
   if (plan.leadSec > 0.01) {
@@ -3502,16 +3568,25 @@ export async function cinematicProcess(
         null;
       let holdDurSec: number[];
       if (segments) {
-        // Focus on the dominant vocal cluster — ACE-Step may sing one line early
-        // then leave a long instrumental gap; trimming to the cluster starts the
-        // video on the real singing instead of a 20s+ intro.
-        const cluster = mainCluster(segments);
-        // Trim the instrumental intro so the vocals start near the body; size the
-        // re-timed body to the vocal region so the singing plays across it.
-        const region = vocalRegion(cluster, {
-          lead: TITLE_SEC + 0.5,
-          tail: 1.5,
-        }) ?? { start: 0, end: 0 };
+        // Bound the kept region by the transcript's CONTENT: from the first sung
+        // vocal to the last segment that introduced new words. ACE-Step fills its
+        // (now duration-pinned) generation by singing the lyrics and then LOOPING
+        // or holding the final line for the remainder — `vocalRegionExcludingTail`
+        // drops that droning tail while keeping all the real singing. Working on
+        // the raw transcript (not our matched clean lines) keeps the body honest
+        // even when ACE-Step garbles the lyrics too much to fuzzy-match — it won't
+        // collapse to the one or two lines that happened to line up. Fall back to
+        // the dominant-cluster span only if the transcript was empty.
+        const rawCues = alignLyricsToSegments(orderedTexts, segments);
+        const region =
+          vocalRegionExcludingTail(segments, {
+            lead: TITLE_SEC + 0.5,
+            tail: 1.5,
+          }) ??
+          vocalRegion(mainCluster(segments), {
+            lead: TITLE_SEC + 0.5,
+            tail: 1.5,
+          }) ?? { start: 0, end: 0 };
         const trimStart = region.start;
         if (trimStart > 0.05) {
           songClip = `${videoPath}.song.wav`;
@@ -3527,9 +3602,8 @@ export async function cinematicProcess(
         // Our clean lines, timed to the vocals, rebased to the trimmed song — which
         // plays at delay 0, so clip time == final-video time and audio+caption sync.
         // Cap each cue's on-screen time (a long sustained/mis-merged note shouldn't
-        // hold a caption for half a minute).
-        const MAX_CUE_SEC = 8;
-        alignedCues = alignLyricsToSegments(orderedTexts, cluster).map((c) => {
+        // hold a caption for half a minute) — the same cap that bounds the region.
+        alignedCues = rawCues.map((c) => {
           const start = Math.max(0, c.start - trimStart);
           const end = Math.max(0.5, c.end - trimStart);
           return {

@@ -8,6 +8,7 @@ import {
   similarity,
   tokenize,
   vocalRegion,
+  vocalRegionExcludingTail,
 } from "./align.js";
 
 describe("segmentsFromOpenAI", () => {
@@ -175,6 +176,52 @@ describe("vocalRegion", () => {
   });
   it("returns null for no segments", () => {
     expect(vocalRegion([])).toBeNull();
+  });
+});
+
+describe("vocalRegionExcludingTail", () => {
+  it("keeps from the first vocal to the last NOVEL line, dropping a looped tail", () => {
+    // Three distinct lines, then the last one loops to fill the song. The region
+    // must end just after the last novel line (12), not at the loop's end (90).
+    const region = vocalRegionExcludingTail(
+      [
+        { start: 2, end: 6, text: "she opens up the login page" },
+        { start: 6, end: 10, text: "typing out a password again" },
+        { start: 10, end: 12, text: "the dashboard blooms in light" },
+        { start: 12, end: 40, text: "the dashboard blooms in light" },
+        { start: 40, end: 90, text: "the dashboard blooms in light" },
+      ],
+      { lead: 0, tail: 0 }
+    );
+    expect(region).toEqual({ start: 2, end: 12 });
+  });
+
+  it("keeps a chorus that repeats mid-song because novel verses still follow", () => {
+    const region = vocalRegionExcludingTail(
+      [
+        { start: 0, end: 4, text: "verse one about the login" },
+        { start: 4, end: 8, text: "chorus we ride again tonight" },
+        { start: 8, end: 12, text: "verse two about the checkout" },
+        { start: 12, end: 16, text: "chorus we ride again tonight" }, // repeat, mid-song
+        { start: 16, end: 20, text: "verse three the final tests pass" }, // novel AFTER the repeat
+      ],
+      { lead: 0, tail: 0 }
+    );
+    // Ends at the last novel verse (20), not cut at the mid-song chorus repeat.
+    expect(region?.end).toBe(20);
+  });
+
+  it("pads by lead/tail and clamps the start to 0", () => {
+    expect(
+      vocalRegionExcludingTail([{ start: 0.5, end: 2, text: "a line" }], {
+        lead: 1.5,
+        tail: 1.5,
+      })
+    ).toEqual({ start: 0, end: 3.5 });
+  });
+
+  it("returns null for no segments (caller falls back to the raw cluster)", () => {
+    expect(vocalRegionExcludingTail([])).toBeNull();
   });
 });
 

@@ -293,11 +293,12 @@ describe("precinematicVideoPath", () => {
 });
 
 describe("songTargetSec", () => {
-  it("floors at 60s for short sessions and scales up for longer ones", () => {
-    expect(songTargetSec(0)).toBe(60);
-    expect(songTargetSec(5)).toBe(60); // 2.5 + 25 + 15 = 42.5 → floored
-    expect(songTargetSec(10)).toBe(68); // 2.5 + 50 + 15 = 67.5 → 68
+  it("clamps to [90s, 165s] and scales in between", () => {
+    expect(songTargetSec(0)).toBe(90);
+    expect(songTargetSec(5)).toBe(90); // 2.5 + 25 + 15 = 42.5 → floored
+    expect(songTargetSec(10)).toBe(90); // 2.5 + 50 + 15 = 67.5 → floored
     expect(songTargetSec(20)).toBe(118); // 2.5 + 100 + 15 = 117.5 → 118
+    expect(songTargetSec(66)).toBe(165); // 2.5 + 330 + 15 = 347.5 → capped
   });
 });
 
@@ -616,7 +617,7 @@ describe("parseLyricsJson", () => {
 });
 
 describe("buildLyricsPrompt", () => {
-  it("asks for one line per step, scaled to length, as strict per-step JSON", () => {
+  it("asks for one short singable line per step, as strict per-step JSON", () => {
     const prompt = buildLyricsPrompt({
       direction: "80s power ballad",
       videoSeconds: 12,
@@ -633,10 +634,32 @@ describe("buildLyricsPrompt", () => {
     expect(prompt).toContain("2 lines total");
     expect(prompt).toContain("0. open");
     expect(prompt).toContain("1. login");
-    // Scales to the runtime.
-    expect(prompt).toContain("12 seconds");
     // No spoken narration in song mode.
     expect(prompt).toContain("there is no spoken narration");
+  });
+
+  it("holds lines short and singable regardless of section length (ACE-Step best practice)", () => {
+    // A long overall runtime with few sections used to ask for very long lines
+    // (words scaled with the per-section window), which ACE-Step sings sparsely.
+    // The line budget is now fixed and short no matter the length.
+    const short = buildLyricsPrompt({
+      direction: "epic",
+      videoSeconds: 12,
+      steps: [{ index: 0, name: "open" }],
+    });
+    const long = buildLyricsPrompt({
+      direction: "epic",
+      videoSeconds: 600,
+      steps: [{ index: 0, name: "open" }],
+    });
+    // Same short line guidance either way — length never inflates the line.
+    expect(short).toContain("6–10 syllables");
+    expect(long).toContain("6–10 syllables");
+    expect(long).toContain(
+      "Do NOT make a line longer just because its section is long"
+    );
+    // The old "sung in Ns" per-section budget is gone.
+    expect(long).not.toMatch(/sung in roughly/);
   });
 });
 
@@ -950,5 +973,34 @@ describe("planRetime", () => {
     // step0 action starts after the lead + its pad; step1 after step0's full slot
     // (pad + footage + hold) + its own pad.
     expect(plan.starts).toEqual([1 + 0.5, 1 + 0.5 + 3 + 9 + 0.5]);
+  });
+
+  it("floors the gap between consecutive lines with gapSec (but not after the last)", () => {
+    // Two back-to-back lines that each exactly fill their footage: with no gap the
+    // next line would start the instant the previous ends. A 0.6s gap adds a beat
+    // to every non-last step's hold.
+    const plan = planRetime({
+      stepTimes: [0, 3],
+      clipDurSec: [3, 4], // step0 line == footage (3s); step1 is last
+      totalSec: 7,
+      gapSec: 0.6,
+    });
+    // step0: max(0, 3-3+0.6) = 0.6 gap-hold; step1 (last): max(0, 4-4+0) = 0
+    expect(plan.holds).toEqual([0.6, 0]);
+    // the second line now starts 0.6s after the first ends (3 + 0.6)
+    const [s0 = 0, s1 = 0] = plan.starts;
+    expect(s1 - (s0 + 3)).toBeCloseTo(0.6, 5);
+  });
+
+  it("adds no extra hold for gapSec when footage already leaves that much slack", () => {
+    // step0 footage 5s, line only 2s → 3s of natural gap already, well over 0.6s.
+    const plan = planRetime({
+      stepTimes: [0, 5],
+      clipDurSec: [2, 1],
+      totalSec: 10,
+      gapSec: 0.6,
+    });
+    expect(plan.holds).toEqual([0, 0]);
+    expect(plan.starts).toEqual([0, 5]);
   });
 });

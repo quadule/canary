@@ -275,3 +275,45 @@ export function vocalRegion(
   const end = (segments.at(-1)?.end ?? 0) + tail;
   return end > start ? { start, end } : null;
 }
+
+// The region to KEEP, derived from the transcript's CONTENT novelty. Its purpose
+// is to cut ACE-Step's repeated/sustained tail: to fill a (now duration-pinned)
+// generation the model sings the written lines and then loops or holds the final
+// line for the remainder. That tail is dead, droning air. This keeps the span from
+// the first sung vocal to the end of the last segment that introduced NEW words —
+// so a terminal loop (or a sustained final note transcribed as one line over and
+// over) is dropped, while a chorus that repeats mid-song survives because novel
+// verses still follow it.
+//
+// Working on the raw transcript (not our matched clean lines) makes this robust
+// when ACE-Step sings the lyrics too garbled to fuzzy-match: the body still spans
+// the real singing instead of collapsing to the handful of lines that happened to
+// match. A segment counts as a repeat when it's `simThreshold`-similar to any
+// earlier one. Returns null for no segments (caller falls back). Pure → tested.
+export function vocalRegionExcludingTail(
+  segments: Segment[],
+  opts: { lead?: number; tail?: number; simThreshold?: number } = {}
+): { start: number; end: number } | null {
+  if (segments.length === 0) {
+    return null;
+  }
+  const lead = opts.lead ?? 1.5;
+  const tail = opts.tail ?? 1.5;
+  const simThreshold = opts.simThreshold ?? 0.6;
+  const seen: string[] = [];
+  let lastNovelEnd = segments[0]?.end ?? 0;
+  for (const seg of segments) {
+    const text = (seg.text ?? "").trim();
+    const isRepeat =
+      text !== "" && seen.some((prev) => similarity(prev, text) >= simThreshold);
+    if (!isRepeat) {
+      lastNovelEnd = Math.max(lastNovelEnd, seg.end);
+    }
+    if (text !== "") {
+      seen.push(text);
+    }
+  }
+  const start = Math.max(0, (segments[0]?.start ?? 0) - lead);
+  const end = lastNovelEnd + tail;
+  return end > start ? { start, end } : null;
+}
