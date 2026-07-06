@@ -3642,14 +3642,17 @@ export async function cinematicProcess(
           });
         }
         // Rebase to the trimmed song by a pure time shift (it plays at delay 0, so
-        // clip time maps to the final-video time before the title shift). The cues
-        // are already non-overlapping and in-region, and a shift preserves that.
+        // clip time maps to the final-video time before the title shift), and cap
+        // each cue at MAX_CUE_SEC. The cap matters most for LRC/segment cues, whose
+        // end is the NEXT line's start: when the model leaves a long instrumental
+        // gap between sung lines, an uncapped cue would linger ~20s on screen — cap
+        // it so the line shows, then clears (the word path is already capped).
         alignedCues = clipCues
-          .map((c) => ({
-            start: c.start - trimStart,
-            end: c.end - trimStart,
-            text: c.text,
-          }))
+          .map((c) => {
+            const start = c.start - trimStart;
+            const end = Math.min(c.end - trimStart, start + MAX_CUE_SEC);
+            return { start, end, text: c.text };
+          })
           .filter((c) => c.end > 0)
           .map((c) => ({ start: Math.max(0, c.start), end: c.end, text: c.text }));
         const bodyLen = Math.max(6, region.end - region.start);
