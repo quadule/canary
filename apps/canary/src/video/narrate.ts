@@ -3564,7 +3564,10 @@ export async function cinematicProcess(
       let region: { start: number; end: number } | null = null;
       let clipCues: { start: number; end: number; text: string }[] = [];
       let sourceLabel = "";
-      const lrcSegs = lrcText ? parseLrc(lrcText) : [];
+      // $CANARY_ACESTEP_LRC=0 forces the transcribe-and-align path even when the
+      // server returned LRC (for A/B-ing sync, or if a model's LRC timing is off).
+      const useLrc = process.env.CANARY_ACESTEP_LRC?.trim() !== "0";
+      const lrcSegs = lrcText && useLrc ? parseLrc(lrcText) : [];
       if (lrcSegs.length > 0) {
         const cues = alignLyricsToSegments(orderedTexts, lrcSegs);
         if (cues.length > 0) {
