@@ -23,9 +23,21 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   parseWhisperSrt,
+  parseWhisperxJson,
   type Segment,
   segmentsFromOpenAI,
+  type TimedWord,
+  wordsFromOpenAI,
 } from "./align.js";
+
+// A transcription result: coarse segments (for vocal-region / tail detection) plus
+// the WORD timeline when the backend can emit it (whisperx always; an OpenAI server
+// asked for word granularity). Word timings drive caption alignment; segments are
+// the fallback. `words` is [] when the backend is segment-only (whisper.cpp/mlx SRT).
+export interface Transcript {
+  segments: Segment[];
+  words: TimedWord[];
+}
 
 const execFileAsync = promisify(execFile);
 const TIMEOUT_MS = 300_000;
@@ -106,10 +118,11 @@ export interface Transcriber {
 // Pure helpers (unit-tested; no I/O).
 // ---------------------------------------------------------------------------
 
-// The `.srt` a backend writes for `wav` under `outDir`/`outBase`. whisperx and
-// mlx-whisper name the output after the INPUT file inside --output-dir; whisper.cpp
-// writes `<outBase>.srt` from its `-of` flag. Pure → unit-tested.
-export function transcriptSrtPath(
+// The transcript file a backend writes for `wav` under `outDir`/`outBase`.
+// whisperx emits JSON (segments + per-word timings — see buildTranscribeArgs);
+// mlx-whisper writes an `.srt` named after the INPUT file inside --output-dir;
+// whisper.cpp writes `<outBase>.srt` from its `-of` flag. Pure → unit-tested.
+export function transcriptOutputPath(
   kind: TranscriberKind,
   args: { wav: string; outDir: string; outBase: string }
 ): string {
@@ -117,13 +130,14 @@ export function transcriptSrtPath(
     return `${args.outBase}.srt`;
   }
   const stem = path.basename(args.wav).replace(/\.[^.]+$/, "");
-  return path.join(args.outDir, `${stem}.srt`);
+  const ext = kind === "whisperx" ? "json" : "srt";
+  return path.join(args.outDir, `${stem}.${ext}`);
 }
 
-// The CLI arguments to transcribe `wav` to an English `.srt`. whisperx keeps its
-// default alignment pass ON (the reason it leads the order) — we only pin the
-// language so it skips detection and loads the English alignment model. Pure →
-// unit-tested.
+// The CLI arguments to transcribe `wav` for English captions. whisperx runs its
+// wav2vec2 forced-alignment pass (the reason it leads the order) and emits JSON so
+// we get the per-WORD timings, not just segments; we only pin the language so it
+// skips detection and loads the English alignment model. Pure → unit-tested.
 export function buildTranscribeArgs(
   t: Transcriber,
   args: { wav: string; outDir: string; outBase: string }
@@ -137,7 +151,7 @@ export function buildTranscribeArgs(
         "--language",
         "en",
         "--output_format",
-        "srt",
+        "json",
         "--output_dir",
         args.outDir,
       ];
@@ -408,9 +422,9 @@ async function transcribeViaOpenAi(
   t: OpenAiTranscriber,
   wav: string,
   echo?: Echo
-): Promise<Segment[] | null> {
+): Promise<Transcript | null> {
   echo?.(
-    `$ curl -s ${t.url} -F file=@<wav> -F model=${t.model} -F response_format=verbose_json`
+    `$ curl -s ${t.url} -F file=@<wav> -F model=${t.model} -F response_format=verbose_json -F 'timestamp_granularities[]=word'`
   );
   const bytes = await readFile(wav);
   const form = new FormData();
@@ -418,6 +432,11 @@ async function transcribeViaOpenAi(
   form.append("model", t.model);
   form.append("response_format", "verbose_json");
   form.append("language", "en");
+  // Ask for BOTH granularities: words drive caption alignment, segments the
+  // vocal-region/tail detection. A server that only does segments just returns no
+  // `words` (→ we fall back to segment alignment).
+  form.append("timestamp_granularities[]", "word");
+  form.append("timestamp_granularities[]", "segment");
   const res = await fetch(t.url, {
     method: "POST",
     headers: t.apiKey ? { authorization: `Bearer ${t.apiKey}` } : undefined,
@@ -427,8 +446,10 @@ async function transcribeViaOpenAi(
   if (!res.ok) {
     throw new Error(`transcription HTTP ${res.status}`);
   }
-  const segments = segmentsFromOpenAI(await res.json());
-  return segments.length > 0 ? segments : null;
+  const body = await res.json();
+  const segments = segmentsFromOpenAI(body);
+  const words = wordsFromOpenAI(body);
+  return segments.length > 0 || words.length > 0 ? { segments, words } : null;
 }
 
 // Transcribe `audioPath` into timed segments, or null when unavailable/failed.
@@ -439,7 +460,7 @@ export async function transcribeSong(args: {
   ffmpeg: string;
   env: NodeJS.ProcessEnv;
   echo?: Echo;
-}): Promise<Segment[] | null> {
+}): Promise<Transcript | null> {
   // An OpenAI-compatible endpoint ($CANARY_TRANSCRIBE_URL) wins over the CLI
   // backends — it can serve a far stronger model for tighter caption timing.
   const openai = resolveOpenAiTranscriber(args.env);
@@ -451,9 +472,9 @@ export async function transcribeSong(args: {
   const wav = `${args.audioPath}.16k.wav`;
   const outDir = path.dirname(args.audioPath);
   const outBase = `${args.audioPath}.whisper`;
-  // Only the CLI backends write a sidecar .srt to clean up.
-  const srtPath = transcriber
-    ? transcriptSrtPath(transcriber.kind, { wav, outDir, outBase })
+  // Only the CLI backends write a sidecar transcript file to clean up.
+  const outPath = transcriber
+    ? transcriptOutputPath(transcriber.kind, { wav, outDir, outBase })
     : "";
   try {
     // Every backend wants 16 kHz mono.
@@ -488,9 +509,17 @@ export async function transcribeSong(args: {
       timeout: TRANSCRIBE_TIMEOUT_MS,
       maxBuffer: MAX_BUFFER,
     });
-    const srt = await readFile(srtPath, "utf8");
-    const segments = parseWhisperSrt(srt);
-    return segments.length > 0 ? segments : null;
+    const raw = await readFile(outPath, "utf8");
+    // whisperx emits JSON with per-word timings; the others emit an SRT (segments
+    // only → word alignment falls back to segment matching downstream).
+    if (transcriber.kind === "whisperx") {
+      const { segments, words } = parseWhisperxJson(JSON.parse(raw));
+      return segments.length > 0 || words.length > 0
+        ? { segments, words }
+        : null;
+    }
+    const segments = parseWhisperSrt(raw);
+    return segments.length > 0 ? { segments, words: [] } : null;
   } catch (err) {
     // Transcription is optional (captions fall back to step timing), so we
     // still degrade gracefully — but surface WHY, since a silent null left
@@ -507,8 +536,8 @@ export async function transcribeSong(args: {
     return null;
   } finally {
     await rm(wav, { force: true });
-    if (srtPath) {
-      await rm(srtPath, { force: true });
+    if (outPath) {
+      await rm(outPath, { force: true });
     }
   }
 }

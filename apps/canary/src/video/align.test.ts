@@ -1,15 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
   alignLyricsToSegments,
+  alignLyricsToWords,
   cleanSegmentText,
+  estimateSyllables,
+  layoutAlignedCues,
   mainCluster,
   parseWhisperSrt,
+  parseWhisperxJson,
   segmentsFromOpenAI,
   similarity,
+  type TimedWord,
   tokenize,
   vocalRegion,
   vocalRegionExcludingTail,
+  wordsFromOpenAI,
 } from "./align.js";
+
+// Build a flat word timeline from "word@start-end" shorthand for the tests.
+function words(spec: string): TimedWord[] {
+  return spec
+    .trim()
+    .split(/\s+/)
+    .map((tok) => {
+      const [word, span] = tok.split("@");
+      const [start, end] = (span ?? "0-0").split("-").map(Number);
+      return { word: word ?? "", start: start ?? 0, end: end ?? 0 };
+    });
+}
 
 describe("segmentsFromOpenAI", () => {
   it("maps verbose_json segments to start/end/text and cleans them", () => {
@@ -228,5 +246,165 @@ describe("vocalRegionExcludingTail", () => {
 describe("tokenize", () => {
   it("lowercases and strips punctuation", () => {
     expect(tokenize("The Text-Field, cries!")).toEqual(["the", "text", "field", "cries"]);
+  });
+});
+
+describe("alignLyricsToWords", () => {
+  it("distributes a mashed transcript back across lyric lines via the word stream", () => {
+    // The transcriber merged three sung lines into one blob at the segment level;
+    // the word stream still carries them in order, so each line gets its own span.
+    const lines = [
+      "She opens the page",
+      "She types the key",
+      "Green lights are shining",
+    ];
+    const w = words(
+      "she@1-1.2 opens@1.3-1.8 the@1.9-2 page@2.1-2.6 " +
+        "she@3-3.2 types@3.3-3.8 the@3.9-4 key@4.1-4.6 " +
+        "green@5-5.4 lights@5.5-6 are@6.1-6.2 shining@6.3-6.9"
+    );
+    const aligned = alignLyricsToWords(lines, w);
+    expect(aligned.map((a) => [a.index, a.support > 0.5])).toEqual([
+      [0, true],
+      [1, true],
+      [2, true],
+    ]);
+    // Start is the first CONTENT word ("opens"@1.3) — "she" is a skipped stopword.
+    expect(aligned[0]?.start).toBeCloseTo(1.3, 1);
+    expect(aligned[0]?.end).toBeCloseTo(2.6, 1);
+    expect(aligned[2]?.start).toBeCloseTo(5, 1);
+  });
+
+  it("marks an unsung line (no matching words) with support 0 and null timing", () => {
+    const lines = ["She opens the page", "The login waits alone", "Green lights shining"];
+    // The middle line is never sung.
+    const w = words(
+      "she@1-1.2 opens@1.3-1.8 page@2.1-2.6 green@5-5.4 lights@5.5-6 shining@6.3-6.9"
+    );
+    const aligned = alignLyricsToWords(lines, w);
+    expect(aligned[1]?.start).toBeNull();
+    expect(aligned[1]?.support).toBe(0);
+    expect(aligned[0]?.support).toBeGreaterThan(0.5);
+    expect(aligned[2]?.support).toBeGreaterThan(0.5);
+  });
+
+  it("does not let a repeated function word leap the pointer past a sung line", () => {
+    // A garbled repeat ("the ... the ...") between lines must not strand line 2.
+    const lines = ["Fields all fill", "She saves the file"];
+    const w = words(
+      "fields@1-1.4 fill@1.6-2 the@2.2-2.4 the@2.5-2.7 she@3-3.2 saves@3.3-3.9 file@4-4.5"
+    );
+    const aligned = alignLyricsToWords(lines, w);
+    expect(aligned[0]?.support).toBeGreaterThan(0.5);
+    expect(aligned[1]?.support).toBeGreaterThan(0.5); // not stranded
+    // "she" is a stopword; the line anchors on "saves"@3.3.
+    expect(aligned[1]?.start).toBeCloseTo(3.3, 1);
+  });
+
+  it("drops low-confidence (hallucinated) words before aligning", () => {
+    const lines = ["Green lights are shining"];
+    const w: TimedWord[] = [
+      { word: "thanks", start: 0, end: 0.5, prob: 0.05 }, // hallucination
+      { word: "green", start: 5, end: 5.4, prob: 0.9 },
+      { word: "lights", start: 5.5, end: 6, prob: 0.9 },
+      { word: "shining", start: 6.3, end: 6.9, prob: 0.9 },
+    ];
+    const aligned = alignLyricsToWords(lines, w, { minProb: 0.3 });
+    expect(aligned[0]?.start).toBeCloseTo(5, 1); // starts at "green", not "thanks"
+  });
+});
+
+describe("layoutAlignedCues", () => {
+  it("keeps matched lines and drops unsung ones whose gap is too short", () => {
+    const aligned = [
+      { index: 0, start: 1, end: 3, text: "line one here", support: 1 },
+      { index: 1, start: null, end: null, text: "skipped line two", support: 0 },
+      { index: 2, start: 3.2, end: 5, text: "line three here", support: 1 },
+    ];
+    const cues = layoutAlignedCues(aligned, { regionStart: 0, regionEnd: 8 });
+    // The skipped middle line (0.2s gap) is dropped, not interpolated.
+    expect(cues.map((c) => c.text)).toEqual(["line one here", "line three here"]);
+  });
+
+  it("interpolates an unsung line when the gap is long enough to hold it", () => {
+    const aligned = [
+      { index: 0, start: 1, end: 3, text: "line one", support: 1 },
+      { index: 1, start: null, end: null, text: "middle sung but garbled", support: 0 },
+      { index: 2, start: 12, end: 14, text: "line three", support: 1 },
+    ];
+    const cues = layoutAlignedCues(aligned, { regionStart: 0, regionEnd: 16 });
+    expect(cues.map((c) => c.text)).toContain("middle sung but garbled");
+    const mid = cues.find((c) => c.text === "middle sung but garbled");
+    expect(mid?.start).toBeGreaterThanOrEqual(3);
+    expect(mid?.end).toBeLessThanOrEqual(12);
+  });
+
+  it("de-overlaps and clamps to the region", () => {
+    const aligned = [
+      { index: 0, start: 1, end: 9, text: "long one", support: 1 },
+      { index: 1, start: 4, end: 6, text: "two", support: 1 },
+    ];
+    const cues = layoutAlignedCues(aligned, { regionStart: 0, regionEnd: 10 });
+    // First cue ends by the second's start.
+    expect(cues[0]?.end).toBeLessThanOrEqual(cues[1]?.start ?? 0);
+    for (const c of cues) {
+      expect(c.start).toBeGreaterThanOrEqual(0);
+      expect(c.end).toBeLessThanOrEqual(10);
+    }
+  });
+});
+
+describe("estimateSyllables", () => {
+  it("counts vowel groups with a floor of one per word", () => {
+    expect(estimateSyllables("green lights shining")).toBe(4); // green, lights, shin-ing
+    expect(estimateSyllables("go")).toBe(1);
+    expect(estimateSyllables("")).toBe(1);
+  });
+});
+
+describe("parseWhisperxJson", () => {
+  it("extracts segments and the per-word timeline", () => {
+    const { segments, words: w } = parseWhisperxJson({
+      segments: [
+        {
+          start: 1,
+          end: 3,
+          text: "Green lights",
+          words: [
+            { word: "Green", start: 1, end: 1.5, score: 0.9 },
+            { word: "lights", start: 1.6, end: 2.2, score: 0.8 },
+            { word: "123", score: 0.5 }, // no start/end → dropped
+          ],
+        },
+      ],
+    });
+    expect(segments).toEqual([{ start: 1, end: 3, text: "Green lights" }]);
+    expect(w).toEqual([
+      { word: "Green", start: 1, end: 1.5, prob: 0.9 },
+      { word: "lights", start: 1.6, end: 2.2, prob: 0.8 },
+    ]);
+  });
+  it("tolerates missing segments", () => {
+    expect(parseWhisperxJson({})).toEqual({ segments: [], words: [] });
+  });
+});
+
+describe("wordsFromOpenAI", () => {
+  it("maps a verbose_json words array to TimedWord[]", () => {
+    expect(
+      wordsFromOpenAI({
+        words: [
+          { word: "hello", start: 0.1, end: 0.5 },
+          { word: "", start: 0.6, end: 0.8 }, // empty → dropped
+          { word: "world", start: 0.9, end: 1.3 },
+        ],
+      })
+    ).toEqual([
+      { word: "hello", start: 0.1, end: 0.5 },
+      { word: "world", start: 0.9, end: 1.3 },
+    ]);
+  });
+  it("returns [] when there is no words array", () => {
+    expect(wordsFromOpenAI({ segments: [] })).toEqual([]);
   });
 });

@@ -33,6 +33,8 @@ import type { Logger } from "@usecanary/logger";
 import { resolveAceStepMusic } from "./acestep.js";
 import {
   alignLyricsToSegments,
+  alignLyricsToWords,
+  layoutAlignedCues,
   mainCluster,
   vocalRegion,
   vocalRegionExcludingTail,
@@ -3552,14 +3554,17 @@ export async function cinematicProcess(
         }
       }
 
-      // 2. Transcribe (best-effort) to find where the vocals actually are.
+      // 2. Transcribe (best-effort) — for the vocal region AND, when the backend
+      // emits them, the per-WORD timings that drive caption alignment.
       progress("listening for the vocals…");
-      const segments = await transcribeSong({
+      const transcript = await transcribeSong({
         audioPath: rawSong,
         ffmpeg: ffmpegPath,
         env: process.env,
         echo,
       });
+      const segments = transcript?.segments ?? [];
+      const words = transcript?.words ?? [];
 
       // 3. Decide the song clip, per-step holds, and (when transcribed) the cues.
       const stepCount = Math.max(1, narratableSteps.length);
@@ -3567,26 +3572,50 @@ export async function cinematicProcess(
       let alignedCues: { start: number; end: number; text: string }[] | null =
         null;
       let holdDurSec: number[];
-      if (segments) {
-        // Bound the kept region by the transcript's CONTENT: from the first sung
-        // vocal to the last segment that introduced new words. ACE-Step fills its
-        // (now duration-pinned) generation by singing the lyrics and then LOOPING
-        // or holding the final line for the remainder — `vocalRegionExcludingTail`
-        // drops that droning tail while keeping all the real singing. Working on
-        // the raw transcript (not our matched clean lines) keeps the body honest
-        // even when ACE-Step garbles the lyrics too much to fuzzy-match — it won't
-        // collapse to the one or two lines that happened to line up. Fall back to
-        // the dominant-cluster span only if the transcript was empty.
-        const rawCues = alignLyricsToSegments(orderedTexts, segments);
-        const region =
-          vocalRegionExcludingTail(segments, {
-            lead: TITLE_SEC + 0.5,
-            tail: 1.5,
-          }) ??
-          vocalRegion(mainCluster(segments), {
-            lead: TITLE_SEC + 0.5,
-            tail: 1.5,
-          }) ?? { start: 0, end: 0 };
+      if (transcript && (segments.length > 0 || words.length > 0)) {
+        // Prefer WORD-level alignment: assign each transcript word to the lyric
+        // line it belongs to (alignLyricsToWords). This captions every SUNG line at
+        // its real moment even when the transcriber mashes several sung lines into
+        // one segment (whisper does this constantly on singing — segment matching
+        // then recovered only one line of the blob). The kept region is the sung
+        // span (first→last aligned line); ACE-Step's looped tail produces no new
+        // cues once our lines are exhausted, so it's excluded for free. Fall back to
+        // segment fuzzy-matching + content-novelty region when there are no word
+        // timings (a segment-only backend) or nothing aligned (singing too garbled).
+        const aligned =
+          words.length > 0 ? alignLyricsToWords(orderedTexts, words) : [];
+        const anchors = aligned.filter(
+          (a) => a.start !== null && a.end !== null
+        );
+        let region: { start: number; end: number };
+        let clipCues: { start: number; end: number; text: string }[];
+        let wordTimed = false;
+        if (anchors.length > 0) {
+          const first = Math.min(...anchors.map((a) => a.start ?? 0));
+          const last = Math.max(...anchors.map((a) => a.end ?? 0));
+          region = {
+            start: Math.max(0, first - (TITLE_SEC + 0.5)),
+            end: last + 1.5,
+          };
+          clipCues = layoutAlignedCues(aligned, {
+            regionStart: region.start,
+            regionEnd: region.end,
+            maxCueSec: MAX_CUE_SEC,
+            minDurSec: 1.3,
+          });
+          wordTimed = true;
+        } else {
+          region =
+            vocalRegionExcludingTail(segments, {
+              lead: TITLE_SEC + 0.5,
+              tail: 1.5,
+            }) ??
+            vocalRegion(mainCluster(segments), {
+              lead: TITLE_SEC + 0.5,
+              tail: 1.5,
+            }) ?? { start: 0, end: 0 };
+          clipCues = alignLyricsToSegments(orderedTexts, segments);
+        }
         const trimStart = region.start;
         if (trimStart > 0.05) {
           songClip = `${videoPath}.song.wav`;
@@ -3599,26 +3628,25 @@ export async function cinematicProcess(
             echo,
           });
         }
-        // Our clean lines, timed to the vocals, rebased to the trimmed song — which
-        // plays at delay 0, so clip time == final-video time and audio+caption sync.
-        // Cap each cue's on-screen time (a long sustained/mis-merged note shouldn't
-        // hold a caption for half a minute) — the same cap that bounds the region.
-        alignedCues = rawCues.map((c) => {
-          const start = Math.max(0, c.start - trimStart);
-          const end = Math.max(0.5, c.end - trimStart);
-          return {
-            start,
-            end: Math.min(end, start + MAX_CUE_SEC),
+        // Rebase to the trimmed song by a pure time shift (it plays at delay 0, so
+        // clip time maps to the final-video time before the title shift). layout
+        // already guaranteed non-overlapping, readable, in-region cues, and a shift
+        // preserves that — so no re-flooring here (which would re-introduce overlap).
+        alignedCues = clipCues
+          .map((c) => ({
+            start: c.start - trimStart,
+            end: c.end - trimStart,
             text: c.text,
-          };
-        });
+          }))
+          .filter((c) => c.end > 0)
+          .map((c) => ({ start: Math.max(0, c.start), end: c.end, text: c.text }));
         const bodyLen = Math.max(6, region.end - region.start);
         holdDurSec = Array.from(
           { length: stepCount },
           () => bodyLen / stepCount
         );
         notes.push(
-          `captions timed to the detected vocals (${alignedCues.length}/${orderedTexts.length} lines sung)`
+          `captions aligned to the vocals (${alignedCues.length}/${orderedTexts.length} lines sung${wordTimed ? ", word-timed" : ""})`
         );
       } else {
         // No transcription: keep the raw song (capped by the mix), and re-time so

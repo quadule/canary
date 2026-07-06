@@ -5,7 +5,7 @@ import {
   pickGgmlModel,
   resolveOpenAiTranscriber,
   resolveWhisper,
-  transcriptSrtPath,
+  transcriptOutputPath,
 } from "./transcribe.js";
 
 describe("resolveOpenAiTranscriber", () => {
@@ -68,26 +68,33 @@ describe("pickGgmlModel", () => {
   });
 });
 
-describe("transcriptSrtPath", () => {
+describe("transcriptOutputPath", () => {
   it("whisper.cpp writes <outBase>.srt", () => {
     expect(
-      transcriptSrtPath("whisper-cpp", {
+      transcriptOutputPath("whisper-cpp", {
         wav: "/t/song.wav.16k.wav",
         outDir: "/t",
         outBase: "/t/song.wav.whisper",
       })
     ).toBe("/t/song.wav.whisper.srt");
   });
-  it("whisperx/mlx name the srt after the input file in --output-dir", () => {
-    for (const kind of ["whisperx", "mlx-whisper"] as const) {
-      expect(
-        transcriptSrtPath(kind, {
-          wav: "/t/song.wav.16k.wav",
-          outDir: "/t",
-          outBase: "/t/song.wav.whisper",
-        })
-      ).toBe("/t/song.wav.16k.srt");
-    }
+  it("whisperx writes JSON (for per-word timings) named after the input", () => {
+    expect(
+      transcriptOutputPath("whisperx", {
+        wav: "/t/song.wav.16k.wav",
+        outDir: "/t",
+        outBase: "/t/song.wav.whisper",
+      })
+    ).toBe("/t/song.wav.16k.json");
+  });
+  it("mlx names the srt after the input file in --output-dir", () => {
+    expect(
+      transcriptOutputPath("mlx-whisper", {
+        wav: "/t/song.wav.16k.wav",
+        outDir: "/t",
+        outBase: "/t/song.wav.whisper",
+      })
+    ).toBe("/t/song.wav.16k.srt");
   });
 });
 
@@ -136,7 +143,7 @@ describe("launchFor", () => {
 describe("buildTranscribeArgs", () => {
   const io = { wav: "/t/a.wav", outDir: "/t", outBase: "/t/a.whisper" };
 
-  it("whisperx pins English and keeps its (default) alignment pass", () => {
+  it("whisperx pins English, emits JSON (word timings), keeps its alignment pass", () => {
     const args = buildTranscribeArgs(
       { kind: "whisperx", cli: "whisperx", prefixArgs: [], model: "small.en" },
       io
@@ -148,7 +155,7 @@ describe("buildTranscribeArgs", () => {
       "--language",
       "en",
       "--output_format",
-      "srt",
+      "json",
       "--output_dir",
       "/t",
     ]);
