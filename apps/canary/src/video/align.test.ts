@@ -6,6 +6,7 @@ import {
   estimateSyllables,
   layoutAlignedCues,
   mainCluster,
+  mergeLrcWithWordOnsets,
   parseLrc,
   parseWhisperSrt,
   parseWhisperxJson,
@@ -440,5 +441,37 @@ describe("parseLrc", () => {
   it("returns [] for empty / tagless input", () => {
     expect(parseLrc("")).toEqual([]);
     expect(parseLrc("just prose, no timestamps")).toEqual([]);
+  });
+});
+
+describe("mergeLrcWithWordOnsets", () => {
+  const lines = ["Line one here", "Line two here", "Line three here"];
+  it("floors an LRC start by the word onset (no early reveal), keeps LRC end", () => {
+    const lrc = [
+      { start: 0.2, end: 18, text: "Line one here" }, // LRC placed it at the intro
+      { start: 18, end: 26, text: "Line two here" },
+      { start: 26, end: 30, text: "Line three here" },
+    ];
+    const wordAligned = [
+      { index: 0, start: 9.7, end: 12, text: "Line one here", support: 1 }, // heard at 9.7
+      { index: 1, start: null, end: null, text: "Line two here", support: 0 }, // word missed it
+      { index: 2, start: 26.1, end: 28, text: "Line three here", support: 1 },
+    ];
+    const merged = mergeLrcWithWordOnsets(lines, lrc, wordAligned);
+    expect(merged[0]?.start).toBe(9.7); // pushed later to the heard onset
+    expect(merged[0]?.end).toBe(18); // LRC end kept
+    expect(merged[1]?.start).toBe(18); // word missed it → LRC start kept
+    expect(merged[2]?.start).toBe(26.1); // onset later than LRC → floored up slightly
+  });
+
+  it("never pulls a start earlier than the LRC and marks unsung lines null", () => {
+    const lrc = [{ start: 10, end: 14, text: "Line one here" }];
+    const wordAligned = [
+      { index: 0, start: 5, end: 8, text: "Line one here", support: 1 }, // onset EARLIER
+    ];
+    const merged = mergeLrcWithWordOnsets(lines, lrc, wordAligned);
+    expect(merged[0]?.start).toBe(10); // max(10, 5) — never earlier than LRC
+    expect(merged[1]?.start).toBeNull(); // not in LRC → unsung
+    expect(merged[2]?.start).toBeNull();
   });
 });

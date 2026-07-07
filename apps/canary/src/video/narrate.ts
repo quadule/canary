@@ -36,6 +36,7 @@ import {
   alignLyricsToWords,
   layoutAlignedCues,
   mainCluster,
+  mergeLrcWithWordOnsets,
   parseLrc,
   vocalRegion,
   vocalRegionExcludingTail,
@@ -3554,13 +3555,18 @@ export async function cinematicProcess(
         }
       }
 
-      // 2. Caption source + vocal region. Prefer the model's OWN per-line
-      // timestamps (LRC) when the server returned them — the exact alignment of the
-      // lyrics it sang, no transcription. Otherwise transcribe the audio and align:
-      // WORD-level when the backend emits word timings (assigns each word to its
-      // lyric line, so a mashed transcript segment still yields per-line cues), else
-      // segment-level. `region` is the sung span; `clipCues` are the timed lines in
-      // the RAW-song timebase (rebased below).
+      // 2. Caption source + vocal region. We transcribe FIRST (best-effort): the
+      // per-word onsets both refine LRC timing and drive the fallback. Then, in
+      // priority order:
+      //   • LRC (the model's own per-line timestamps) merged with word onsets — the
+      //     LRC gives complete, ordered coverage; the onsets keep a line from
+      //     revealing before it's actually heard (LRC can place a line over the
+      //     intro). This is the best source when both are available.
+      //   • word-level alignment alone (assigns each transcript word to its lyric
+      //     line, so a mashed segment still yields per-line cues);
+      //   • segment-level fuzzy matching.
+      // `region` is the sung span; `clipCues` are the timed lines in the RAW-song
+      // timebase (rebased below).
       let region: { start: number; end: number } | null = null;
       let clipCues: { start: number; end: number; text: string }[] = [];
       let sourceLabel = "";
@@ -3568,61 +3574,79 @@ export async function cinematicProcess(
       // server returned LRC (for A/B-ing sync, or if a model's LRC timing is off).
       const useLrc = process.env.CANARY_ACESTEP_LRC?.trim() !== "0";
       const lrcSegs = lrcText && useLrc ? parseLrc(lrcText) : [];
-      if (lrcSegs.length > 0) {
-        const cues = alignLyricsToSegments(orderedTexts, lrcSegs);
-        if (cues.length > 0) {
-          clipCues = cues;
-          region =
-            vocalRegionExcludingTail(lrcSegs, {
-              lead: TITLE_SEC + 0.5,
-              tail: 1.5,
-            }) ??
-            vocalRegion(lrcSegs, { lead: TITLE_SEC + 0.5, tail: 1.5 });
-          sourceLabel = "the model's own lyric timestamps";
-        }
-      }
-      if (!region) {
-        progress("listening for the vocals…");
-        const transcript = await transcribeSong({
-          audioPath: rawSong,
-          ffmpeg: ffmpegPath,
-          env: process.env,
-          echo,
-        });
-        const segments = transcript?.segments ?? [];
-        const words = transcript?.words ?? [];
-        const aligned =
-          words.length > 0 ? alignLyricsToWords(orderedTexts, words) : [];
+
+      progress("listening for the vocals…");
+      const transcript = await transcribeSong({
+        audioPath: rawSong,
+        ffmpeg: ffmpegPath,
+        env: process.env,
+        echo,
+      });
+      const segments = transcript?.segments ?? [];
+      const words = transcript?.words ?? [];
+      const wordAligned =
+        words.length > 0 ? alignLyricsToWords(orderedTexts, words) : [];
+
+      const anchorSpan = (
+        aligned: { start: number | null; end: number | null }[]
+      ): { start: number; end: number } | null => {
         const anchors = aligned.filter(
           (a) => a.start !== null && a.end !== null
         );
-        if (anchors.length > 0) {
-          const first = Math.min(...anchors.map((a) => a.start ?? 0));
-          const last = Math.max(...anchors.map((a) => a.end ?? 0));
-          region = {
-            start: Math.max(0, first - (TITLE_SEC + 0.5)),
-            end: last + 1.5,
-          };
-          clipCues = layoutAlignedCues(aligned, {
+        if (anchors.length === 0) {
+          return null;
+        }
+        const first = Math.min(...anchors.map((a) => a.start ?? 0));
+        const last = Math.max(...anchors.map((a) => a.end ?? 0));
+        return { start: Math.max(0, first - (TITLE_SEC + 0.5)), end: last + 1.5 };
+      };
+
+      const lrcCues =
+        lrcSegs.length > 0 ? alignLyricsToSegments(orderedTexts, lrcSegs) : [];
+      if (lrcCues.length > 0) {
+        const merged = mergeLrcWithWordOnsets(
+          orderedTexts,
+          lrcCues,
+          wordAligned
+        );
+        region = anchorSpan(merged);
+        if (region) {
+          clipCues = layoutAlignedCues(merged, {
+            regionStart: region.start,
+            regionEnd: region.end,
+            maxCueSec: MAX_CUE_SEC,
+            minDurSec: 1.3,
+          });
+          sourceLabel =
+            wordAligned.length > 0
+              ? "the model's lyric timestamps, onset-synced to the vocals"
+              : "the model's own lyric timestamps";
+        }
+      }
+      if (!region && wordAligned.length > 0) {
+        region = anchorSpan(wordAligned);
+        if (region) {
+          clipCues = layoutAlignedCues(wordAligned, {
             regionStart: region.start,
             regionEnd: region.end,
             maxCueSec: MAX_CUE_SEC,
             minDurSec: 1.3,
           });
           sourceLabel = "the detected vocals, word-timed";
-        } else if (segments.length > 0) {
-          region =
-            vocalRegionExcludingTail(segments, {
-              lead: TITLE_SEC + 0.5,
-              tail: 1.5,
-            }) ??
-            vocalRegion(mainCluster(segments), {
-              lead: TITLE_SEC + 0.5,
-              tail: 1.5,
-            });
-          clipCues = alignLyricsToSegments(orderedTexts, segments);
-          sourceLabel = "the detected vocals";
         }
+      }
+      if (!region && segments.length > 0) {
+        region =
+          vocalRegionExcludingTail(segments, {
+            lead: TITLE_SEC + 0.5,
+            tail: 1.5,
+          }) ??
+          vocalRegion(mainCluster(segments), {
+            lead: TITLE_SEC + 0.5,
+            tail: 1.5,
+          });
+        clipCues = alignLyricsToSegments(orderedTexts, segments);
+        sourceLabel = "the detected vocals";
       }
 
       // 3. Per-step holds + rebased cues.

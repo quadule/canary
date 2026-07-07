@@ -251,6 +251,48 @@ export function parseLrc(lrcText: string, tailSec = 4): Segment[] {
   return segments;
 }
 
+// Best-of-both caption timing: take the LRC line cues (complete + model-timed, the
+// backbone) but never let a line START before the word-alignment's acoustic onset
+// for that same line. The model's LRC can place a line early — e.g. over the
+// instrumental intro — while the vocal isn't actually heard until seconds later;
+// flooring the start by the transcribed onset stops the caption revealing ahead of
+// the singing, without giving up LRC's coverage (a line the word pass missed keeps
+// its LRC start). Returns index-keyed AlignedLine[] for layoutAlignedCues (which
+// then applies min-duration, hold-to-next, and de-overlap). Pure → unit-tested.
+export function mergeLrcWithWordOnsets(
+  lines: string[],
+  lrcCues: TimedLine[],
+  wordAligned: AlignedLine[]
+): AlignedLine[] {
+  const wordStart = new Map<number, number>();
+  for (const a of wordAligned) {
+    if (a.start !== null) {
+      wordStart.set(a.index, a.start);
+    }
+  }
+  // Index LRC cues by their line (their text is one of `lines`), monotonically so a
+  // repeated line maps to successive occurrences rather than always the first.
+  const lrcByIndex = new Map<number, TimedLine>();
+  let search = 0;
+  for (const cue of lrcCues) {
+    const idx = lines.indexOf(cue.text, search);
+    if (idx >= 0) {
+      lrcByIndex.set(idx, cue);
+      search = idx + 1;
+    }
+  }
+  return lines.map((text, index) => {
+    const lrc = lrcByIndex.get(index);
+    if (!lrc) {
+      return { index, text, start: null, end: null, support: 0 };
+    }
+    const onset = wordStart.get(index);
+    // Only ever push the start LATER (toward the heard onset), never earlier.
+    const start = onset === undefined ? lrc.start : Math.max(lrc.start, onset);
+    return { index, text, start, end: Math.max(lrc.end, start + 0.1), support: 1 };
+  });
+}
+
 // A cue that's just a filler vocalization (oh/ah/yeah/la/ooh/mmm), not a lyric.
 function isFiller(text: string): boolean {
   const words = tokenize(text);
