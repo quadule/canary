@@ -10,6 +10,7 @@ import {
   parseLrc,
   parseWhisperSrt,
   parseWhisperxJson,
+  redistributeImplausibleCues,
   segmentsFromOpenAI,
   similarity,
   songStepOnsets,
@@ -490,5 +491,29 @@ describe("songStepOnsets", () => {
     for (let i = 1; i < onsets.length; i++) {
       expect(onsets[i]).toBeGreaterThanOrEqual(onsets[i - 1] ?? 0);
     }
+  });
+});
+
+describe("redistributeImplausibleCues", () => {
+  it("caps the gap so a line flung to the tail is pulled back to a normal cadence", () => {
+    // The v4 failure shape: a few lines early, then one stamped at 112s. The bogus
+    // 104s jump is collapsed to one cadence (~5s), bounding the body to real content.
+    const cues = [
+      { start: 2, end: 6, text: "one" },
+      { start: 5, end: 8, text: "two" },
+      { start: 8, end: 11, text: "three" },
+      { start: 112, end: 114, text: "four" },
+    ];
+    const out = redistributeImplausibleCues(cues, 40);
+    expect(out.map((c) => Math.round(c.start))).toEqual([2, 5, 8, 13]);
+    expect(out.map((c) => c.text)).toEqual(["one", "two", "three", "four"]);
+  });
+  it("is a no-op on an evenly-timed take inside the vocal region", () => {
+    const cues = [
+      { start: 2, end: 6, text: "a" },
+      { start: 6, end: 10, text: "b" },
+      { start: 10, end: 14, text: "c" },
+    ];
+    expect(redistributeImplausibleCues(cues, 40)).toEqual(cues);
   });
 });

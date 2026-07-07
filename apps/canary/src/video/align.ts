@@ -293,6 +293,70 @@ export function mergeLrcWithWordOnsets(
   });
 }
 
+// Guard against implausible LRC timing. ACE-Step's own lyric timestamps sometimes
+// fling the trailing lines to the very END of the song (a cross-attention artifact),
+// over instrumental audio the model never actually sang — producing a bloated video
+// with a huge mid-song gap. When the cues run past where singing really stops
+// (`vocalEndSec`, from the transcript) OR one gap dwarfs the rest, this re-spaces ALL
+// cues EVENLY across the real sung region so every line keeps a caption but none is
+// stranded at the tail. Ends are set to the next cue's start (the caller caps them).
+// A no-op when the cues already sit inside the region with even-ish spacing (the
+// common, good-take case). Pure → unit-tested.
+export function redistributeImplausibleCues(
+  cues: TimedLine[],
+  vocalEndSec: number,
+  opts: { slackSec?: number; tailSec?: number } = {}
+): TimedLine[] {
+  if (cues.length < 2) {
+    return cues;
+  }
+  const slack = opts.slackSec ?? 5;
+  const tail = opts.tailSec ?? 3;
+  const first = cues[0]?.start ?? 0;
+  const lastStart = cues.at(-1)?.start ?? 0;
+  const gaps: number[] = [];
+  for (let i = 1; i < cues.length; i++) {
+    gaps.push((cues[i]?.start ?? 0) - (cues[i - 1]?.start ?? 0));
+  }
+  const sorted = [...gaps].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
+  const maxGap = sorted.at(-1) ?? 0;
+  // Trigger: a single gap dwarfs the typical spacing (a bogus jump to the tail), or
+  // the last line is stamped past where singing actually stops.
+  const grossGap = maxGap > 12 && maxGap > 4 * Math.max(1, median);
+  const pastVocals = vocalEndSec > 0 && lastStart > vocalEndSec + slack;
+  if (!(grossGap || pastVocals)) {
+    return cues;
+  }
+  // Cap the gap: pull every cue to at most one normal cadence after the previous.
+  // This collapses the bogus jump AND spreads a clustered tail evenly, WITHOUT
+  // needing a reliable vocal-end (the transcript's is unreliable when whisper
+  // hallucinates over the instrumental) — the body is bounded to the real content,
+  // not stretched across dead air. Cadence is the typical spacing of THIS take,
+  // clamped to a readable range.
+  const cadence = Math.min(10, Math.max(5, median * 1.5));
+  const out: TimedLine[] = [];
+  let prev = first;
+  for (let i = 0; i < cues.length; i++) {
+    const cue = cues[i];
+    if (!cue) {
+      continue;
+    }
+    const start = i === 0 ? cue.start : Math.min(cue.start, prev + cadence);
+    prev = start;
+    out.push({ start, end: start, text: cue.text });
+  }
+  // Ends = next cue's start (last gets a tail); the caller caps/floors them.
+  for (let i = 0; i < out.length; i++) {
+    const cur = out[i];
+    if (!cur) {
+      continue;
+    }
+    cur.end = i < out.length - 1 ? (out[i + 1]?.start ?? cur.start) : cur.start + tail;
+  }
+  return out;
+}
+
 // Per-STEP output onset times for onset-anchored song re-timing (make each step's
 // footage appear while ITS lyric line is sung). `groups` partitions the step indices
 // (one inner array per lyric group, in order); `groupSungStart[g]` is when group g's

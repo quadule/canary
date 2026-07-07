@@ -38,6 +38,7 @@ import {
   mainCluster,
   mergeLrcWithWordOnsets,
   parseLrc,
+  redistributeImplausibleCues,
   songStepOnsets,
   vocalRegion,
   vocalRegionExcludingTail,
@@ -3654,9 +3655,17 @@ export async function cinematicProcess(
         return { start: Math.max(0, first - (TITLE_SEC + 0.5)), end: last + 1.5 };
       };
 
-      const lrcCues =
+      let lrcCues =
         lrcSegs.length > 0 ? alignLyricsToSegments(orderedTexts, lrcSegs) : [];
       if (lrcCues.length > 0) {
+        // Guard against the model stamping trailing lines at the song's end (over
+        // instrumental it never sang): if the LRC runs past where singing actually
+        // stops (the transcript's vocal end), re-space the lines evenly across the
+        // real sung region instead of trusting the tail timestamps. No-op on a
+        // well-timed take.
+        const vocalEnd =
+          vocalRegionExcludingTail(segments, { lead: 0, tail: 0 })?.end ?? 0;
+        lrcCues = redistributeImplausibleCues(lrcCues, vocalEnd);
         const merged = mergeLrcWithWordOnsets(
           orderedTexts,
           lrcCues,
