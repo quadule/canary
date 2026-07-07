@@ -9,46 +9,35 @@ import {
   chromium,
   type Page,
 } from "playwright";
+import {
+  buildDomQuiescenceJs,
+  FAST_SETTLE_DOM_QUIESCENCE_JS,
+  FAST_SETTLE_LOAD_MS,
+  FAST_SETTLE_NETWORK_MS,
+  SETTLE_QUIET_MS,
+} from "./sandbox/forked-client/src/utils/isomorphic/domSettle.js";
 
 // Bounds for the per-step settle barrier (settleActivePage), run daemon-side at
 // the end of every session step. Each wait is capped so a long-lived connection
 // (SSE, long-polling, heartbeat XHR, websocket) can never hang a step.
 const STEP_SETTLE_LOAD_MS = 5000;
 const STEP_SETTLE_NETWORK_MS = 2000;
-const STEP_SETTLE_QUIET_MS = 400;
 const STEP_SETTLE_QUIESCENCE_MS = 3000;
 // Cap for the optional session start-URL navigation (navigateInitialPage).
 const START_URL_NAV_MS = 30_000;
 
-// DOM-mutation quiescence, injected as a STRING (the daemon's TS build has no
-// DOM lib — same reason addInitScript takes string content). Resolves once the
-// DOM has been free of non-overlay mutations for STEP_SETTLE_QUIET_MS, or after
-// STEP_SETTLE_QUIESCENCE_MS regardless. Canary's own cursor/ripple/caption/
-// vignette overlays are ignored so their animations don't read as page activity.
-const STEP_SETTLE_DOM_QUIESCENCE_JS = `
-  new Promise((resolve) => {
-    const isOverlay = (node) => {
-      let el = node && node.nodeType === 1 ? node : (node ? node.parentElement : null);
-      while (el) {
-        const t = el.tagName;
-        if (t === "CANARY-VIRTUAL-CURSOR" || t === "CANARY-CLICK-RIPPLE" || t === "CANARY-CAPTION" || t === "CANARY-VIGNETTE") {
-          return true;
-        }
-        el = el.parentElement;
-      }
-      return false;
-    };
-    let quiet;
-    const finish = () => { observer.disconnect(); clearTimeout(hard); clearTimeout(quiet); resolve(); };
-    const bump = () => { clearTimeout(quiet); quiet = setTimeout(finish, ${STEP_SETTLE_QUIET_MS}); };
-    const observer = new MutationObserver((records) => {
-      for (const r of records) { if (!isOverlay(r.target)) { bump(); return; } }
-    });
-    observer.observe(document.documentElement, { attributes: true, characterData: true, childList: true, subtree: true });
-    const hard = setTimeout(finish, ${STEP_SETTLE_QUIESCENCE_MS});
-    bump();
-  })
-`;
+// The per-INTERACTION settle budgets (FAST_SETTLE_*) and the DOM-quiescence
+// builder live in a shared isomorphic module — `sandbox/forked-client/src/
+// utils/isomorphic/domSettle.ts` — because the SAME three-phase detection also
+// runs directly inside the forked Playwright client's own `Locator.check` /
+// `selectOption` / `uncheck` / `dragTo` (`sandbox/forked-client/src/client/
+// locator.ts`), which this daemon-side `settleActivePage` cannot reach (those
+// gestures never come through `augmentPage`/`humanClick`/`humanFill`). See
+// that module's header comment for the full rationale.
+const STEP_SETTLE_DOM_QUIESCENCE_JS = buildDomQuiescenceJs(
+  SETTLE_QUIET_MS,
+  STEP_SETTLE_QUIESCENCE_MS
+);
 
 export interface BrowserEntry {
   appliedInitScripts: Set<string>;
@@ -538,14 +527,25 @@ export class BrowserManager {
     return (info as { title: string; url: string } | null) ?? null;
   }
 
-  // Bounded, best-effort "let the page settle" run at the END of each session
-  // step (daemon-side, on the REAL Playwright page — so it sees the true URL
-  // with no client-cache lag). Lets a navigation or fetch the step triggered
-  // commit and the DOM quiesce before the step screenshot and before the next
-  // step starts, so the next step's fresh page reads a committed URL and a
-  // stable DOM without any in-script wait. Every wait is capped and failures
-  // are swallowed — settling must never fail the underlying step.
-  async settleActivePage(browserName: string): Promise<void> {
+  // Bounded, best-effort "let the page settle" (daemon-side, on the REAL
+  // Playwright page — so it sees the true URL with no client-cache lag). Lets a
+  // navigation or fetch commit and the DOM quiesce before reading the page.
+  // Every wait is capped and failures are swallowed — settling must never fail
+  // the underlying step or interaction.
+  //
+  // Two call sites, selected by `fast`:
+  //   • Default (step barrier) — run at the END of each session step so the
+  //     next step's fresh page reads a committed URL and a stable DOM without
+  //     any in-script wait.
+  //   • fast: true (per-interaction) — run after every humanClick/humanFill/
+  //     setInputFiles so an interaction's DOM rebuild commits before the NEXT
+  //     interaction resolves its target. Tighter ceilings keep the worst-case
+  //     per-click cost small; the quiescence check still resolves as soon as the
+  //     DOM goes quiet, so an interaction with no side effects adds little.
+  async settleActivePage(
+    browserName: string,
+    options?: { fast?: boolean }
+  ): Promise<void> {
     const entry = this.browsers.get(browserName);
     if (!entry?.browser.isConnected()) {
       return;
@@ -556,21 +556,28 @@ export class BrowserManager {
       return;
     }
 
+    const fast = options?.fast === true;
+    const loadMs = fast ? FAST_SETTLE_LOAD_MS : STEP_SETTLE_LOAD_MS;
+    const networkMs = fast ? FAST_SETTLE_NETWORK_MS : STEP_SETTLE_NETWORK_MS;
+    const quiescenceJs = fast
+      ? FAST_SETTLE_DOM_QUIESCENCE_JS
+      : STEP_SETTLE_DOM_QUIESCENCE_JS;
+
     const { page } = last;
     // 1. Document load — commits a full-document navigation; a no-op once
     //    loaded, so it does nothing for a same-document Turbo/SPA nav.
     await page
-      .waitForLoadState("load", { timeout: STEP_SETTLE_LOAD_MS })
+      .waitForLoadState("load", { timeout: loadMs })
       .catch(() => undefined);
     // 2. Bounded network idle — waits out an in-flight fetch (a Turbo visit,
     //    an AJAX update). Capped + swallowed so SSE / long-poll / heartbeat
     //    HTTP can't hang the step; an open WebSocket does not hold networkidle.
     await page
-      .waitForLoadState("networkidle", { timeout: STEP_SETTLE_NETWORK_MS })
+      .waitForLoadState("networkidle", { timeout: networkMs })
       .catch(() => undefined);
     // 3. DOM-mutation quiescence — waits out client-side rendering after the
     //    fetch, ignoring Canary's own overlay animations.
-    await page.evaluate(STEP_SETTLE_DOM_QUIESCENCE_JS).catch(() => undefined);
+    await page.evaluate(quiescenceJs).catch(() => undefined);
   }
 
   private async launchBrowser(

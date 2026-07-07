@@ -195,7 +195,9 @@ One session, small steps that reproduce it, `session end` — the report bundles
   for fills a focus-then-type that sends real key events. That cursor-settling beat is the point:
   a bare `locator.click()` moves and presses in the same instant, so on camera the click lands
   before the cursor has visibly arrived. (Gestures the helpers don't cover — `hover`, keyboard
-  `press`, `selectOption`, drag — use the normal locator methods, still on a revealed element.)
+  `press`, `selectOption`, `check`/`uncheck`, drag — use the normal locator methods, still on a
+  revealed element. `selectOption`/`check`/`uncheck`/`dragTo` still settle the page after acting on
+  their own, even called directly on a `Locator` — see the DOM-rebuild note below.)
 - ALWAYS reveal an element before interacting — no exceptions; the recording must show every
   interaction a viewer is asked to trust. The helpers scroll to the target but cannot reveal an
   element hidden behind collapsed UI — if
@@ -255,22 +257,25 @@ One session, small steps that reproduce it, `session end` — the report bundles
   flipping enabled); Playwright auto-waits when you act on it. Re-check the submit control is
   enabled right before you submit. Firing submit into a mid-validation form records a failure that
   isn't the app's fault, and a real user wouldn't do it either.
-- Some non-navigating interactions REBUILD part of the DOM — selecting a radio / checkbox / dropdown
-  wired to a Stimulus/Turbo controller (`data-action="…#build"` / `…#rebuild`, or a control with
-  `data-controller` / a `data-*-affected` attribute that names a region to regenerate). Firing one
-  DETACHES the elements it rebuilds, so a handle you grabbed a moment earlier throws "Element is not
-  attached to the DOM" when you act on it next — even elsewhere in the same script. Two-part
-  discipline: (1) DETECT it before acting — read the control's attributes
-  (`await loc.getAttribute("data-action")`, `data-controller`, `data-*-affected`); if the action
-  names a build/rebuild verb, treat the interaction as DOM-mutating. (2) HANDLE it — make the
-  rebuilding interaction the LAST action of its step (the step-end settle lets the new DOM commit;
-  act on the dependents in the NEXT step), or, to continue in the same step, re-derive each
-  dependent from a FRESH locator and wait for it to (re)attach —
-  `page.waitForSelector(sel, { state: "attached" })`, `page.waitForResponse(...)` for the fetch that
-  drives the rebuild, or `locator.waitFor()`. Never reuse a handle grabbed before the rebuild, and
-  when several fields each rebuild, give each its own step — batching them is what produces the
-  detached-element failures. (A sandbox script has no way to invoke the step-end settle mid-step
-  today; splitting steps is the reliable lever.)
+- Some non-navigating interactions REBUILD part of the DOM — choosing a radio / checkbox / dropdown
+  or typing into a field can trigger a client-side rebuild (a form controller regenerating a
+  dependent section, an inline-validation re-render, an htmx/React/Turbo swap) that DETACHES the
+  elements it replaces, so a handle grabbed a moment earlier throws "Element is not attached to the
+  DOM" when acted on next. This is handled automatically for essentially every recorded gesture:
+  `humanClick`, `humanFill`, and `setInputFiles` settle the page AFTER acting (bounded network-idle
+  + DOM-mutation quiescence — framework-agnostic, NOT attribute-sniffing); and `Locator.check()` /
+  `.uncheck()` / `.selectOption()` / `.dragTo()` settle themselves the same way even when called
+  directly on a `Locator` (not through `humanClick`), since a script can reach these without going
+  through the human-interaction helpers. Either way, a rebuild the interaction triggered has
+  committed before the NEXT interaction resolves its target, so back-to-back interactions no longer
+  stale each other — you do NOT need to detect `data-action` / `data-controller` attributes or
+  hand-split steps for this, it's automatic. Two cases still need care: (a) `hover` and keyboard
+  `press` are NOT auto-settled — they rarely mutate the DOM on their own, but if one does (e.g.
+  `press("Enter")` submitting a form), wait on the concrete result the same way you would after any
+  submit; and (b) the rare rebuild slower than the per-interaction settle ceiling (a long
+  fetch-then-swap) — if a dependent still comes back detached, make the rebuilding interaction the
+  last action of its step and act on the dependents in the NEXT step (the step-end settle has a
+  larger budget). Never reuse a handle grabbed before a rebuild.
 - A form submit that FAILS validation usually returns HTTP 422 and re-renders the form with errors.
   In Rails/Turbo apps that comes back as a Turbo-stream rebuild, NOT a navigation. A SUCCESSFUL
   submit navigates, but a submit that MIGHT fail in place shouldn't use `humanClickAndWaitForURL` —

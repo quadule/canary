@@ -48,7 +48,7 @@ function findBundlePath(): string {
     }
   }
   throw new Error(
-    `Failed to find sandbox-client.js. Searched:\n${candidates.map((c) => `  - ${c}`).join("\n")}`,
+    `Failed to find sandbox-client.js. Searched:\n${candidates.map((c) => `  - ${c}`).join("\n")}`
   );
 }
 const BUNDLE_PATH = findBundlePath();
@@ -66,7 +66,7 @@ function formatArgs(args: unknown[]): string {
             depth: 6,
             compact: 3,
             breakLength: Number.POSITIVE_INFINITY,
-          }),
+          })
     )
     .join(" ");
 }
@@ -88,9 +88,9 @@ function getSandboxClientBundleCode(): Promise<string> {
           ? error.message
           : "Sandbox client bundle could not be read";
       throw new Error(
-        `Failed to load sandbox client bundle at ${BUNDLE_PATH}: ${message}`,
+        `Failed to load sandbox client bundle at ${BUNDLE_PATH}: ${message}`
       );
-    },
+    }
   );
   return bundleCodePromise;
 }
@@ -105,7 +105,7 @@ function formatTimeoutDuration(timeoutMs: number): string {
 
 function createScriptTimeoutError(timeoutMs: number): Error {
   const error = new Error(
-    `Script timed out after ${formatTimeoutDuration(timeoutMs)} and was terminated.`,
+    `Script timed out after ${formatTimeoutDuration(timeoutMs)} and was terminated.`
   );
   error.name = "ScriptTimeoutError";
   return error;
@@ -122,7 +122,7 @@ function createGuestScriptTimeoutErrorSource(timeoutMs: number): string {
 
 function wrapScriptWithWallClockTimeout(
   script: string,
-  timeoutMs?: number,
+  timeoutMs?: number
 ): string {
   if (timeoutMs === undefined) {
     return script;
@@ -221,7 +221,7 @@ function extractGuid(page: Page): string {
 
 function decodeSandboxFilePayload(
   value: unknown,
-  label: string,
+  label: string
 ): string | Uint8Array {
   if (typeof value !== "object" || value === null) {
     throw new TypeError(`${label} must be an object`);
@@ -234,7 +234,7 @@ function decodeSandboxFilePayload(
     typeof data !== "string"
   ) {
     throw new TypeError(
-      `${label} must include a valid encoding and string data`,
+      `${label} must include a valid encoding and string data`
     );
   }
 
@@ -302,6 +302,10 @@ export class QuickJSSandbox {
           listPages: () =>
             this.#options.manager.listPages(this.#options.browserName),
           closePage: (name) => this.#closePage(name),
+          settleAfterInteraction: () =>
+            this.#options.manager.settleActivePage(this.#options.browserName, {
+              fast: true,
+            }),
           saveScreenshot: (name, data) => this.#writeTempFile(name, data),
           writeFile: (name, data) => this.#writeTempFile(name, data),
           readFile: (name) => this.#readTempFile(name),
@@ -441,12 +445,12 @@ export class QuickJSSandbox {
         `,
         {
           filename: "quickjs-runtime.js",
-        },
+        }
       );
 
       const bundleCode = await getSandboxClientBundleCode();
       const bundleFactorySource = JSON.stringify(
-        `${bundleCode}\nreturn __PlaywrightClient;`,
+        `${bundleCode}\nreturn __PlaywrightClient;`
       );
       this.#host.executeScriptSync(
         `
@@ -456,15 +460,15 @@ export class QuickJSSandbox {
         `,
         {
           filename: "sandbox-client.js",
-        },
+        }
       );
 
       const browserEntry = this.#options.manager.getBrowser(
-        this.#options.browserName,
+        this.#options.browserName
       );
       if (!browserEntry) {
         throw new Error(
-          `Browser "${this.#options.browserName}" not found. It should have been created before script execution.`,
+          `Browser "${this.#options.browserName}" not found. It should have been created before script execution.`
         );
       }
       this.#hostBridge = new HostBridge({
@@ -473,7 +477,7 @@ export class QuickJSSandbox {
         },
         preLaunchedBrowser: toServerImpl(
           browserEntry.browser,
-          "Playwright browser",
+          "Playwright browser"
         ),
         sharedBrowser: true,
         denyLaunch: true,
@@ -724,15 +728,35 @@ export class QuickJSSandbox {
               return (handle && handle.asElement()) || locator;
             };
 
+            // Ask the daemon to let the page settle (bounded network-idle + DOM-
+            // mutation quiescence) AFTER an interaction, so an in-flight rebuild
+            // the interaction triggered (a Stimulus/Turbo/React/htmx form rebuild,
+            // etc.) commits before the NEXT interaction resolves its target.
+            // Framework-agnostic and best-effort: a settle failure must never fail
+            // the interaction itself, so swallow everything.
+            const settleAfterInteraction = async () => {
+              try {
+                await hostCall("settleAfterInteraction", "[]");
+              } catch {
+                // Ignore — settling is a convenience, never a correctness gate.
+              }
+            };
+
             const augmentPage = (page) => {
               if (!page || page.__canaryHuman) {
                 return page;
               }
               Object.defineProperty(page, "__canaryHuman", { value: true });
-              page.humanClick = async (target, options) => {
+              // The click itself, without the trailing settle — reused by
+              // humanClickAndWaitForURL, which does its own load-state wait.
+              const clickCore = async (target, options) => {
                 const locator = await resolveClickTarget(page, target);
                 await revealAndGlide(page, locator);
                 await locator.click(options);
+              };
+              page.humanClick = async (target, options) => {
+                await clickCore(target, options);
+                await settleAfterInteraction();
               };
               page.humanFill = async (target, text, options) => {
                 const locator = resolveLocator(page, target);
@@ -815,6 +839,10 @@ export class QuickJSSandbox {
                   }
                   if (delay > 0) await page.waitForTimeout(delay);
                 }
+                // Typing into a field routinely fires inline validation or a
+                // dependent-field rebuild; settle so the next interaction sees
+                // the committed DOM.
+                await settleAfterInteraction();
               };
               // Attach files to a file <input> from the sandbox temp directory —
               // the same directory writeFile/readFile use. Pass one filename or
@@ -845,6 +873,9 @@ export class QuickJSSandbox {
                 // don't let that abort the upload.
                 await revealAndGlide(page, locator).catch(() => undefined);
                 await locator.setInputFiles(payloads, options);
+                // A file selection can trigger a preview render or upload-driven
+                // rebuild; settle before the next interaction.
+                await settleAfterInteraction();
               };
               // Spotlight: animate the vignette to focus on a specific element
               // (or the current cursor position when called with no argument).
@@ -1079,7 +1110,9 @@ export class QuickJSSandbox {
                 const from = await page
                   .evaluate(() => location.href)
                   .catch(() => null);
-                await page.humanClick(target, opts.clickOptions);
+                // Use the settle-free click: this method does its own load-state
+                // wait below, so a per-interaction settle here would be redundant.
+                await clickCore(target, opts.clickOptions);
                 const urlWait =
                   opts.url !== undefined
                     ? page.waitForURL(opts.url, { timeout })
@@ -1305,7 +1338,7 @@ export class QuickJSSandbox {
         `,
         {
           filename: "sandbox-init.js",
-        },
+        }
       );
 
       await this.#flushTransportQueue();
@@ -1328,7 +1361,7 @@ export class QuickJSSandbox {
         wrapScriptWithWallClockTimeout(script, this.#options.timeoutMs),
         {
           filename: "user-script.js",
-        },
+        }
       );
 
       await this.#flushTransportQueue();
@@ -1490,7 +1523,7 @@ export class QuickJSSandbox {
   async #getPage(name: unknown): Promise<string> {
     const page = await this.#options.manager.getPage(
       this.#options.browserName,
-      requireString(name, "Page name or targetId"),
+      requireString(name, "Page name or targetId")
     );
     const guid = extractGuid(page);
     this.#guardDialogs(page, guid);
@@ -1579,14 +1612,14 @@ export class QuickJSSandbox {
   async #closePage(name: unknown): Promise<void> {
     await this.#options.manager.closePage(
       this.#options.browserName,
-      requireString(name, "Page name"),
+      requireString(name, "Page name")
     );
   }
 
   async #writeTempFile(name: unknown, payload: unknown): Promise<string> {
     return await writeCanaryTempFile(
       requireString(name, "File name"),
-      decodeSandboxFilePayload(payload, "File data"),
+      decodeSandboxFilePayload(payload, "File data")
     );
   }
 
@@ -1601,7 +1634,7 @@ export class QuickJSSandbox {
   // only upload files it (or the user, via takeover) first wrote there — so the
   // page never gains access to arbitrary host paths.
   async #readUploadFile(
-    name: unknown,
+    name: unknown
   ): Promise<{ name: string; mimeType: string; base64: string }> {
     const fileName = requireString(name, "File name");
     const bytes = await readCanaryTempFileBytes(fileName);
@@ -1614,7 +1647,7 @@ export class QuickJSSandbox {
   }
 
   async #cleanupAnonymousPages(
-    options: { suppressErrors?: boolean } = {},
+    options: { suppressErrors?: boolean } = {}
   ): Promise<void> {
     const anonymousPages = [...this.#anonymousPages];
     this.#anonymousPages.clear();

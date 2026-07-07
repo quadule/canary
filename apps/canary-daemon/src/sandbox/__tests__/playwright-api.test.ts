@@ -9,7 +9,7 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { BrowserManager } from "../../browser-manager.js";
 import { SESSION_CURSOR_SCRIPT } from "../../session-cursor.js";
@@ -854,6 +854,54 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       expect(result.selectedValue).toBe("blue");
     });
 
+    it("locator.check()/selectOption()/uncheck() self-settle after acting", async () => {
+      // check/selectOption/uncheck don't go through the daemon's augmentPage
+      // wrapper (only humanClick/humanFill/setInputFiles do), so they settle
+      // themselves directly in locator.ts's settleFrameAfterInteraction. Prove
+      // it behaviorally: each gesture's change listener schedules a DELAYED
+      // (300ms) DOM mutation — well inside the fast-settle ceiling but well
+      // outside a single microtask — and each result is read with NO in-script
+      // wait right after the gesture returns. Without the self-settle this
+      // would race and read the PRE-mutation text.
+      const result = await harness.runJson<{
+        afterCheck: string;
+        afterSelect: string;
+        afterUncheck: string;
+      }>(
+        withTestPage(
+          "locator-self-settle",
+          `
+          await page.evaluate(() => {
+            const rebuildTarget = document.createElement("div");
+            rebuildTarget.id = "rebuild-target";
+            rebuildTarget.textContent = "initial";
+            document.body.appendChild(rebuildTarget);
+            const scheduleRebuild = (text) => setTimeout(() => {
+              document.getElementById("rebuild-target").textContent = text;
+            }, 300);
+            document.getElementById("agree").addEventListener("change", (e) => {
+              scheduleRebuild(e.target.checked ? "rebuilt-by-check" : "rebuilt-by-uncheck");
+            });
+            document.getElementById("color").addEventListener("change", () => {
+              scheduleRebuild("rebuilt-by-select");
+            });
+          });
+          await page.locator("#agree").check();
+          const afterCheck = await page.locator("#rebuild-target").textContent();
+          await page.locator("#color").selectOption("blue");
+          const afterSelect = await page.locator("#rebuild-target").textContent();
+          await page.locator("#agree").uncheck();
+          const afterUncheck = await page.locator("#rebuild-target").textContent();
+          console.log(JSON.stringify({ afterCheck, afterSelect, afterUncheck }));
+        `
+        )
+      );
+
+      expect(result.afterCheck).toBe("rebuilt-by-check");
+      expect(result.afterSelect).toBe("rebuilt-by-select");
+      expect(result.afterUncheck).toBe("rebuilt-by-uncheck");
+    }, 15_000);
+
     it("supports waitForSelector(), waitForTimeout(), and waitForFunction()", async () => {
       const result = await harness.runJson<{
         timeoutElapsed: number;
@@ -1375,6 +1423,34 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
 
       // The settle pause (cursor glide) actually elapsed before the press.
       expect(result.elapsedMs).toBeGreaterThanOrEqual(250);
+    }, 15_000);
+
+    it("humanClick and humanFill settle the page after acting (per-interaction barrier)", async () => {
+      // Wiring proof for the auto-settle fix: every human interaction asks the
+      // daemon to let the page settle (fast variant) after acting, so a rebuild
+      // the interaction triggered commits before the NEXT interaction resolves
+      // its target — closing the stale-ElementHandle window without any
+      // script-author awareness. Spy on the real settle so a count proves the
+      // hostCall fired; the bare harness does NOT auto-run the step-end settle,
+      // so every fast call here comes from an interaction.
+      const settleSpy = vi.spyOn(manager, "settleActivePage");
+      const before = settleSpy.mock.calls.length;
+      await harness.runJson(
+        withTestPage(
+          "human-settle",
+          `
+          await page.humanClick("#submit");
+          await page.humanFill("#name", "Ada");
+          console.log(JSON.stringify({ ok: true }));
+        `
+        )
+      );
+      const fastCalls = settleSpy.mock.calls
+        .slice(before)
+        .filter(([, options]) => options?.fast === true);
+      settleSpy.mockRestore();
+      // One click + one fill = at least two fast settles.
+      expect(fastCalls.length).toBeGreaterThanOrEqual(2);
     }, 15_000);
 
     it("humanFill clears the field and types with real per-character key events", async () => {
