@@ -4,20 +4,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildAudioMix,
-  buildLyricsPrompt,
   buildModelCredits,
-  buildNarrationPrompt,
-  changeScaleHint,
-  extractCaptions,
   layoutSongCues,
   lyricsPathFor,
-  parseLyricsJson,
-  parseNarrationJson,
   planRetime,
   precinematicVideoPath,
   groupStepsForLyrics,
   groupedLyricSteps,
-  normalizeTitle,
   songHoldSec,
   stepFootageSec,
   songTargetSec,
@@ -26,6 +19,15 @@ import {
   wrapTitle,
 } from "./narrate.js";
 import { parseFilterNames } from "./ffmpeg.js";
+import {
+  buildLyricsPrompt,
+  buildNarrationPrompt,
+  changeScaleHint,
+  extractCaptions,
+  normalizeTitle,
+  parseLyricsJson,
+  parseNarrationJson,
+} from "./script-llm.js";
 import {
   customSaySynth,
   parseInstalledVoices,
