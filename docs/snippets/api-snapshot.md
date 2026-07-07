@@ -4,6 +4,13 @@
   end of the page. Read it to pick a semantic selector — `page.getByRole("button", { name:
   "Continue" })`, `page.getByText("Sign in")` — then act. The outline covers the WHOLE page
   regardless of scroll position, so you never need to scroll to observe.
+- Read the WHOLE `snap.full` — do NOT `.slice()` / `.substring()` / truncate it when you log or
+  inspect it. A window is the worst of both worlds: you pay for the full-page walk yet only see part
+  of it, so late-page fields (a rate block, a required field just above the submit) fall outside your
+  window and you miss them — then rediscover them the hard way through submit failures. This is a
+  self-inflicted miss, not a tool limit. If `full` is genuinely too big to reason about, don't
+  window it — re-scope the NEXT snapshot with `{ selector }`, or after an interaction switch to
+  `{ track }` for just the diff.
 - Keep it small only when there is a clear reason — these options are mutually exclusive, and the
   call rejects if you pass both:
   - `{ selector }` scopes the outline to one element — `page.snapshotForAI({ selector: "main" })`
@@ -27,3 +34,15 @@
   causing missed controls, avoidable fallback to screenshots or full HTML, and extra round trips.
 - `page.locator("aria-ref=e12")` works for an immediate action in the same script only — refs go
   stale across steps and after navigations. Prefer re-deriving a semantic selector.
+- For a TARGETED structural check, prefer a scoped `locator.ariaSnapshot()` over another whole-page
+  `snapshotForAI()`. Any locator has it — `await page.getByRole("dialog").ariaSnapshot()`,
+  `await page.locator("#new-worker-form").ariaSnapshot()` — and it returns a compact YAML aria tree
+  of just that element, WITHOUT the `[ref=eN]` action markers. Use it to answer "what's inside this
+  section / dialog / row now?" cheaply. Reserve `snapshotForAI()` (whole page, `[ref=eN]` markers)
+  for the FIRST look at an unfamiliar page and whenever you need refs to act. Rule of thumb: first
+  look → `snapshotForAI`; targeted re-check → scoped `ariaSnapshot` or `snapshotForAI({ track })`.
+- Make `{ track }` your DEFAULT answer to "did my last click actually do anything?" After any
+  NON-navigating click — a menu item, a disclosure toggle, a radio, a select — call
+  `page.snapshotForAI({ track: "main" })`: an empty diff proves nothing changed (wrong target, or a
+  menu item whose menu had already closed), a non-empty diff shows exactly what appeared. That is far
+  faster and less ambiguous than re-dumping the full tree and eyeballing it for a difference.

@@ -99,6 +99,13 @@ User says: "is the pricing page up and what's the headline?" or "screenshot the 
   re-observe with a deliberate scope such as `{ selector: "main" }`, an active dialog, or the
   relevant form. After an interaction, pass `{ track: "main" }` to get just what changed instead of
   re-reading the full outline.
+- On a long or dynamic form, enumerate EVERY required field in ONE pass up front, before you fill
+  anything — don't discover requirements one submit-failure at a time. Requirements appear in the
+  snapshot as an asterisk or "required" / "This field is required" in a field's accessible name;
+  confirm with a single DOM sweep, e.g. `page.$$eval("[required], [aria-required='true']", els =>
+  els.map(e => e.name || e.id))`. Build the checklist, fill all of it, THEN submit. Dynamic forms
+  grow — choosing an option (employment type, a guild) can rebuild the form and reveal a NEW required
+  section, so re-enumerate after any interaction that rebuilds it.
 - After a navigation the new page often renders asynchronously (client-side routing / SPAs swap
   content without a full document load). Don't snapshot or assert the instant a click returns.
   Prefer acting on or waiting for a KNOWN element on the destination (`getByRole`/`getByText`) —
@@ -157,6 +164,16 @@ User says: "is the pricing page up and what's the headline?" or "screenshot the 
   truly-shown one as `false`. Identify it by content instead: `page.locator("dialog", { hasText:
   "…" })` / `page.getByRole("dialog", { name: "…" })`, or scope straight to a known descendant
   inside it — rather than testing `.isVisible()` across every match and trusting the boolean.
+- Cascading-disclosure UI — a menu / split button that opens a list of item buttons, each of which
+  opens something more — does NOT tell you in advance whether an item reveals an INLINE section
+  grafted into the page or a drawer/modal, and that can differ per item and change between releases.
+  So after EACH click in the chain, observe immediately — prefer `snapshotForAI({ track: "main" })`
+  so an empty diff instantly tells you the click did nothing (wrong element, or a menu item whose
+  menu had already closed) versus showing you exactly what appeared. Don't pre-commit to hunting a
+  `<dialog>`: a `dialog`-scoped snapshot after an inline disclosure finds nothing and sends you
+  chasing a modal that never opened. The reveal may need a beat to mount or animate, so then wait on
+  the concrete new element you expect (`getByRole`/`getByText` for its heading or first field), not a
+  fixed sleep.
 - Move between pages the way a user does: click links and buttons, don't `goto` internal URLs.
   The lone exception is the flow's entry point — the first navigation is a `page.goto(...)`;
   after that, reach each new page by clicking your way there.
@@ -178,6 +195,41 @@ User says: "is the pricing page up and what's the headline?" or "screenshot the 
   flipping enabled); Playwright auto-waits when you act on it. Re-check the submit control is
   enabled right before you submit. Firing submit into a mid-validation form records a failure that
   isn't the app's fault, and a real user wouldn't do it either.
+- Some non-navigating interactions REBUILD part of the DOM — selecting a radio / checkbox / dropdown
+  wired to a Stimulus/Turbo controller (`data-action="…#build"` / `…#rebuild`, or a control with
+  `data-controller` / a `data-*-affected` attribute that names a region to regenerate). Firing one
+  DETACHES the elements it rebuilds, so a handle you grabbed a moment earlier throws "Element is not
+  attached to the DOM" when you act on it next — even elsewhere in the same script. Two-part
+  discipline: (1) DETECT it before acting — read the control's attributes
+  (`await loc.getAttribute("data-action")`, `data-controller`, `data-*-affected`); if the action
+  names a build/rebuild verb, treat the interaction as DOM-mutating. (2) HANDLE it — make the
+  rebuilding interaction the LAST action of its step (the step-end settle lets the new DOM commit;
+  act on the dependents in the NEXT step), or, to continue in the same step, re-derive each
+  dependent from a FRESH locator and wait for it to (re)attach —
+  `page.waitForSelector(sel, { state: "attached" })`, `page.waitForResponse(...)` for the fetch that
+  drives the rebuild, or `locator.waitFor()`. Never reuse a handle grabbed before the rebuild, and
+  when several fields each rebuild, give each its own step — batching them is what produces the
+  detached-element failures. (A sandbox script has no way to invoke the step-end settle mid-step
+  today; splitting steps is the reliable lever.)
+- A form submit that FAILS validation usually returns HTTP 422 and re-renders the form with errors.
+  In Rails/Turbo apps that comes back as a Turbo-stream rebuild, NOT a navigation. A SUCCESSFUL
+  submit navigates, but a submit that MIGHT fail in place shouldn't use `humanClickAndWaitForURL` —
+  it hangs to the timeout on failure. Instead `humanClick` the submit, then wait for EITHER outcome:
+  the URL to change (success) OR an error/flash to appear (failure). Observe the re-rendered page. To
+  FIND the errors, do NOT assume a class name: a `snapshotForAI` outline surfaces ACCESSIBILITY
+  semantics, not CSS classes, and many design systems attach NO ARIA to error markup (no
+  `aria-invalid`, no `role="alert"`), so the error is just an anonymous text node in the outline.
+  Instead (a) search the snapshot for the message TEXT, or (b) read the DOM for the app's real error
+  class — `page.$$eval(".<app-error-class>", els => els.map(e => e.textContent))`, discovering that
+  class once from a failing field's `outerHTML`. Don't reach for `[aria-invalid]` / `.is-invalid` /
+  `.field_with_errors`: those are Bootstrap / Rails-default markers that a design-system app commonly
+  overrides or suppresses, so all three match nothing. Note that some errors attach to an
+  association or the record's base, not a single field, and by design render nowhere inline — a
+  generic flash banner is then the only user-visible signal.
+- Verify through the surfaces a SHIPPED user sees — the on-screen flash and inline field messages.
+  Do NOT click dev-only diagnostics (a "View Submitted Errors" / debug-drawer button, a `?debug=`
+  panel): they don't exist in production, so reading them proves nothing about the real experience
+  and reads wrong in a demo recording.
 - A click timeout or `page.isVisible(sel)` returning false usually means hidden, not missing:
   snapshot, find the toggle/menu/tab that reveals the element, click that, then retry.
 <!-- canary:end rule-visible-interaction -->

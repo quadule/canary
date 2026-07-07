@@ -8,6 +8,13 @@
   re-observe with a deliberate scope such as `{ selector: "main" }`, an active dialog, or the
   relevant form. After an interaction, pass `{ track: "main" }` to get just what changed instead of
   re-reading the full outline.
+- On a long or dynamic form, enumerate EVERY required field in ONE pass up front, before you fill
+  anything — don't discover requirements one submit-failure at a time. Requirements appear in the
+  snapshot as an asterisk or "required" / "This field is required" in a field's accessible name;
+  confirm with a single DOM sweep, e.g. `page.$$eval("[required], [aria-required='true']", els =>
+  els.map(e => e.name || e.id))`. Build the checklist, fill all of it, THEN submit. Dynamic forms
+  grow — choosing an option (employment type, a guild) can rebuild the form and reveal a NEW required
+  section, so re-enumerate after any interaction that rebuilds it.
 - After a navigation the new page often renders asynchronously (client-side routing / SPAs swap
   content without a full document load). Don't snapshot or assert the instant a click returns.
   Prefer acting on or waiting for a KNOWN element on the destination (`getByRole`/`getByText`) —

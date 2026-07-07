@@ -27,7 +27,5 @@
   from the HuggingFace cache); override with `$CANARY_TRANSCRIBER`, `$CANARY_WHISPER_CLI`,
   `$CANARY_WHISPER_MODEL`. For the tightest timing, point `$CANARY_TRANSCRIBE_URL` at an
   OpenAI-compatible server (e.g. a local Whisper-Large-v3-Turbo; `$CANARY_TRANSCRIBE_MODEL` /
-  `$CANARY_TRANSCRIBE_API_KEY`) — it wins over the CLI backends. Also:
-  `$CANARY_SONG_RETIME=freeze|stretch` (default freeze);
-  `$CANARY_SONG_FILE` reuses a generated song. The voice/music env vars ($CANARY_SAY_COMMAND, $CANARY_OMLX_URL, …) are listed in
+  `$CANARY_TRANSCRIBE_API_KEY`) — it wins over the CLI backends. `$CANARY_SONG_FILE` reuses a generated song. The voice/music env vars ($CANARY_SAY_COMMAND, $CANARY_OMLX_URL, …) are listed in
   `canary session end --help`.
