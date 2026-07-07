@@ -12,7 +12,6 @@ import {
   extractCaptions,
   layoutSongCues,
   lyricsPathFor,
-  parseFilterNames,
   parseInstalledVoices,
   parseLyricsJson,
   parseNarrationJson,
@@ -31,6 +30,7 @@ import {
   voiceCredit,
   wrapTitle,
 } from "./narrate.js";
+import { parseFilterNames } from "./ffmpeg.js";
 import {
   buildSrt,
   captionLineMax,
