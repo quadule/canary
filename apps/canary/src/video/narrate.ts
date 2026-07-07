@@ -213,6 +213,10 @@ const SAY_TIMEOUT_MS = 60_000;
 const PROBE_TIMEOUT_MS = 30_000;
 const ENCODE_TIMEOUT_MS = 300_000;
 
+// Flags every ffmpeg encode/mux/concat here starts with: no banner, no stats
+// spam, overwrite the output. (Probe calls that only read a file omit -y.)
+const FFMPEG_BASE_ARGS = ["-hide_banner", "-nostats", "-y"] as const;
+
 // Max characters of a step's script we feed the LLM — enough for context
 // without bloating the prompt.
 const SCRIPT_SLICE_CHARS = 200;
@@ -242,8 +246,9 @@ export interface CinematicOptions {
   // the contributor credits and scales the narration. Defaults to process.cwd().
   repoDir?: string;
   // Song mode: replace per-step spoken narration with ONE sung song (LLM-written
-  // themed lyrics performed by a singing music model over the whole video). No
-  // TTS, no per-step re-timing, no burned captions. Needs a lyrics-capable music
+  // themed lyrics performed by a singing music model over the whole video). No TTS;
+  // the video is re-timed so each step's footage lands while its lyric line is sung,
+  // and captions (timed to the vocals) are burned in. Needs a lyrics-capable music
   // provider (ACE-Step or Gemini Lyria).
   song?: boolean;
 }
@@ -293,11 +298,11 @@ interface Narration {
   title: string;
 }
 
-// Song-mode plan: one short, singable lyric line PER STEP (so the song scales to
-// the session length) plus an opening title. The per-step structure lets the
-// captions reuse the narration timing (each line shown at its step's moment); the
-// sung vocals aren't frame-aligned to those captions (the model paces them), so
-// the captions follow the on-screen steps as a best-effort lyric sheet.
+// Song-mode plan: one short, singable lyric line per GROUP of steps (consecutive
+// short steps are grouped so one verse spans them — see groupStepsForLyrics) plus an
+// opening title. Each line is later timed to where it's actually SUNG (the model's
+// LRC timestamps and/or whisper word-onsets), and the video is re-timed so each
+// group's footage is on screen while its line plays.
 interface LyricLine {
   index: number;
   text: string;
@@ -2183,9 +2188,7 @@ async function trimAudio(args: {
   await run(
     ffmpeg,
     [
-      "-hide_banner",
-      "-nostats",
-      "-y",
+      ...FFMPEG_BASE_ARGS,
       ...(startSec > 0.05 ? ["-ss", startSec.toFixed(3)] : []),
       "-i",
       src,
@@ -2532,9 +2535,7 @@ async function renderClip(args: {
   await run(
     ffmpeg,
     [
-      "-hide_banner",
-      "-nostats",
-      "-y",
+      ...FFMPEG_BASE_ARGS,
       "-i",
       rawPath,
       "-ac",
@@ -2702,9 +2703,7 @@ async function buildTitleCard(args: {
   await run(
     ffmpeg,
     [
-      "-hide_banner",
-      "-nostats",
-      "-y",
+      ...FFMPEG_BASE_ARGS,
       ...input,
       "-vf",
       filter,
@@ -2716,40 +2715,6 @@ async function buildTitleCard(args: {
       "libvpx",
       "-b:v",
       "1M",
-      outPath,
-    ],
-    ENCODE_TIMEOUT_MS
-  );
-}
-
-// Concat the title card and the condensed body (both libvpx/webm → stream copy)
-// into one video-only track.
-async function concatTitleAndBody(args: {
-  ffmpeg: string;
-  titlePath: string;
-  bodyPath: string;
-  outPath: string;
-  listPath: string;
-}): Promise<void> {
-  const { ffmpeg, titlePath, bodyPath, outPath, listPath } = args;
-  const list = [titlePath, bodyPath]
-    .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
-    .join("\n");
-  await writeFile(listPath, `${list}\n`);
-  await run(
-    ffmpeg,
-    [
-      "-hide_banner",
-      "-nostats",
-      "-y",
-      "-f",
-      "concat",
-      "-safe",
-      "0",
-      "-i",
-      listPath,
-      "-c",
-      "copy",
       outPath,
     ],
     ENCODE_TIMEOUT_MS
@@ -2805,9 +2770,7 @@ async function encodeSlice(args: {
   await run(
     ffmpeg,
     [
-      "-hide_banner",
-      "-nostats",
-      "-y",
+      ...FFMPEG_BASE_ARGS,
       "-ss",
       startSec.toFixed(3),
       "-t",
@@ -2843,9 +2806,7 @@ async function concatSegments(
   await run(
     ffmpeg,
     [
-      "-hide_banner",
-      "-nostats",
-      "-y",
+      ...FFMPEG_BASE_ARGS,
       "-f",
       "concat",
       "-safe",
@@ -3143,13 +3104,7 @@ async function prependTitleCard(args: {
   const concatPath = `${videoPath}.concat.webm`;
   const listPath = `${videoPath}.concat.txt`;
   temps.push(concatPath, listPath);
-  await concatTitleAndBody({
-    ffmpeg,
-    titlePath,
-    bodyPath: videoPath,
-    outPath: concatPath,
-    listPath,
-  });
+  await concatSegments(ffmpeg, [titlePath, videoPath], concatPath, listPath);
   return concatPath;
 }
 
@@ -3275,9 +3230,7 @@ async function mixAudioAndCaptions(args: {
   await run(
     ffmpeg,
     [
-      "-hide_banner",
-      "-nostats",
-      "-y",
+      ...FFMPEG_BASE_ARGS,
       ...inputs,
       "-filter_complex",
       filterComplex,
@@ -3456,12 +3409,12 @@ export async function cinematicProcess(
       notes.push(...gemini.notes);
     }
 
-    // Song mode: instead of per-step spoken narration, the LLM writes ONE short
-    // themed lyric line per step and a singing music model performs them as the
-    // whole soundtrack. The body is RE-TIMED (each step holds for its line) so it
-    // outlasts the song's ~6s instrumental intro and the captions get readable
-    // spacing. No TTS. The vocals aren't frame-aligned to the captions (the model
-    // paces them), so the captions track the on-screen steps.
+    // Song mode: instead of per-step spoken narration, the LLM writes one short
+    // themed lyric line per step-GROUP and a singing music model (ACE-Step, with LM
+    // planning on for adherence) performs them as the whole soundtrack. We find where
+    // each line is actually sung (the model's LRC timestamps floored by whisper
+    // word-onsets, else word/segment alignment), burn captions at those times, and
+    // onset-anchor the body so each group's footage is on screen while its line plays.
     if (options.song) {
       // Pick a music provider that actually SINGS supplied lyrics (ACE-Step /
       // Lyria), ignoring stock music (archive.org) even if it won the normal
