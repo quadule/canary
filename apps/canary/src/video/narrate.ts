@@ -31,18 +31,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { Logger } from "@usecanary/logger";
 import { resolveAceStepMusic } from "./acestep.js";
-import {
-  alignLyricsToSegments,
-  alignLyricsToWords,
-  layoutAlignedCues,
-  mainCluster,
-  mergeLrcWithWordOnsets,
-  parseLrc,
-  redistributeImplausibleCues,
-  songStepOnsets,
-  vocalRegion,
-  vocalRegionExcludingTail,
-} from "./align.js";
+import { songStepOnsets } from "./align.js";
 import { pickLoudestOffset, resolveArchiveMusic } from "./archive.js";
 import {
   branchContributors,
@@ -67,6 +56,7 @@ import {
   selectThemes,
   type ThemeCategory,
 } from "./themes.js";
+import { selectSongCaptions } from "./song-captions.js";
 import { transcribeSong } from "./transcribe.js";
 import { resolveWikimediaImage } from "./wikimedia.js";
 
@@ -3455,26 +3445,8 @@ export async function cinematicProcess(
         }
       }
 
-      // 2. Caption source + vocal region. We transcribe FIRST (best-effort): the
-      // per-word onsets both refine LRC timing and drive the fallback. Then, in
-      // priority order:
-      //   • LRC (the model's own per-line timestamps) merged with word onsets — the
-      //     LRC gives complete, ordered coverage; the onsets keep a line from
-      //     revealing before it's actually heard (LRC can place a line over the
-      //     intro). This is the best source when both are available.
-      //   • word-level alignment alone (assigns each transcript word to its lyric
-      //     line, so a mashed segment still yields per-line cues);
-      //   • segment-level fuzzy matching.
-      // `region` is the sung span; `clipCues` are the timed lines in the RAW-song
-      // timebase (rebased below).
-      let region: { start: number; end: number } | null = null;
-      let clipCues: { start: number; end: number; text: string }[] = [];
-      let sourceLabel = "";
-      // $CANARY_ACESTEP_LRC=0 forces the transcribe-and-align path even when the
-      // server returned LRC (for A/B-ing sync, or if a model's LRC timing is off).
-      const useLrc = process.env.CANARY_ACESTEP_LRC?.trim() !== "0";
-      const lrcSegs = lrcText && useLrc ? parseLrc(lrcText) : [];
-
+      // 2. Caption source + vocal region. Transcribe (best-effort), then pick the
+      // best timing source (LRC → word → segment) — see selectSongCaptions.
       progress("listening for the vocals…");
       const transcript = await transcribeSong({
         audioPath: rawSong,
@@ -3482,80 +3454,16 @@ export async function cinematicProcess(
         env: process.env,
         echo,
       });
-      const segments = transcript?.segments ?? [];
-      const words = transcript?.words ?? [];
-      const wordAligned =
-        words.length > 0 ? alignLyricsToWords(orderedTexts, words) : [];
-
-      const anchorSpan = (
-        aligned: { start: number | null; end: number | null }[]
-      ): { start: number; end: number } | null => {
-        const anchors = aligned.filter(
-          (a) => a.start !== null && a.end !== null
-        );
-        if (anchors.length === 0) {
-          return null;
-        }
-        const first = Math.min(...anchors.map((a) => a.start ?? 0));
-        const last = Math.max(...anchors.map((a) => a.end ?? 0));
-        return { start: Math.max(0, first - (TITLE_SEC + 0.5)), end: last + 1.5 };
-      };
-
-      let lrcCues =
-        lrcSegs.length > 0 ? alignLyricsToSegments(orderedTexts, lrcSegs) : [];
-      if (lrcCues.length > 0) {
-        // Guard against the model stamping trailing lines at the song's end (over
-        // instrumental it never sang): if the LRC runs past where singing actually
-        // stops (the transcript's vocal end), re-space the lines evenly across the
-        // real sung region instead of trusting the tail timestamps. No-op on a
-        // well-timed take.
-        const vocalEnd =
-          vocalRegionExcludingTail(segments, { lead: 0, tail: 0 })?.end ?? 0;
-        lrcCues = redistributeImplausibleCues(lrcCues, vocalEnd);
-        const merged = mergeLrcWithWordOnsets(
-          orderedTexts,
-          lrcCues,
-          wordAligned
-        );
-        region = anchorSpan(merged);
-        if (region) {
-          clipCues = layoutAlignedCues(merged, {
-            regionStart: region.start,
-            regionEnd: region.end,
-            maxCueSec: MAX_CUE_SEC,
-            minDurSec: 1.3,
-          });
-          sourceLabel =
-            wordAligned.length > 0
-              ? "the model's lyric timestamps, onset-synced to the vocals"
-              : "the model's own lyric timestamps";
-        }
-      }
-      if (!region && wordAligned.length > 0) {
-        region = anchorSpan(wordAligned);
-        if (region) {
-          clipCues = layoutAlignedCues(wordAligned, {
-            regionStart: region.start,
-            regionEnd: region.end,
-            maxCueSec: MAX_CUE_SEC,
-            minDurSec: 1.3,
-          });
-          sourceLabel = "the detected vocals, word-timed";
-        }
-      }
-      if (!region && segments.length > 0) {
-        region =
-          vocalRegionExcludingTail(segments, {
-            lead: TITLE_SEC + 0.5,
-            tail: 1.5,
-          }) ??
-          vocalRegion(mainCluster(segments), {
-            lead: TITLE_SEC + 0.5,
-            tail: 1.5,
-          });
-        clipCues = alignLyricsToSegments(orderedTexts, segments);
-        sourceLabel = "the detected vocals";
-      }
+      // $CANARY_ACESTEP_LRC=0 forces the transcribe path even when LRC is present.
+      const { region, clipCues, sourceLabel } = selectSongCaptions({
+        orderedTexts,
+        lrcText,
+        useLrc: process.env.CANARY_ACESTEP_LRC?.trim() !== "0",
+        segments: transcript?.segments ?? [],
+        words: transcript?.words ?? [],
+        leadSec: TITLE_SEC + 0.5,
+        maxCueSec: MAX_CUE_SEC,
+      });
 
       // 3. Per-step holds + rebased cues.
       const stepCount = Math.max(1, narratableSteps.length);
