@@ -4,37 +4,43 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildAudioMix,
-  buildLyricsPrompt,
   buildModelCredits,
-  buildNarrationPrompt,
-  buildSrt,
-  captionLineMax,
-  changeScaleHint,
-  customSaySynth,
-  extractCaptions,
   layoutSongCues,
   lyricsPathFor,
-  parseFilterNames,
-  parseInstalledVoices,
-  parseLyricsJson,
-  parseNarrationJson,
-  pickVoice,
   planRetime,
   precinematicVideoPath,
-  sayCommand,
-  secToSrtTimestamp,
   groupStepsForLyrics,
   groupedLyricSteps,
-  normalizeTitle,
   songHoldSec,
-  speechText,
   stepFootageSec,
   songTargetSec,
   titleStyle,
   voiceCredit,
-  wrapCaption,
   wrapTitle,
 } from "./narrate.js";
+import { parseFilterNames } from "./ffmpeg.js";
+import {
+  buildLyricsPrompt,
+  buildNarrationPrompt,
+  changeScaleHint,
+  extractCaptions,
+  normalizeTitle,
+  parseLyricsJson,
+  parseNarrationJson,
+} from "./script-llm.js";
+import {
+  customSaySynth,
+  parseInstalledVoices,
+  pickVoice,
+  sayCommand,
+  speechText,
+} from "./speech.js";
+import {
+  buildSrt,
+  captionLineMax,
+  secToSrtTimestamp,
+  wrapCaption,
+} from "./srt.js";
 
 describe("secToSrtTimestamp", () => {
   it("formats zero as 00:00:00,000", () => {
