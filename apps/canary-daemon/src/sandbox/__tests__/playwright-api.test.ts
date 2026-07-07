@@ -902,6 +902,40 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       expect(result.afterUncheck).toBe("rebuilt-by-uncheck");
     }, 15_000);
 
+    it("locator.click() self-settles a DOM rebuild after acting (raw click, no augmentPage/humanClick)", async () => {
+      // Raw Locator.click() never had ANY settle before this fix — only
+      // humanClick (via the daemon's augmentPage) did. A script that calls
+      // .click() directly on a Locator (as rule-visible-interaction.md notes
+      // scripts reasonably do for non-recorded/inspection actions, and as any
+      // script COULD do even though humanClick is the recommended path for
+      // recorded ones) could still stale a next interaction against a rebuild
+      // its own click triggered. Same delayed-DOM-mutation proof as the
+      // check/selectOption/uncheck test above, applied to click().
+      const result = await harness.runJson<{ afterClick: string }>(
+        withTestPage(
+          "locator-click-self-settle",
+          `
+          await page.evaluate(() => {
+            const rebuildTarget = document.createElement("div");
+            rebuildTarget.id = "rebuild-target";
+            rebuildTarget.textContent = "initial";
+            document.body.appendChild(rebuildTarget);
+            document.getElementById("submit").addEventListener("click", () => {
+              setTimeout(() => {
+                document.getElementById("rebuild-target").textContent = "rebuilt-by-click";
+              }, 300);
+            });
+          });
+          await page.locator("#submit").click();
+          const afterClick = await page.locator("#rebuild-target").textContent();
+          console.log(JSON.stringify({ afterClick }));
+        `
+        )
+      );
+
+      expect(result.afterClick).toBe("rebuilt-by-click");
+    }, 15_000);
+
     it("supports waitForSelector(), waitForTimeout(), and waitForFunction()", async () => {
       const result = await harness.runJson<{
         timeoutElapsed: number;
@@ -1425,21 +1459,28 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
       expect(result.elapsedMs).toBeGreaterThanOrEqual(250);
     }, 15_000);
 
-    it("humanClick and humanFill settle the page after acting (per-interaction barrier)", async () => {
-      // Wiring proof for the auto-settle fix: every human interaction asks the
-      // daemon to let the page settle (fast variant) after acting, so a rebuild
-      // the interaction triggered commits before the NEXT interaction resolves
-      // its target — closing the stale-ElementHandle window without any
+    it("humanFill settles the page after acting via the daemon hostCall (per-interaction barrier)", async () => {
+      // Wiring proof for the auto-settle fix: humanFill asks the daemon to let
+      // the page settle (fast variant) after acting, so a rebuild the
+      // interaction triggered commits before the NEXT interaction resolves its
+      // target — closing the stale-ElementHandle window without any
       // script-author awareness. Spy on the real settle so a count proves the
       // hostCall fired; the bare harness does NOT auto-run the step-end settle,
       // so every fast call here comes from an interaction.
+      //
+      // humanClick is deliberately NOT exercised here: it settles via a
+      // DIFFERENT mechanism now — the forked client's own
+      // Locator.click()/ElementHandle.click() self-settle
+      // (settleAfterInteraction.ts), not this daemon hostCall — see the
+      // "humanClick settles a DOM rebuild..." test below for that proof.
+      // Routing humanClick's settle through the client instead of the hostCall
+      // avoids double-settling now that Locator.click() settles itself.
       const settleSpy = vi.spyOn(manager, "settleActivePage");
       const before = settleSpy.mock.calls.length;
       await harness.runJson(
         withTestPage(
           "human-settle",
           `
-          await page.humanClick("#submit");
           await page.humanFill("#name", "Ada");
           console.log(JSON.stringify({ ok: true }));
         `
@@ -1449,8 +1490,38 @@ describe.sequential("QuickJS Playwright Page API coverage", () => {
         .slice(before)
         .filter(([, options]) => options?.fast === true);
       settleSpy.mockRestore();
-      // One click + one fill = at least two fast settles.
-      expect(fastCalls.length).toBeGreaterThanOrEqual(2);
+      expect(fastCalls.length).toBeGreaterThanOrEqual(1);
+    }, 15_000);
+
+    it("humanClick settles a DOM rebuild after acting, via Locator.click()'s own self-settle (not the daemon hostCall)", async () => {
+      // Same delayed-DOM-mutation proof as the raw locator.click() test, but
+      // through humanClick — proving clickCore's underlying
+      // locator.click()/ElementHandle.click() call still settles humanClick's
+      // rebuild-detach window even after removing humanClick's own redundant
+      // post-click hostCall (see the test above).
+      const result = await harness.runJson<{ afterClick: string }>(
+        withTestPage(
+          "human-click-self-settle",
+          `
+          await page.evaluate(() => {
+            const rebuildTarget = document.createElement("div");
+            rebuildTarget.id = "rebuild-target";
+            rebuildTarget.textContent = "initial";
+            document.body.appendChild(rebuildTarget);
+            document.getElementById("submit").addEventListener("click", () => {
+              setTimeout(() => {
+                document.getElementById("rebuild-target").textContent = "rebuilt-by-humanclick";
+              }, 300);
+            });
+          });
+          await page.humanClick("#submit");
+          const afterClick = await page.locator("#rebuild-target").textContent();
+          console.log(JSON.stringify({ afterClick }));
+        `
+        )
+      );
+
+      expect(result.afterClick).toBe("rebuilt-by-humanclick");
     }, 15_000);
 
     it("humanFill clears the field and types with real per-character key events", async () => {

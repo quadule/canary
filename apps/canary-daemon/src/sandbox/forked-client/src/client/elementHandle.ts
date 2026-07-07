@@ -17,6 +17,7 @@
 
 import { Frame } from "./frame";
 import { JSHandle, parseResult, serializeArgument } from "./jsHandle";
+import { settleAfterInteraction } from "./settleAfterInteraction";
 import { assert } from "../utils/isomorphic/assert";
 import { fileUploadSizeLimit, writeTempFile } from "./fileUtils";
 import { isString } from "../utils/isomorphic/rtti";
@@ -131,7 +132,13 @@ export class ElementHandle<T extends Node = Node> extends JSHandle<T> implements
   }
 
   async click(options: channels.ElementHandleClickOptions & TimeoutOptions = {}): Promise<void> {
-    return await this._elementChannel.click({ ...options, timeout: this._frame._timeout(options) });
+    // Settle after acting (navigation-aware — see settleAfterInteraction.ts)
+    // so `humanClick`'s checkbox/radio-label retargeting path (which resolves
+    // to an ElementHandle, not a Locator — see quickjs-sandbox.ts's
+    // resolveClickTarget) gets the same treatment as Locator.click().
+    return await settleAfterInteraction(this._frame, () =>
+      this._elementChannel.click({ ...options, timeout: this._frame._timeout(options) })
+    );
   }
 
   async dblclick(

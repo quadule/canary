@@ -632,15 +632,19 @@ export class QuickJSSandbox {
                         inline: "center",
                       });
                       const start = performance.now();
-                      let last = Number.NaN;
+                      let lastTop = Number.NaN;
+                      let lastLeft = Number.NaN;
                       let stable = 0;
                       const tick = () => {
-                        const top = Math.round(el.getBoundingClientRect().top);
-                        if (top === last) {
+                        const rect = el.getBoundingClientRect();
+                        const top = Math.round(rect.top);
+                        const left = Math.round(rect.left);
+                        if (top === lastTop && left === lastLeft) {
                           stable += 1;
                         } else {
                           stable = 0;
-                          last = top;
+                          lastTop = top;
+                          lastLeft = left;
                         }
                         if (stable >= 4 || performance.now() - start > capMs) {
                           resolve();
@@ -655,10 +659,23 @@ export class QuickJSSandbox {
                 .catch(() => undefined);
 
             const revealAndGlide = async (page, target) => {
-              // Smooth-scroll for the camera, then let Playwright guarantee the
-              // element is actionable (a no-op snap once smoothReveal has landed it).
+              // Smooth-scroll for the camera. We deliberately do NOT also call
+              // target.scrollIntoViewIfNeeded() here: every real action that
+              // follows this (click/fill/press/setInputFiles, via
+              // humanClick/humanFill/setInputFiles) already runs Playwright's
+              // OWN actionability protocol before dispatching — which itself
+              // scrolls the target into view and waits for it to be stable —
+              // so an extra explicit scroll here adds no correctness value.
+              // For a scroll-reactive popover (e.g. a date picker that
+              // repositions itself in response to ANY scroll on the page),
+              // it's actively harmful: a second, unaccounted-for scroll
+              // trigger fired the instant smoothReveal's own settle-loop
+              // finishes gives the popover another chance to reposition,
+              // which can then race the actionability check that follows and
+              // oscillate until the click times out. One controlled scroll
+              // mechanism (smoothReveal's geometry-only settle loop) is
+              // enough; Playwright's own action dispatch supplies the rest.
               await smoothReveal(target);
-              await target.scrollIntoViewIfNeeded();
               // Drive the virtual cursor explicitly: one in-page call glides it
               // onto the target's centre and arms the click ripple. No "driving"
               // flag and no extra mouse.move/boundingBox — so the cursor never
@@ -733,7 +750,12 @@ export class QuickJSSandbox {
             // the interaction triggered (a Stimulus/Turbo/React/htmx form rebuild,
             // etc.) commits before the NEXT interaction resolves its target.
             // Framework-agnostic and best-effort: a settle failure must never fail
-            // the interaction itself, so swallow everything.
+            // the interaction itself, so swallow everything. Used by humanFill and
+            // setInputFiles only — humanClick does NOT need this: the click it
+            // performs goes through Locator.click() / ElementHandle.click() in the
+            // forked client, which now settle themselves (navigation-aware —
+            // see settleAfterInteraction.ts in the client), so calling this
+            // daemon-side hostCall again afterward would just duplicate that work.
             const settleAfterInteraction = async () => {
               try {
                 await hostCall("settleAfterInteraction", "[]");
@@ -747,8 +769,12 @@ export class QuickJSSandbox {
                 return page;
               }
               Object.defineProperty(page, "__canaryHuman", { value: true });
-              // The click itself, without the trailing settle — reused by
-              // humanClickAndWaitForURL, which does its own load-state wait.
+              // The click itself — reused by humanClickAndWaitForURL, which does
+              // its own load-state wait on top. No separate post-click settle
+              // needed here: locator.click()/ElementHandle.click() (the forked
+              // client's Locator/ElementHandle classes) already settle themselves
+              // after acting (settleAfterInteraction.ts), regardless of which one
+              // resolveClickTarget returned.
               const clickCore = async (target, options) => {
                 const locator = await resolveClickTarget(page, target);
                 await revealAndGlide(page, locator);
@@ -756,7 +782,6 @@ export class QuickJSSandbox {
               };
               page.humanClick = async (target, options) => {
                 await clickCore(target, options);
-                await settleAfterInteraction();
               };
               page.humanFill = async (target, text, options) => {
                 const locator = resolveLocator(page, target);

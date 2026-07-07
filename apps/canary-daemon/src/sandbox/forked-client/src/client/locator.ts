@@ -16,15 +16,11 @@
  */
 
 import { ElementHandle } from "./elementHandle";
+import { settleAfterInteraction } from "./settleAfterInteraction";
 import {
   asLocatorDescription,
   locatorCustomDescription,
 } from "../utils/isomorphic/locatorGenerators";
-import {
-  FAST_SETTLE_DOM_QUIESCENCE_JS,
-  FAST_SETTLE_LOAD_MS,
-  FAST_SETTLE_NETWORK_MS,
-} from "../utils/isomorphic/domSettle";
 import {
   getByAltTextSelector,
   getByLabelSelector,
@@ -60,29 +56,20 @@ export type LocatorOptions = {
   visible?: boolean;
 };
 
-// Bounded, best-effort "let the page settle" run AFTER a Locator gesture that
-// mutates the DOM directly (check/selectOption/uncheck/dragTo) — the
-// framework-agnostic fix for a rebuild (Stimulus/Turbo/React/htmx, anything)
-// detaching an element a NEXT action was about to touch. These gestures don't
-// go through the daemon's `augmentPage` wrapper (only `humanClick`/
-// `humanFill`/`setInputFiles` do — see `quickjs-sandbox.ts`), so they settle
-// themselves here, directly through `this._frame`. That still reaches the
-// exact same real Playwright page `browser-manager.ts`'s `settleActivePage`
-// operates on: the sandbox's protocol channel round-trips, in-process, to a
-// dispatcher wrapping the daemon's own `preLaunchedBrowser` (see
-// `quickjs-sandbox.ts` / `host-bridge.ts`). Budgets and quiescence JS are
-// shared with `settleActivePage`'s fast path via `utils/isomorphic/
-// domSettle.ts` — same rationale, same ceilings. Every wait is capped and
-// failures are swallowed: settling must never fail the underlying gesture.
-async function settleFrameAfterInteraction(frame: Frame): Promise<void> {
-  await frame
-    .waitForLoadState("load", { timeout: FAST_SETTLE_LOAD_MS })
-    .catch(() => undefined);
-  await frame
-    .waitForLoadState("networkidle", { timeout: FAST_SETTLE_NETWORK_MS })
-    .catch(() => undefined);
-  await frame.evaluate(FAST_SETTLE_DOM_QUIESCENCE_JS).catch(() => undefined);
-}
+// `check`/`click`/`selectOption`/`uncheck`/`dragTo` all settle the page
+// AFTER acting via `settleAfterInteraction` (`./settleAfterInteraction.ts`) —
+// the framework-agnostic, navigation-aware fix for a rebuild (or a real
+// navigation) that a gesture triggers detaching an element a NEXT action was
+// about to touch. These gestures don't go through the daemon's `augmentPage`
+// wrapper (only `humanClick`/`humanFill`/`setInputFiles` do — see
+// `quickjs-sandbox.ts`), so they settle themselves here, directly through
+// `this._frame`. That still reaches the exact same real Playwright page
+// `browser-manager.ts`'s `settleActivePage` operates on: the sandbox's
+// protocol channel round-trips, in-process, to a dispatcher wrapping the
+// daemon's own `preLaunchedBrowser` (see `quickjs-sandbox.ts` /
+// `host-bridge.ts`). See `settleAfterInteraction.ts` for the full rationale,
+// including why it's safe against navigations that start synchronously with
+// the action (not just same-document DOM rebuilds).
 
 export class Locator implements api.Locator {
   _frame: Frame;
@@ -164,13 +151,15 @@ export class Locator implements api.Locator {
   }
 
   async check(options: channels.ElementHandleCheckOptions & TimeoutOptions = {}) {
-    const result = await this._frame.check(this._selector, { strict: true, ...options });
-    await settleFrameAfterInteraction(this._frame);
-    return result;
+    return await settleAfterInteraction(this._frame, () =>
+      this._frame.check(this._selector, { strict: true, ...options })
+    );
   }
 
   async click(options: channels.ElementHandleClickOptions & TimeoutOptions = {}): Promise<void> {
-    return await this._frame.click(this._selector, { strict: true, ...options });
+    return await settleAfterInteraction(this._frame, () =>
+      this._frame.click(this._selector, { strict: true, ...options })
+    );
   }
 
   async dblclick(
@@ -187,12 +176,12 @@ export class Locator implements api.Locator {
   }
 
   async dragTo(target: Locator, options: channels.FrameDragAndDropOptions & TimeoutOptions = {}) {
-    const result = await this._frame.dragAndDrop(this._selector, target._selector, {
-      strict: true,
-      ...options,
-    });
-    await settleFrameAfterInteraction(this._frame);
-    return result;
+    return await settleAfterInteraction(this._frame, () =>
+      this._frame.dragAndDrop(this._selector, target._selector, {
+        strict: true,
+        ...options,
+      })
+    );
   }
 
   async evaluate<R, Arg>(
@@ -463,12 +452,12 @@ export class Locator implements api.Locator {
       | null,
     options: SelectOptionOptions = {}
   ): Promise<string[]> {
-    const result = await this._frame.selectOption(this._selector, values, {
-      strict: true,
-      ...options,
-    });
-    await settleFrameAfterInteraction(this._frame);
-    return result;
+    return await settleAfterInteraction(this._frame, () =>
+      this._frame.selectOption(this._selector, values, {
+        strict: true,
+        ...options,
+      })
+    );
   }
 
   async selectText(
@@ -518,9 +507,9 @@ export class Locator implements api.Locator {
   }
 
   async uncheck(options: channels.ElementHandleUncheckOptions & TimeoutOptions = {}) {
-    const result = await this._frame.uncheck(this._selector, { strict: true, ...options });
-    await settleFrameAfterInteraction(this._frame);
-    return result;
+    return await settleAfterInteraction(this._frame, () =>
+      this._frame.uncheck(this._selector, { strict: true, ...options })
+    );
   }
 
   async all(): Promise<Locator[]> {
