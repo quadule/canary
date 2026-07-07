@@ -8,22 +8,17 @@ import {
   buildModelCredits,
   buildNarrationPrompt,
   changeScaleHint,
-  customSaySynth,
   extractCaptions,
   layoutSongCues,
   lyricsPathFor,
-  parseInstalledVoices,
   parseLyricsJson,
   parseNarrationJson,
-  pickVoice,
   planRetime,
   precinematicVideoPath,
-  sayCommand,
   groupStepsForLyrics,
   groupedLyricSteps,
   normalizeTitle,
   songHoldSec,
-  speechText,
   stepFootageSec,
   songTargetSec,
   titleStyle,
@@ -31,6 +26,13 @@ import {
   wrapTitle,
 } from "./narrate.js";
 import { parseFilterNames } from "./ffmpeg.js";
+import {
+  customSaySynth,
+  parseInstalledVoices,
+  pickVoice,
+  sayCommand,
+  speechText,
+} from "./speech.js";
 import {
   buildSrt,
   captionLineMax,
