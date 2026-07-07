@@ -293,6 +293,71 @@ export function mergeLrcWithWordOnsets(
   });
 }
 
+// Per-STEP output onset times for onset-anchored song re-timing (make each step's
+// footage appear while ITS lyric line is sung). `groups` partitions the step indices
+// (one inner array per lyric group, in order); `groupSungStart[g]` is when group g's
+// line is sung (null when that line wasn't sung / couldn't be timed). Null group
+// anchors are linearly interpolated between their sung neighbors (leading nulls →
+// 0, trailing → `bodyEnd`), forced non-decreasing, then each group's window
+// [start_g, start_{g+1}) is split equally among its steps so they play in sequence
+// while the line holds. Returns one onset per step index (in step order). Pure →
+// unit-tested.
+export function songStepOnsets(
+  groups: number[][],
+  groupSungStart: (number | null)[],
+  bodyEnd: number
+): number[] {
+  const g = groups.length;
+  // 1) Resolve a start for every group: interpolate nulls between known neighbors.
+  const known: number[] = [];
+  for (let i = 0; i < g; i++) {
+    if (typeof groupSungStart[i] === "number") {
+      known.push(i);
+    }
+  }
+  const anchor = new Array<number>(g);
+  for (let i = 0; i < g; i++) {
+    const v = groupSungStart[i];
+    if (typeof v === "number") {
+      anchor[i] = v;
+      continue;
+    }
+    const prev = known.filter((k) => k < i).at(-1);
+    const next = known.find((k) => k > i);
+    if (prev !== undefined && next !== undefined) {
+      const a = groupSungStart[prev] as number;
+      const b = groupSungStart[next] as number;
+      anchor[i] = a + ((b - a) * (i - prev)) / (next - prev);
+    } else if (next !== undefined) {
+      anchor[i] = 0; // leading unsung groups start at the top
+    } else if (prev !== undefined) {
+      anchor[i] = bodyEnd; // trailing unsung groups collapse at the end
+    } else {
+      anchor[i] = (bodyEnd * i) / Math.max(1, g); // nothing sung: even fallback
+    }
+  }
+  // 2) Force non-decreasing (interpolation + collapses can't reorder).
+  for (let i = 1; i < g; i++) {
+    const cur = anchor[i] ?? 0;
+    const prev = anchor[i - 1] ?? 0;
+    anchor[i] = Math.max(cur, prev);
+  }
+  // 3) Split each group's window across its steps.
+  const onsets: { idx: number; t: number }[] = [];
+  for (let i = 0; i < g; i++) {
+    const start = anchor[i] ?? 0;
+    const end = i < g - 1 ? (anchor[i + 1] ?? bodyEnd) : bodyEnd;
+    const steps = groups[i] ?? [];
+    const span = Math.max(0, end - start);
+    steps.forEach((stepIdx, j) => {
+      onsets.push({ idx: stepIdx, t: start + (span * j) / Math.max(1, steps.length) });
+    });
+  }
+  // 4) Return in step-index order.
+  onsets.sort((x, y) => x.idx - y.idx);
+  return onsets.map((o) => o.t);
+}
+
 // A cue that's just a filler vocalization (oh/ah/yeah/la/ooh/mmm), not a lyric.
 function isFiller(text: string): boolean {
   const words = tokenize(text);

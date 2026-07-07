@@ -12,6 +12,7 @@ import {
   parseWhisperxJson,
   segmentsFromOpenAI,
   similarity,
+  songStepOnsets,
   type TimedWord,
   tokenize,
   vocalRegion,
@@ -473,5 +474,21 @@ describe("mergeLrcWithWordOnsets", () => {
     expect(merged[0]?.start).toBe(10); // max(10, 5) — never earlier than LRC
     expect(merged[1]?.start).toBeNull(); // not in LRC → unsung
     expect(merged[2]?.start).toBeNull();
+  });
+});
+
+describe("songStepOnsets", () => {
+  it("distributes group windows across steps and interpolates unsung groups", () => {
+    // 3 groups over steps [[0,1],[2],[3]]; middle group's line wasn't sung (null).
+    const onsets = songStepOnsets([[0, 1], [2], [3]], [2, null, 20], 30);
+    // g0 [2,11) split across 2 steps -> 2, 6.5; g1 interpolated to 11; g2 at 20.
+    expect(onsets).toEqual([2, 6.5, 11, 20]);
+  });
+  it("is non-decreasing and covers every step index", () => {
+    const onsets = songStepOnsets([[0], [1], [2]], [10, 4, 8], 40); // out-of-order starts
+    expect(onsets.length).toBe(3);
+    for (let i = 1; i < onsets.length; i++) {
+      expect(onsets[i]).toBeGreaterThanOrEqual(onsets[i - 1] ?? 0);
+    }
   });
 });

@@ -293,12 +293,12 @@ describe("precinematicVideoPath", () => {
 });
 
 describe("songTargetSec", () => {
-  it("clamps to [90s, 165s] and scales in between", () => {
+  it("scales with LYRIC-LINE count, clamped to [90s, 165s]", () => {
     expect(songTargetSec(0)).toBe(90);
-    expect(songTargetSec(5)).toBe(90); // 2.5 + 25 + 15 = 42.5 → floored
-    expect(songTargetSec(10)).toBe(90); // 2.5 + 50 + 15 = 67.5 → floored
-    expect(songTargetSec(20)).toBe(118); // 2.5 + 100 + 15 = 117.5 → 118
-    expect(songTargetSec(66)).toBe(165); // 2.5 + 330 + 15 = 347.5 → capped
+    expect(songTargetSec(8)).toBe(90); // 2.5 + 72 + 12 = 86.5 → floored
+    expect(songTargetSec(11)).toBe(114); // 2.5 + 99 + 12 = 113.5 → 114
+    expect(songTargetSec(16)).toBe(159); // 2.5 + 144 + 12 = 158.5 → 159
+    expect(songTargetSec(30)).toBe(165); // 2.5 + 270 + 12 = 284.5 → capped
   });
 });
 
@@ -1002,5 +1002,35 @@ describe("planRetime", () => {
     });
     expect(plan.holds).toEqual([0, 0]);
     expect(plan.starts).toEqual([0, 5]);
+  });
+});
+
+describe("planRetime — onset-anchored (song step-sync)", () => {
+  it("clips overruns and freeze-pads underruns to hit each onset window", () => {
+    const plan = planRetime({
+      stepTimes: [0, 3, 7],
+      clipDurSec: [],
+      totalSec: 10,
+      onsets: [5, 12, 18],
+      bodyEnd: 25,
+    });
+    expect(plan.leadSec).toBe(5); // instrumental lead before the first line
+    expect(plan.starts).toEqual([5, 12, 18]); // each step starts at its onset
+    // footage = min(natural, window): [min(3,7), min(4,6), min(3,7)]
+    expect(plan.footage).toEqual([3, 4, 3]);
+    // hold = window - footage: [7-3, 6-4, 7-3]
+    expect(plan.holds).toEqual([4, 2, 4]);
+  });
+  it("hard-cuts a step whose footage overruns its window (tail clipped, no drift)", () => {
+    const plan = planRetime({
+      stepTimes: [0],
+      clipDurSec: [],
+      totalSec: 20,
+      onsets: [2],
+      bodyEnd: 5,
+    });
+    expect(plan.footage).toEqual([3]); // 20s of footage clipped to the 3s window
+    expect(plan.holds).toEqual([0]);
+    expect(plan.starts).toEqual([2]);
   });
 });

@@ -38,6 +38,7 @@ import {
   mainCluster,
   mergeLrcWithWordOnsets,
   parseLrc,
+  songStepOnsets,
   vocalRegion,
   vocalRegionExcludingTail,
 } from "./align.js";
@@ -2119,14 +2120,16 @@ export const MIN_SONG_SEC = 90;
 export const MAX_SONG_SEC = 165;
 
 // Song length to request from the music provider. Honored exactly by ACE-Step
-// (and used as the target by Gemini Lyria), so it sets the real generated length:
-// title card + a per-step body (~5s each) + credits, clamped to
-// [MIN_SONG_SEC, MAX_SONG_SEC]. The song sings the written lyrics and then repeats
-// to fill any remainder; the caller trims that tail back to the last distinct sung
-// line, so over-requesting only wastes generation time, never quality. Pure →
-// unit-tested.
-export function songTargetSec(stepCount: number): number {
-  const scaled = Math.round(TITLE_SEC + Math.max(0, stepCount) * 5 + 15);
+// (and used as the target by Gemini Lyria), so it sets the real generated length.
+// Scaled to the LYRIC-LINE count (not the step count): the lines are the actual
+// sung content — a title lead-in + ~9s of singing per line + an outro — clamped to
+// [MIN_SONG_SEC, MAX_SONG_SEC]. Sizing off steps overshot badly (a 26-step / 11-line
+// session asked for 148s but the 11 lines were sung by ~93s, leaving a dead
+// instrumental tail); sizing off lines keeps the song about as long as there are
+// words to sing. The caller still trims any residual tail to the last sung line.
+// Pure → unit-tested.
+export function songTargetSec(lineCount: number): number {
+  const scaled = Math.round(TITLE_SEC + Math.max(0, lineCount) * 9 + 12);
   return Math.min(MAX_SONG_SEC, Math.max(MIN_SONG_SEC, scaled));
 }
 
@@ -2209,6 +2212,11 @@ async function assembleSongVideo(args: {
   narratableSteps: CinematicStep[];
   holdDurSec: number[];
   retimeMode: SongRetimeMode;
+  // Song step-sync: per-step onset (output start, = when each step's line is sung)
+  // and the body end. When present (freeze mode), the body is onset-anchored so each
+  // step's footage is on screen while its lyric line is sung.
+  onsets?: number[];
+  bodyEnd?: number;
   title: string;
   category: ThemeCategory | undefined;
   directionText: string;
@@ -2231,6 +2239,8 @@ async function assembleSongVideo(args: {
     narratableSteps,
     holdDurSec,
     retimeMode,
+    onsets,
+    bodyEnd,
     title,
     category,
     directionText,
@@ -2249,7 +2259,10 @@ async function assembleSongVideo(args: {
 
   // Re-time the body so it spans the vocals. "freeze" (default) plays each step at
   // natural speed then freezes its last frame to fill its budget — like narration
-  // mode, preserving motion + quality. "stretch" slows the footage (capped).
+  // mode, preserving motion + quality. "stretch" slows the footage (capped). When
+  // `onsets` are given (the transcribed path), freeze mode ANCHORS each step to its
+  // lyric line's sung moment (hard-cut) instead of an even split, so the on-screen
+  // step tracks what's being sung — the song-mode analog of narration's per-step hold.
   progress("re-timing the video to the song…");
   const retimed =
     retimeMode === "stretch"
@@ -2268,6 +2281,8 @@ async function assembleSongVideo(args: {
           clipDurSec: holdDurSec,
           frameRate,
           temps,
+          onsets,
+          bodyEnd,
         });
   if (!retimed) {
     return null;
@@ -2867,14 +2882,45 @@ export function planRetime(args: {
   totalSec: number;
   startPadSec?: number;
   gapSec?: number;
+  // ONSET-ANCHORED mode (song step-sync): the output time each step must START at
+  // (the moment its lyric line is sung). When given, each step plays its natural
+  // footage from `stepTimes[i]` but is HARD-CUT at the next onset — clipping the
+  // footage tail if it overran the window, freeze-padding if it underran — so the
+  // step is on screen exactly while its line is sung. Every step re-anchors to an
+  // absolute onset, so timing error is bounded per step (no cumulative drift).
+  // `bodyEnd` closes the last step's window. Overrides the narration hold logic.
+  onsets?: number[];
+  bodyEnd?: number;
 }): { starts: number[]; footage: number[]; holds: number[]; leadSec: number } {
-  const { stepTimes, clipDurSec, totalSec } = args;
+  const { stepTimes, clipDurSec, totalSec, onsets, bodyEnd } = args;
   const startPad = Math.max(0, args.startPadSec ?? 0);
   const gap = Math.max(0, args.gapSec ?? 0);
   const n = stepTimes.length;
   const starts: number[] = [];
   const footage: number[] = [];
   const holds: number[] = [];
+
+  if (onsets && onsets.length === n) {
+    // Onset-anchored hard-cut. The lead is the instrumental run before the first
+    // line; each step fills [onset_i, onset_{i+1}) by playing min(footage, window)
+    // then freezing the remainder.
+    const leadSec = Math.max(0, onsets[0] ?? 0);
+    const end = bodyEnd ?? totalSec;
+    for (let i = 0; i < n; i++) {
+      const src = stepTimes[i] ?? 0;
+      const srcNext = i < n - 1 ? (stepTimes[i + 1] ?? totalSec) : totalSec;
+      const natural = Math.max(0.1, srcNext - src);
+      const winStart = onsets[i] ?? 0;
+      const winEnd = i < n - 1 ? (onsets[i + 1] ?? end) : end;
+      const slot = Math.max(0.1, winEnd - winStart);
+      const play = Math.min(natural, slot); // clip the tail on overrun
+      starts.push(winStart);
+      footage.push(play);
+      holds.push(Math.max(0, slot - play)); // freeze-pad on underrun
+    }
+    return { starts, footage, holds, leadSec };
+  }
+
   const leadSec = n > 0 ? Math.max(0, stepTimes[0] ?? 0) : 0;
   let acc = leadSec;
   for (let i = 0; i < n; i++) {
@@ -2926,6 +2972,10 @@ async function retimeForNarration(args: {
   // Minimum silent beat between consecutive lines (narration mode passes a value;
   // song mode leaves it 0 — the song's own pacing carries the gaps).
   gapSec?: number;
+  // Song step-sync: per-step onset (where each step must start in the output) and
+  // the body end. When given, planRetime hard-cuts each step to its onset window.
+  onsets?: number[];
+  bodyEnd?: number;
 }): Promise<{ path: string; starts: number[] } | null> {
   const { ffmpeg, videoPath, steps, clipDurSec, frameRate, temps } = args;
   const totalSec = await audioDurationSec(ffmpeg, videoPath);
@@ -2938,6 +2988,8 @@ async function retimeForNarration(args: {
     totalSec,
     startPadSec: STEP_START_PAD_SEC,
     gapSec: args.gapSec,
+    onsets: args.onsets,
+    bodyEnd: args.bodyEnd,
   });
   const segs: string[] = [];
   if (plan.leadSec > 0.01) {
@@ -3532,7 +3584,8 @@ export async function cinematicProcess(
           provider: songMusic,
           directionText: direction.theme,
           lyrics: lyricBlock,
-          targetSec: songTargetSec(narratableSteps.length),
+          // Size the song to the LYRIC LINES (the sung content), not the step count.
+          targetSec: songTargetSec(orderedTexts.length),
           outPath: `${videoPath}.rawsong.wav`,
           temps,
           notes,
@@ -3655,6 +3708,8 @@ export async function cinematicProcess(
       let alignedCues: { start: number; end: number; text: string }[] | null =
         null;
       let holdDurSec: number[];
+      let songOnsets: number[] | undefined;
+      let songBodyEnd: number | undefined;
       if (region) {
         const trimStart = region.start;
         if (trimStart > 0.05) {
@@ -3687,6 +3742,24 @@ export async function cinematicProcess(
           { length: stepCount },
           () => bodyLen / stepCount
         );
+        // Onset-anchored step-sync: map each group to when its line is actually
+        // sung (walk groups against the aligned cues — a subsequence of the group
+        // lines, in order), so the re-time can hold each step's footage on screen
+        // exactly while its line plays. bodyEnd trims to just past the last sung
+        // line, dropping the instrumental outro.
+        if (alignedCues.length > 0) {
+          const groupSungStart: (number | null)[] = groups.map(() => null);
+          let ci = 0;
+          for (let g = 0; g < groups.length; g++) {
+            const text = byGroup.get(g);
+            if (text && alignedCues[ci]?.text === text) {
+              groupSungStart[g] = alignedCues[ci]?.start ?? null;
+              ci++;
+            }
+          }
+          songBodyEnd = Math.max(...alignedCues.map((c) => c.end)) + 2;
+          songOnsets = songStepOnsets(groups, groupSungStart, songBodyEnd);
+        }
         notes.push(
           `captions aligned to ${sourceLabel} (${alignedCues.length}/${orderedTexts.length} lines sung)`
         );
@@ -3719,6 +3792,8 @@ export async function cinematicProcess(
         videoPath: input,
         narratableSteps,
         holdDurSec,
+        onsets: songOnsets,
+        bodyEnd: songBodyEnd,
         retimeMode: songRetimeMode(process.env),
         title: lyrics.title,
         category: direction.category,
