@@ -419,19 +419,6 @@ export function wrapCaption(
   return lines.join("\n");
 }
 
-// Song-mode re-timing approach. "freeze" (default) plays each step at natural
-// speed then freezes its last frame to fill the time — like cinematic/narration
-// mode; preserves motion and image quality. "stretch" slows the footage (capped)
-// instead. Override with $CANARY_SONG_RETIME.
-export type SongRetimeMode = "freeze" | "stretch";
-export function songRetimeMode(
-  env: NodeJS.ProcessEnv = process.env
-): SongRetimeMode {
-  return env.CANARY_SONG_RETIME?.trim().toLowerCase() === "stretch"
-    ? "stretch"
-    : "freeze";
-}
-
 // How long to hold a step's frame for its sung lyric line (song-mode re-timing).
 // ~2.5 words/sec singing plus a beat to read, floored so every line gets a
 // readable hold and the body stays long enough to clear the song's intro, capped
@@ -2215,10 +2202,9 @@ async function assembleSongVideo(args: {
   videoPath: string;
   narratableSteps: CinematicStep[];
   holdDurSec: number[];
-  retimeMode: SongRetimeMode;
   // Song step-sync: per-step onset (output start, = when each step's line is sung)
-  // and the body end. When present (freeze mode), the body is onset-anchored so each
-  // step's footage is on screen while its lyric line is sung.
+  // and the body end — the body is onset-anchored so each step's footage is on screen
+  // while its lyric line is sung.
   onsets?: number[];
   bodyEnd?: number;
   title: string;
@@ -2242,7 +2228,6 @@ async function assembleSongVideo(args: {
     videoPath,
     narratableSteps,
     holdDurSec,
-    retimeMode,
     onsets,
     bodyEnd,
     title,
@@ -2261,33 +2246,22 @@ async function assembleSongVideo(args: {
   const geometry = await probeVideo(ffmpeg, videoPath);
   const frameRate = geometry?.frameRate ?? 30;
 
-  // Re-time the body so it spans the vocals. "freeze" (default) plays each step at
-  // natural speed then freezes its last frame to fill its budget — like narration
-  // mode, preserving motion + quality. "stretch" slows the footage (capped). When
-  // `onsets` are given (the transcribed path), freeze mode ANCHORS each step to its
-  // lyric line's sung moment (hard-cut) instead of an even split, so the on-screen
-  // step tracks what's being sung — the song-mode analog of narration's per-step hold.
+  // Re-time the body: each step plays at natural speed then freezes its last frame to
+  // fill its budget (preserving motion + quality). When `onsets` are given (the
+  // transcribed path) the body is ANCHORED to each line's sung moment (hard-cut) so
+  // the on-screen step tracks what's being sung — the song-mode analog of narration's
+  // per-step hold; otherwise it falls back to the even `holdDurSec` split.
   progress("re-timing the video to the song…");
-  const retimed =
-    retimeMode === "stretch"
-      ? await retimeSongBody({
-          ffmpeg,
-          videoPath,
-          steps: narratableSteps,
-          targetSec: holdDurSec.reduce((a, b) => a + b, 0),
-          frameRate,
-          temps,
-        })
-      : await retimeForNarration({
-          ffmpeg,
-          videoPath,
-          steps: narratableSteps,
-          clipDurSec: holdDurSec,
-          frameRate,
-          temps,
-          onsets,
-          bodyEnd,
-        });
+  const retimed = await retimeForNarration({
+    ffmpeg,
+    videoPath,
+    steps: narratableSteps,
+    clipDurSec: holdDurSec,
+    frameRate,
+    temps,
+    onsets,
+    bodyEnd,
+  });
   if (!retimed) {
     return null;
   }
@@ -2736,24 +2710,17 @@ async function encodeSlice(args: {
   // Optional: freeze the FIRST frame for this long before the footage plays (a
   // "beat" before the action — frames both narration and song steps).
   startHoldSec?: number;
-  // Optional: slow the footage by this factor (>1 = slower). Song mode uses a
-  // small capped stretch; narration leaves it 1 (it holds frames instead).
-  stretchFactor?: number;
 }): Promise<void> {
   const { ffmpeg, src, startSec, durSec, holdSec, frameRate, outPath } = args;
   const startHold = args.startHoldSec ?? 0;
-  const stretch = args.stretchFactor ?? 1;
   // Force constant frame rate the way condense.ts does (fps + setpts), so each
   // slice's actual duration matches `-t`/`tpad` exactly. Without this, libvpx
   // slices come up tens of ms short and the per-segment error ACCUMULATES across
   // the concat, drifting narration/captions off the picture on long sessions.
   const fps = frameRate > 0 ? frameRate : 30;
   const chain: string[] = [];
-  // Slow the footage first (on the extracted slice), then pin CFR, then pad with
-  // frozen frames at the head/tail, then reset PTS for an exact-duration segment.
-  if (stretch > 1.001) {
-    chain.push(`setpts=${stretch.toFixed(6)}*PTS`);
-  }
+  // Pin CFR, then pad with frozen frames at the head/tail, then reset PTS for an
+  // exact-duration segment.
   chain.push(`fps=${fps}`);
   if (startHold > 0 || holdSec > 0) {
     const opts: string[] = [];
@@ -2988,80 +2955,6 @@ async function retimeForNarration(args: {
   temps.push(outPath, listPath);
   await concatSegments(ffmpeg, segs, outPath, listPath);
   return { path: outPath, starts: plan.starts };
-}
-
-// Song-mode re-timing: stretch each step's footage by a CAPPED factor (toward the
-// target length but never into extreme slow-motion) and frame it with a small
-// still at the start and end. This fills the song far better than freezing whole
-// steps, without the 6× slow-mo that a uniform full-length stretch produced.
-// Returns the re-timed path and each step's action start (after its lead still).
-const SONG_MAX_STRETCH = 2.2;
-// Start pad disabled (froze a mid-typing frame → "one char then pause"); a small
-// end still is fine.
-const SONG_START_PAD_SEC = 0;
-const SONG_END_PAD_SEC = 0.7;
-async function retimeSongBody(args: {
-  ffmpeg: string;
-  videoPath: string;
-  steps: CinematicStep[];
-  targetSec: number;
-  frameRate: number;
-  temps: string[];
-}): Promise<{ path: string; starts: number[] } | null> {
-  const { ffmpeg, videoPath, steps, targetSec, frameRate, temps } = args;
-  const totalSec = await audioDurationSec(ffmpeg, videoPath);
-  if (totalSec === undefined || totalSec <= 0) {
-    return null;
-  }
-  const n = steps.length;
-  // Stretch toward the target, capped so it never becomes extreme slow-motion.
-  const factor = Math.min(SONG_MAX_STRETCH, Math.max(1, targetSec / totalSec));
-  const segs: string[] = [];
-  const starts: number[] = [];
-  let acc = 0;
-  const leadSec = n > 0 ? Math.max(0, steps[0]?.videoTime ?? 0) : 0;
-  if (leadSec > 0.01) {
-    const leadPath = `${videoPath}.lead.webm`;
-    temps.push(leadPath);
-    await encodeSlice({
-      ffmpeg,
-      src: videoPath,
-      startSec: 0,
-      durSec: leadSec,
-      holdSec: 0,
-      stretchFactor: factor,
-      frameRate,
-      outPath: leadPath,
-    });
-    segs.push(leadPath);
-    acc += leadSec * factor;
-  }
-  for (let i = 0; i < n; i++) {
-    const start = steps[i]?.videoTime ?? 0;
-    const next = i < n - 1 ? (steps[i + 1]?.videoTime ?? totalSec) : totalSec;
-    const f = Math.max(0.1, next - start);
-    const segPath = `${videoPath}.rseg${i}.webm`;
-    temps.push(segPath);
-    await encodeSlice({
-      ffmpeg,
-      src: videoPath,
-      startSec: start,
-      durSec: f,
-      holdSec: SONG_END_PAD_SEC,
-      startHoldSec: SONG_START_PAD_SEC,
-      stretchFactor: factor,
-      frameRate,
-      outPath: segPath,
-    });
-    starts.push(acc + SONG_START_PAD_SEC);
-    acc += SONG_START_PAD_SEC + f * factor + SONG_END_PAD_SEC;
-    segs.push(segPath);
-  }
-  const outPath = `${videoPath}.retimed.webm`;
-  const listPath = `${videoPath}.retime.txt`;
-  temps.push(outPath, listPath);
-  await concatSegments(ffmpeg, segs, outPath, listPath);
-  return { path: outPath, starts };
 }
 
 // Build the title card matched to the source geometry and concat it ahead of the
@@ -3756,7 +3649,6 @@ export async function cinematicProcess(
         holdDurSec,
         onsets: songOnsets,
         bodyEnd: songBodyEnd,
-        retimeMode: songRetimeMode(process.env),
         title: lyrics.title,
         category: direction.category,
         directionText: direction.theme,

@@ -29,7 +29,6 @@ import {
   songHoldSec,
   speechText,
   stepFootageSec,
-  songRetimeMode,
   songTargetSec,
   titleStyle,
   voiceCredit,
@@ -299,15 +298,6 @@ describe("songTargetSec", () => {
     expect(songTargetSec(11)).toBe(114); // 2.5 + 99 + 12 = 113.5 → 114
     expect(songTargetSec(16)).toBe(159); // 2.5 + 144 + 12 = 158.5 → 159
     expect(songTargetSec(30)).toBe(165); // 2.5 + 270 + 12 = 284.5 → capped
-  });
-});
-
-describe("songRetimeMode", () => {
-  it("defaults to freeze and honors the stretch override", () => {
-    expect(songRetimeMode({})).toBe("freeze");
-    expect(songRetimeMode({ CANARY_SONG_RETIME: "freeze" })).toBe("freeze");
-    expect(songRetimeMode({ CANARY_SONG_RETIME: "STRETCH" })).toBe("stretch");
-    expect(songRetimeMode({ CANARY_SONG_RETIME: "nonsense" })).toBe("freeze");
   });
 });
 
