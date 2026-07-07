@@ -112,6 +112,13 @@ export function buildMusicPayload(args: {
     if (!args.lyrics?.trim()) {
       payload.sample_mode = true;
     }
+    // Enable the LM "Songwriter" planning pass (ACE-Step's `thinking` mode) for any
+    // sung track. This is the single biggest lever on LYRIC ADHERENCE: with it off,
+    // the model skips most lines (verified live — 1 of 8 lines sung); with it on it
+    // sings them in order (8 of 8). The project defaults it to True, but the
+    // OpenAI-compatible endpoint defaults it to FALSE, so we must set it explicitly.
+    // Instrumental beds don't need it (no lyrics to plan) and skip the extra time.
+    payload.thinking = true;
   }
   if (args.model) {
     payload.model = args.model;

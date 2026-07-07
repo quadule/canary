@@ -54,7 +54,7 @@ describe("buildMusicContent", () => {
 });
 
 describe("buildMusicPayload", () => {
-  it("nests duration under audio_config for an instrumental bed", () => {
+  it("nests duration under audio_config for an instrumental bed (no LM planning)", () => {
     expect(
       buildMusicPayload({ directionText: "noir", seconds: 12.4, instrumental: true })
     ).toEqual({
@@ -68,18 +68,19 @@ describe("buildMusicPayload", () => {
     });
   });
 
-  it("uses sample_mode + vocal_language for a song without lyrics", () => {
+  it("uses sample_mode + vocal_language + thinking for a song without lyrics", () => {
     const p = buildMusicPayload({
       directionText: "upbeat pop",
       seconds: 30,
       instrumental: false,
     });
     expect(p.sample_mode).toBe(true);
+    expect(p.thinking).toBe(true);
     expect(p.messages).toEqual([{ role: "user", content: "upbeat pop" }]);
     expect(p.audio_config).toEqual({ duration: 30, vocal_language: "en" });
   });
 
-  it("sings supplied lyrics in tagged mode, PINNING the duration (honored + still sings)", () => {
+  it("sings supplied lyrics in tagged mode with thinking on (LM planning → adherence)", () => {
     const p = buildMusicPayload({
       directionText: "upbeat pop",
       seconds: 90,
@@ -88,6 +89,9 @@ describe("buildMusicPayload", () => {
     });
     // Tagged mode → the LM must NOT invent its own lyrics.
     expect(p.sample_mode).toBeUndefined();
+    // thinking enables the Songwriter planning pass — the big lever on lyric
+    // adherence (verified live: off → 1/8 lines sung, on → 8/8).
+    expect(p.thinking).toBe(true);
     expect(p.messages).toEqual([
       {
         role: "user",
