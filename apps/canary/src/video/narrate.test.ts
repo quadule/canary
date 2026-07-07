@@ -7,8 +7,6 @@ import {
   buildLyricsPrompt,
   buildModelCredits,
   buildNarrationPrompt,
-  buildSrt,
-  captionLineMax,
   changeScaleHint,
   customSaySynth,
   extractCaptions,
@@ -22,7 +20,6 @@ import {
   planRetime,
   precinematicVideoPath,
   sayCommand,
-  secToSrtTimestamp,
   groupStepsForLyrics,
   groupedLyricSteps,
   normalizeTitle,
@@ -32,9 +29,14 @@ import {
   songTargetSec,
   titleStyle,
   voiceCredit,
-  wrapCaption,
   wrapTitle,
 } from "./narrate.js";
+import {
+  buildSrt,
+  captionLineMax,
+  secToSrtTimestamp,
+  wrapCaption,
+} from "./srt.js";
 
 describe("secToSrtTimestamp", () => {
   it("formats zero as 00:00:00,000", () => {
