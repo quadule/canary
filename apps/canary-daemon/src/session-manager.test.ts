@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { createLogger } from "@usecanary/logger";
 import type { SessionStartRequest } from "@usecanary/protocol";
 import type { ConsoleMessage } from "playwright";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   BrowserEntry,
   BrowserManager,
@@ -290,6 +290,30 @@ describe("SessionManager", () => {
     const manifest = JSON.parse(await readFile(result.manifestPath, "utf8"));
     expect(manifest.session.sessionId).toBe("s1");
     expect(manifest.reason).toBe("end");
+  });
+
+  it("does not hang forever if the browser context never closes", async () => {
+    // Regression test: ctx.close() talks to the browser over CDP, which can
+    // hang indefinitely if that transport is wedged (observed in practice —
+    // a single-session `end`/`abort` hung for over an hour with no automatic
+    // recovery). end() must bound the close and still finish.
+    vi.useFakeTimers();
+    try {
+      const { entry, calls } = makeSession();
+      entry.context.close = () => new Promise(() => {}); // never resolves
+      const sessions = new SessionManager(makeManager(entry, calls, []), log);
+      await sessions.start(startReq());
+
+      const resultPromise = sessions.end("s1", "end");
+      await vi.advanceTimersByTimeAsync(5000);
+      const result = await resultPromise;
+
+      expect(result.session.phase).toBe("ended");
+      expect(calls).toContain("stopBrowser");
+      expect(sessions.has("s1")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("captures console events as newline-delimited JSON", async () => {

@@ -496,16 +496,23 @@ export class SessionManager {
       state.pageCount = ctx.pages().length;
     }
 
-    // Flush artifacts FULLY — await directly (no timeout race) so trace.zip,
-    // *.webm and the HAR are completely written before collect() enumerates
-    // them. A wedged teardown only matters at daemon shutdown, where endAll()
-    // wraps end() in a bounded best() so exit can't hang.
+    // Flush the trace FULLY — await directly (no timeout race) so trace.zip
+    // is completely written before collect() enumerates it.
     if (state.capture.trace) {
       await this.swallow(() =>
         ctx.tracing.stop({ path: path.join(state.artifactsDir, "trace.zip") })
       );
     }
-    await this.swallow(() => ctx.close());
+    // Bounded: ctx.close() talks to the browser over CDP (Browser.close /
+    // Target.closeTarget), which can hang indefinitely if that transport is
+    // wedged — even when the browser process itself is otherwise healthy, and
+    // even outside of daemon shutdown. Observed in practice: a single-session
+    // `session end` (and `session abort`, which reaches this same path) hung
+    // for over an hour with no automatic recovery, and the only way out was
+    // manually killing the browser process from outside the daemon. Video/HAR
+    // written so far are flushed to disk incrementally, so a timed-out close
+    // still leaves collect() something usable to build the report from.
+    await this.best(() => ctx.close(), "browser context close");
 
     for (const dispose of state.errorDisposers) {
       try {
@@ -540,7 +547,10 @@ export class SessionManager {
 
   async endAll(): Promise<void> {
     for (const sessionId of Array.from(this.sessions.keys())) {
-      await this.best(() => this.end(sessionId, "abort"));
+      await this.best(
+        () => this.end(sessionId, "abort"),
+        "session end (endAll)"
+      );
     }
   }
 
@@ -719,20 +729,33 @@ export class SessionManager {
     }
   }
 
-  // Like swallow(), but bounded by a timeout so a wedged context.close() can't
-  // stall daemon shutdown. Used only by endAll(); the losing promise's eventual
-  // rejection is consumed by Promise.race, so it never becomes unhandled.
-  private async best(fn: () => Promise<unknown>): Promise<void> {
+  // Like swallow(), but bounded by a timeout so a wedged step (e.g.
+  // ctx.close()) can't stall the caller forever. Used by endAll() during
+  // daemon shutdown, and by end() when closing the browser context. The
+  // losing promise's eventual rejection is consumed by Promise.race, so it
+  // never becomes unhandled.
+  private async best(fn: () => Promise<unknown>, label: string): Promise<void> {
+    let settled = false;
     try {
       await Promise.race([
-        fn(),
+        fn().finally(() => {
+          settled = true;
+        }),
         new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, TEARDOWN_TIMEOUT_MS);
+          const timer = setTimeout(() => {
+            if (!settled) {
+              this.log.warn(
+                { label },
+                "teardown step timed out; proceeding without waiting for it"
+              );
+            }
+            resolve();
+          }, TEARDOWN_TIMEOUT_MS);
           timer.unref();
         }),
       ]);
     } catch (err) {
-      this.log.debug({ err }, "session teardown step failed");
+      this.log.debug({ err, label }, "session teardown step failed");
     }
   }
 
