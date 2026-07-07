@@ -6,6 +6,7 @@ import {
   type ArtifactInfo,
   type CaptureOptions,
   DEFAULT_SESSION_VIEWPORT,
+  SESSION_ATTACHMENTS_DIR,
   SESSION_CONSOLE_FILE,
   SESSION_HAR_FILE,
   SESSION_SCREENSHOT_EXT,
@@ -48,6 +49,8 @@ interface SessionState {
   capture: CaptureOptions;
   consolePath: string;
   consoleStream?: WriteStream;
+  // Wall-clock (ms) the start URL finished loading + settling, if one was given.
+  contentStartedAt?: number;
   endedAt?: number;
   entry: BrowserEntry;
   errorDisposers: Array<() => void>;
@@ -64,8 +67,6 @@ interface SessionState {
   runCount: number;
   sessionId: string;
   startedAt: number;
-  // Wall-clock (ms) the start URL finished loading + settling, if one was given.
-  contentStartedAt?: number;
   videoDir: string;
 }
 
@@ -648,6 +649,32 @@ export class SessionManager {
     for (const file of shots) {
       if (file.endsWith(SESSION_SCREENSHOT_EXT)) {
         await add("screenshot", path.join(screenshotsDir, file));
+      }
+    }
+
+    // Freeform files an external tool dropped into attachments/ before
+    // `session end` ran. Not gated by a capture flag — dropping a file there
+    // is itself the opt-in. Dotfiles are skipped (editor/OS cruft); `add`
+    // already skips non-files and (via `info.size` below) we skip empties.
+    const attachmentsDir = path.join(
+      state.artifactsDir,
+      SESSION_ATTACHMENTS_DIR
+    );
+    const attachments = await readdir(attachmentsDir).catch(
+      () => [] as string[]
+    );
+    for (const file of attachments) {
+      if (file.startsWith(".")) {
+        continue;
+      }
+      const filePath = path.join(attachmentsDir, file);
+      const info = await stat(filePath).catch(() => undefined);
+      if (info?.isFile() && info.size > 0) {
+        artifacts.push({
+          kind: "attachment",
+          path: filePath,
+          bytes: info.size,
+        });
       }
     }
 

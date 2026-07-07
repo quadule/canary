@@ -1,3 +1,4 @@
+import path from "node:path";
 import { formatDurationMs } from "@usecanary/cli-kit";
 import { sessionStepSlug } from "@usecanary/protocol";
 import type { SessionManifest } from "./manifest.js";
@@ -650,6 +651,15 @@ function renderArtifacts(m: SessionManifest): string {
     const p = escapeHtml(m.artifacts.console.path);
     items.push(
       `<div class="art"><div class="art-row"><span class="k">Console log</span><a class="btn" href="./${p}">${p}</a><span class="sz">${fmtBytes(m.artifacts.console.bytes)}</span></div></div>`
+    );
+  }
+  for (const attachment of m.artifacts.attachments ?? []) {
+    const p = escapeHtml(attachment.path);
+    const label = escapeHtml(path.basename(attachment.path));
+    const isHtml = /\.html?$/i.test(attachment.path);
+    const target = isHtml ? ` target="_blank" rel="noopener"` : "";
+    items.push(
+      `<div class="art"><div class="art-row"><span class="k">${label}</span><a class="btn" href="./${p}"${target}>${p}</a><span class="sz">${fmtBytes(attachment.bytes)}</span></div></div>`
     );
   }
   items.push(

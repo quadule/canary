@@ -3,6 +3,7 @@ import path from "node:path";
 import { sessionDir, sessionManifestPath } from "@usecanary/daemon-client";
 import {
   type ArtifactInfo,
+  SESSION_ATTACHMENTS_DIR,
   SESSION_CONSOLE_FILE,
   SESSION_HAR_FILE,
   SESSION_SCREENSHOT_EXT,
@@ -48,6 +49,20 @@ async function dirArtifacts(
   return refs.filter((r): r is ArtifactInfo => r !== undefined);
 }
 
+// Freeform files an external tool dropped into attachments/ before `session
+// end` ran. Non-recursive (subdirectories fail the isFile() check below and
+// are silently skipped); dotfiles and empty files are excluded since those
+// are almost always editor/OS cruft rather than an intentional artifact.
+async function attachmentArtifacts(dir: string): Promise<ArtifactInfo[]> {
+  const files = await readdir(dir).catch(() => [] as string[]);
+  const refs = await Promise.all(
+    files
+      .filter((f) => !f.startsWith("."))
+      .map((f) => statRef("attachment", path.join(dir, f)))
+  );
+  return refs.filter((r): r is ArtifactInfo => r !== undefined && r.bytes > 0);
+}
+
 // Reconstruct a SessionEndResult by scanning the session dir on disk. Used when
 // the daemon can no longer finalize the session (restarted / lost it) but the
 // artifacts it already flushed remain — so `session end`/`abort` can still emit
@@ -61,18 +76,20 @@ export async function endResultFromDisk(
     statRef("har", path.join(dir, SESSION_HAR_FILE)),
     statRef("console", path.join(dir, SESSION_CONSOLE_FILE)),
   ]);
-  const [videos, screenshots] = await Promise.all([
+  const [videos, screenshots, attachments] = await Promise.all([
     dirArtifacts("video", path.join(dir, SESSION_VIDEO_DIR), SESSION_VIDEO_EXT),
     dirArtifacts(
       "screenshot",
       path.join(dir, SESSION_SCREENSHOTS_DIR),
       SESSION_SCREENSHOT_EXT
     ),
+    attachmentArtifacts(path.join(dir, SESSION_ATTACHMENTS_DIR)),
   ]);
   const artifacts = [
     ...refs.filter((r): r is ArtifactInfo => r !== undefined),
     ...videos,
     ...screenshots,
+    ...attachments,
   ];
 
   const phase: SessionPhase = record.status === "aborted" ? "aborted" : "ended";

@@ -259,7 +259,7 @@ export type SessionPhase = "active" | "ending" | "ended" | "aborted" | "failed";
 
 export interface ArtifactInfo {
   bytes: number;
-  kind: "trace" | "video" | "har" | "console" | "screenshot";
+  kind: "trace" | "video" | "har" | "console" | "screenshot" | "attachment";
   pageName?: string;
   path: string;
 }
@@ -268,6 +268,10 @@ export interface SessionSummary {
   artifactsDir: string;
   browser: string;
   capture: CaptureOptions;
+  // Wall-clock (ms) when the start `url` finished loading + settling, if one was
+  // given. Same clock as `startedAt`, so `session end` can trim the video head to
+  // (contentStartedAt - startedAt) and drop the pre-load blank.
+  contentStartedAt?: number;
   endedAt?: number;
   headless: boolean;
   name?: string;
@@ -276,10 +280,6 @@ export interface SessionSummary {
   runCount: number;
   sessionId: string;
   startedAt: number;
-  // Wall-clock (ms) when the start `url` finished loading + settling, if one was
-  // given. Same clock as `startedAt`, so `session end` can trim the video head to
-  // (contentStartedAt - startedAt) and drop the pre-load blank.
-  contentStartedAt?: number;
 }
 
 export interface SessionStartResult {
@@ -340,6 +340,12 @@ export const SESSION_VIDEO_DIR = "video";
 export const SESSION_VIDEO_EXT = ".webm";
 export const SESSION_SCREENSHOTS_DIR = "screenshots";
 export const SESSION_SCREENSHOT_EXT = ".png";
+// Freeform files any external tool may drop into the session dir before
+// `session end` runs (e.g. a generated report, log, or artifact from a step
+// outside Canary's own capture). Discovered non-recursively at finalization
+// and surfaced as "attachment" artifacts — unlike video/screenshots, not
+// gated by CaptureOptions, since dropping a file is the opt-in itself.
+export const SESSION_ATTACHMENTS_DIR = "attachments";
 
 // ---------- Daemon runtime ----------
 // Single source of truth for the npm-managed runtime the daemon needs in

@@ -19,6 +19,10 @@ export interface ArtifactRef {
 }
 
 export interface ManifestArtifacts {
+  // Freeform files dropped into attachments/ by an external tool before
+  // `session end` ran (e.g. a generated log or report). Unlike the other
+  // fields here, these aren't produced by Canary's own capture.
+  attachments?: ArtifactRef[];
   console?: ArtifactRef;
   har?: ArtifactRef;
   screenshots: Record<string, ArtifactRef>;
@@ -61,7 +65,14 @@ export interface ManifestSummary {
 // `artifacts` shape.
 export interface ArtifactListEntry {
   bytes: number;
-  kind: "report" | "trace" | "video" | "har" | "console" | "screenshot";
+  kind:
+    | "report"
+    | "trace"
+    | "video"
+    | "har"
+    | "console"
+    | "screenshot"
+    | "attachment";
   label: string;
   path: string;
   step?: string;
@@ -100,6 +111,15 @@ export interface BuildManifestInput {
   record: SessionRecord;
 }
 
+function attachmentListEntries(refs?: ArtifactRef[]): ArtifactListEntry[] {
+  return (refs ?? []).map((ref) => ({
+    bytes: ref.bytes,
+    kind: "attachment" as const,
+    label: path.basename(ref.path),
+    path: ref.path,
+  }));
+}
+
 // Pure fusion of the orchestrator's session.json step log + the daemon's
 // artifact metadata + parser-derived counts. Artifact paths are made relative
 // to the session dir so the report can link to siblings.
@@ -109,7 +129,11 @@ export function buildManifest(input: BuildManifestInput): SessionManifest {
   const dir = endResult.session.artifactsDir;
   const rel = (abs: string) => path.relative(dir, abs) || path.basename(abs);
 
-  const artifacts: ManifestArtifacts = { screenshots: {}, videos: [] };
+  const artifacts: ManifestArtifacts = {
+    attachments: [],
+    screenshots: {},
+    videos: [],
+  };
   for (const artifact of endResult.artifacts) {
     const ref: ArtifactRef = {
       bytes: artifact.bytes,
@@ -133,6 +157,9 @@ export function buildManifest(input: BuildManifestInput): SessionManifest {
         artifacts.screenshots[slug] = ref;
         break;
       }
+      case "attachment":
+        artifacts.attachments?.push(ref);
+        break;
       default:
         break;
     }
@@ -203,6 +230,7 @@ export function buildManifest(input: BuildManifestInput): SessionManifest {
       step: stepName,
     });
   }
+  artifactList.push(...attachmentListEntries(artifacts.attachments));
 
   const stepsPassed = steps.filter((s) => s.status === "pass").length;
   const stepsFailed = steps.length - stepsPassed;
