@@ -4,6 +4,13 @@
 
 ### Added
 
+- **HAR credential scrubbing, on by default.** A session is driven against a logged-in app, so
+  Playwright recorded live `Cookie` / `set-cookie` / `Authorization` headers into `network.har` —
+  a file inside a directory people are encouraged to share. `session end` now replaces those
+  header values (names kept, so a reader can still see a request carried a cookie), atomically,
+  leaving the original untouched and warning loudly if the pass fails. `--no-scrub-har` keeps the
+  real values for replaying a HAR against the same live session. Response bodies, `trace.zip` and
+  `profile/` are **not** scrubbed — the README now says which artifacts are safe to share.
 - **Fixed-viewport recordings with an animated virtual cursor.** Sessions record at a fixed desktop
   viewport, and a synthetic cursor is drawn into the video (the OS pointer never appears under
   CDP-driven input): it glides to each target, shows a click ripple, and switches glyph
@@ -59,6 +66,15 @@
 
 ### Fixed
 
+- Releases publish from a **manual workflow run** instead of on any `v*` tag push, so tagging a
+  release and publishing it are separate decisions and an accidental `git push --tags` can't reach
+  the registry. The run refuses to continue unless the version typed matches the workspace.
+- `page.showCaption` never actually clamped: the overlay set `display:-webkit-box` and
+  `overflow:hidden` but the `-webkit-line-clamp` declaration was missing, so a long caption grew
+  into a wall of text over the page.
+- `claude -p` invocations no longer stall and fail: `execFile` leaves the child an unconnected
+  stdin pipe, which `claude` waits ~3s on before erroring out, taking narration and lyric
+  generation with it. The child now sees EOF immediately.
 - Viewer: a `--dir` (or `CANARY_UI_ROOT`) pointed at a single session directory now roots at its
   parent sessions folder instead of selecting an empty source — so opening a specific session from
   the review flow shows the sessions list rather than nothing.

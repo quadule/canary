@@ -133,6 +133,7 @@ interface SessionEndOpts {
   open?: boolean;
   pass?: boolean;
   prompt?: string;
+  scrubHar?: boolean;
   song?: boolean;
   stopDaemon?: boolean;
 }
@@ -228,6 +229,10 @@ export function buildProgram(): CommandType {
       "Keep raw videos (skip trimming pre-load frames and long stills)"
     )
     .option(
+      "--no-scrub-har",
+      "Keep credential header values (Cookie/Authorization) in network.har instead of replacing them"
+    )
+    .option(
       "--cinematic",
       "Add LLM narration, a macOS voice-over, captions, and a title card (macOS only; needs `claude` and `say`)"
     )
@@ -257,6 +262,7 @@ export function buildProgram(): CommandType {
       const code = await sessionEnd(id, isJson(program), {
         stopDaemon: opts.stopDaemon === true,
         condense: opts.condense,
+        scrubHar: opts.scrubHar,
         cinematic: opts.cinematic === true || typeof opts.prompt === "string",
         song: opts.song === true,
         prompt: opts.prompt,

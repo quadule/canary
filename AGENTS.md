@@ -58,6 +58,19 @@ workflow rules — is single-sourced in `docs/snippets/` and stitched by `script
   (`.cursor-plugin/`), and Codex (`plugins/canary/`, whose `skills` is a symlink here) — keep
   SKILL.md frontmatter (`name`, `description`) intact and marker-free.
 
+## Artifact sensitivity
+
+A recorded session runs against a logged-in app, so its artifacts are not uniformly shareable:
+
+- `report.html` and `results.json` are the shareable ones — no request headers in them.
+- `network.har` has `Cookie` / `set-cookie` / `Authorization` **values** replaced at `session end`
+  (see `apps/canary/src/session/scrub-har.ts`; `--no-scrub-har` opts out). Response bodies are
+  **not** scrubbed.
+- `trace.zip` carries the same traffic unscrubbed, and `profile/` is a real Chrome cookie database.
+
+So: attach or link `report.html`, never zip a whole session directory into a PR or a chat. Sessions
+recorded before scrubbing landed still hold credentials in their HAR.
+
 ## Code style & logging
 
 - **Linting/formatting:** [Ultracite](https://docs.ultracite.ai/) over Biome — config in `biome.jsonc` (extends `ultracite/biome/core`). `pnpm lint` checks; `pnpm format` autofixes; the pre-commit hook runs `ultracite fix` on staged files. Don't reintroduce ESLint/Prettier.

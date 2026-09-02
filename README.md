@@ -30,7 +30,7 @@ Canary doesn't make you choose: the agent does the QA and hands you a reproducib
 
 - **See exactly what happened.** Trace, video, network, console, and a screenshot of every step — captured automatically.
 - **Reproducible by default.** Canary turns each run into a real Playwright script. Let your agent discover a flow once; re-run it forever.
-- **One file, zero setup.** Every session is a self-contained `report.html` — open it, commit it, send it. No server, no build.
+- **One file, zero setup.** Every session renders a self-contained `report.html` — open it, commit it, send it. No server, no build. (That file is the shareable one; the session directory beside it holds the raw trace and cookies — see [what's safe to share](#whats-safe-to-share).)
 - **Built for agents.** Drop-in plugins for Claude Code, Cursor, and Codex.
 - **Sandboxed.** Scripts run in a QuickJS WASM sandbox with the full Playwright `Page` API — no Node, no host access.
 
@@ -154,6 +154,23 @@ headers, payload, and response — like a devtools network panel, frozen at the 
 The raw Playwright `trace.zip`, the network HAR, the console log, the machine-readable `results.json`,
 and the self-contained `report.html` — all under `~/.canary/sessions/<id>/`, all one click away. Open
 the trace in Playwright's own viewer with `npx playwright show-trace`.
+
+#### What's safe to share
+
+A session is recorded against a logged-in app, so some artifacts hold real credentials. `report.html`
+is the one built to be handed around; the session **directory** is not.
+
+| Artifact | Safe to share | What's in it |
+| --- | --- | --- |
+| `report.html` | **Yes** — this is the shareable one | Steps, screenshots, video, script, console. No request headers. |
+| `results.json` | Yes | Step outcomes, timings, artifact paths. |
+| `network.har` | **Scrubbed, but check** | Full traffic. `Cookie` / `set-cookie` / `Authorization` **values are replaced at `session end`** (names kept). Response **bodies are not** — a login response can still hold a token. |
+| `trace.zip` | **No** | The same traffic as the HAR, unscrubbed. |
+| `profile/` | **No** | A real Chrome profile — an actual cookie database and `Login Data`. |
+
+`--no-scrub-har` keeps the real header values, for when you need to replay the HAR against the same
+live session. Nothing is scrubbed retroactively, so sessions recorded before this landed still have
+their credentials in `network.har`.
 
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/fdb5efbc-a92d-4eb6-b64c-0f7efb8977a7" />
 

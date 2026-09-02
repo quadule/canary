@@ -1,12 +1,21 @@
 name: Release
 
-# Publishes the public packages to npm when a v* tag is pushed. Run
-# `node scripts/sync-version.mjs <version>`, commit, then `git tag vX.Y.Z`
-# and push the tag — see RELEASING.md.
+# Publishes the public packages to npm. Deliberately MANUAL: publishing is
+# triggered by running this workflow and typing the version, never as a side
+# effect of pushing a tag. Tagging a release and publishing it are separate
+# decisions, and an accidental `git push --tags` must not reach the registry.
+#
+# To release: `node scripts/sync-version.mjs <version>`, commit, tag, push —
+# then run this workflow from the Actions tab (or `gh workflow run release.yml
+# -f version=X.Y.Z`) and confirm. See RELEASING.md.
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (must match package.json, e.g. 0.5.0)"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -30,12 +39,16 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Verify the tag matches the workspace version
+      # The typed version must match the workspace, so a mistyped dispatch fails
+      # here rather than publishing something unintended.
+      - name: Verify the requested version matches the workspace
+        env:
+          REQUESTED: ${{ inputs.version }}
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
+          WANT="${REQUESTED#v}"
           PKG=$(node -p "require('./package.json').version")
-          if [ "$TAG" != "$PKG" ]; then
-            echo "Tag v$TAG does not match package version $PKG (run scripts/sync-version.mjs)"
+          if [ "$WANT" != "$PKG" ]; then
+            echo "Requested $WANT but the workspace is at $PKG (run scripts/sync-version.mjs)"
             exit 1
           fi
 

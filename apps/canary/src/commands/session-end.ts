@@ -18,6 +18,7 @@ import {
   updateSessionRecord,
   writeSessionRecord,
 } from "../session/registry.js";
+import { scrubHarFile } from "../session/scrub-har.js";
 import {
   condenseVideo,
   findFfmpeg,
@@ -37,6 +38,9 @@ interface SessionEndOpts {
   condense?: boolean;
   open?: boolean;
   prompt?: string;
+  // Replace credential header values in network.har (default on). --no-scrub-har
+  // keeps them, for a HAR that has to be replayed against the same session.
+  scrubHar?: boolean;
   // Song mode: score the whole video with one LLM-written, model-sung song
   // instead of per-step spoken narration. A flavor of the cinematic pass.
   song?: boolean;
@@ -399,6 +403,31 @@ export async function sessionEnd(
     record.contentStartedAt = new Date(
       endResult.session.contentStartedAt
     ).toISOString();
+  }
+
+  // Scrub credentials out of the HAR before anything else can copy or share it.
+  // Playwright records `Cookie` / `Authorization` verbatim, and a session
+  // directory is meant to be handed to someone else.
+  if (opts.scrubHar !== false) {
+    const harArtifact = endResult.artifacts.find((a) => a.kind === "har");
+    if (harArtifact) {
+      const outcome = await scrubHarFile(harArtifact.path, logger);
+      if (outcome.scrubbed) {
+        if (outcome.replaced > 0) {
+          logger.info(
+            { har: harArtifact.path, replaced: outcome.replaced },
+            `scrubbed ${outcome.replaced} credential value(s) from network.har`
+          );
+        }
+      } else {
+        // Loudly: the artifact is still on disk WITH its credentials, and the
+        // whole point of the pass is that someone is about to share it.
+        logger.warn(
+          { har: harArtifact.path, reason: outcome.reason },
+          "could not scrub network.har — it still contains credential headers; do not share this session directory"
+        );
+      }
+    }
   }
 
   // The preserved condensed cut (written by a prior condense) marks the video as

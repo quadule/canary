@@ -125,6 +125,16 @@ Declare neither and the run falls back to "failed if any step exited non-zero".
   --pass              mark the run PASSED — the workflow met its criteria (recovered step failures ok)
   --fail "<reason>"   mark the run FAILED with a reason — the workflow did not meet its criteria
 
+CREDENTIALS: a recorded session is driven against a logged-in app, so Playwright captures live
+\`Cookie\` / \`Authorization\` headers. At \`session end\` those header VALUES are replaced in
+network.har (the names stay, so you can still see a request carried a cookie). This is NOT a
+full sanitize: trace.zip holds the same traffic, response bodies can carry tokens of their own,
+and profile/ is a real Chrome cookie database. Treat report.html as the shareable artifact and
+the session DIRECTORY as sensitive.
+
+  --no-scrub-har      keep the real credential values in network.har (for replaying it against
+                      the same live session)
+
 Videos are condensed when ffmpeg is available (PATH, $CANARY_FFMPEG, or Playwright's bundled
 copy): the pre-page-load segment is dropped and motionless stretches are trimmed out with a
 frame-accurate re-encode that keeps real motion (cursor, typing, captions). Pass --no-condense

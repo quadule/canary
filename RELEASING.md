@@ -41,8 +41,8 @@ make release VERSION=1.4.0      # explicit version
 # env knobs: YES=1 (skip confirm) · NO_VERIFY=1 (skip build+dry-run) · ALLOW_DIRTY=1
 ```
 
-It prints the exact push to run last. Pushing the tag is intentionally manual — that push is what
-publishes to npm.
+It prints the exact push to run last. Pushing the tag records the release in git; it does **not**
+publish. Publishing is a separate, deliberate step (below).
 
 The manual equivalent, if you'd rather run the steps yourself:
 
@@ -54,9 +54,19 @@ git tag v0.2.0
 git push origin main --follow-tags
 ```
 
-Pushing the tag triggers `.github/workflows/release.yml`, which verifies the tag matches the
-workspace version, runs `pnpm build` (topo-ordered), and `pnpm -r publish --access public --provenance`.
-`pnpm -r publish` automatically skips private packages and rewrites `workspace:*` to the concrete version.
+## Publishing
+
+Publishing is a **manual workflow run**, never a side effect of pushing a tag — so an accidental
+`git push --tags` can't reach the registry:
+
+```bash
+gh workflow run release.yml -f version=0.2.0
+```
+
+(or run **Release** from the Actions tab and type the version). The workflow refuses to continue
+unless the version you typed matches the workspace version, then runs `pnpm build` (topo-ordered)
+and `pnpm -r publish --access public --provenance`. `pnpm -r publish` automatically skips private
+packages and rewrites `workspace:*` to the concrete version.
 
 ## How updates reach agents
 
