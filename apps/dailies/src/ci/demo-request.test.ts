@@ -415,3 +415,21 @@ describe("decideDemoWithAgent", () => {
     }
   });
 });
+
+describe("parseDecision flow hygiene", () => {
+  it("drops a flow the model volunteered on a skip", () => {
+    // Observed live: the model fills `flow` in even when it says worth:false.
+    const d = parseDecision(
+      '{"worth":false,"reason":"specs only","flow":"Sign in and look at the screen"}'
+    );
+    expect(d).toEqual({ flow: null, reason: "specs only", worth: false });
+  });
+
+  it("keeps the flow when the demo will run", () => {
+    expect(
+      parseDecision(
+        '{"worth":true,"reason":"changes net pay","flow":"Open the pay screen"}'
+      )?.flow
+    ).toBe("Open the pay screen");
+  });
+});

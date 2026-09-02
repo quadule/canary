@@ -2,7 +2,7 @@
   "name": "create-dailies",
   "version": "0.4.4",
   "type": "module",
-  "description": "Set up dailies — browser automation + recorded QA sessions. Run `npm create dailies`.",
+  "description": "Set up Dailies \u2014 recorded browser sessions and narrated demo videos. Run `npm create dailies`.",
   "license": "MIT",
   "keywords": [
     "dailies",

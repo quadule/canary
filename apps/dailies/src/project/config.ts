@@ -51,7 +51,10 @@ export interface DemoConfig {
   // HINT, not a gate — and the fallback when no LLM provider is available.
   // Empty = every change qualifies.
   paths: string[];
-  // Default cinematic direction (theme/tone/style).
+  // Default cinematic direction (theme/tone/style). Leave it UNSET in most
+  // repos: unset draws a fresh random theme per run from 300+ of them, which is
+  // deliberate — a nightly demo of a PR is repetitive work, and the randomness
+  // is what makes it worth opening. Set it only for a consistent house style.
   prompt: string | null;
 }
 

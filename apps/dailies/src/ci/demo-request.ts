@@ -135,8 +135,11 @@ export function parseDecision(raw: string): DemoDecisionFromAgent | null {
     typeof parsed.reason === "string" && parsed.reason.trim()
       ? parsed.reason.trim()
       : "no reason given";
+  // A flow only means something for a demo that will actually be recorded. The
+  // model tends to fill the field in either way, and carrying "record this
+  // flow" alongside "not worth recording" is just misleading downstream.
   const flow =
-    typeof parsed.flow === "string" && parsed.flow.trim()
+    parsed.worth && typeof parsed.flow === "string" && parsed.flow.trim()
       ? parsed.flow.trim()
       : null;
   return { flow, reason, worth: parsed.worth };

@@ -1,14 +1,24 @@
 {
   "name": "dailies",
   "version": "0.4.4",
-  "description": "Dailies browser automation + recorded QA sessions: sandbox scripting skills, JTBD agents, slash commands, and rules for verify, automate, session, and review workflows.",
+  "description": "Dailies for your coding agent: record a browser flow as a verifiable session (trace, video, HAR, console) and cut it into a narrated demo video. Ships a sandbox scripting reference, verify/automate/session/review skills, subagents, and slash commands and rules.",
   "author": {
     "name": "quadule"
   },
   "homepage": "https://github.com/quadule/dailies",
   "repository": "https://github.com/quadule/dailies",
   "license": "MIT",
-  "keywords": ["dailies", "browser-automation", "qa", "cursor"],
+  "keywords": [
+    "dailies",
+    "demo-video",
+    "screencast",
+    "browser-automation",
+    "qa",
+    "playwright",
+    "testing",
+    "pull-request",
+    "ai-agent"
+  ],
   "skills": "skills",
   "agents": "agents",
   "commands": "commands",

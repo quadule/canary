@@ -1,5 +1,6 @@
 {
   "name": "dailies-marketplace",
+  "description": "Dailies \u2014 record a browser flow as a verifiable session and cut it into a narrated demo video.",
   "owner": {
     "name": "quadule",
     "url": "https://github.com/quadule"
@@ -8,10 +9,10 @@
     {
       "name": "dailies",
       "source": "./",
-      "description": "Browser automation + recorded QA sessions for Claude Code: skills, JTBD subagents, and /dailies:verify | run | session | review commands.",
+      "description": "Dailies for your coding agent: record a browser flow as a verifiable session (trace, video, HAR, console) and cut it into a narrated demo video. Ships a sandbox scripting reference, verify/automate/session/review skills, subagents, and /dailies slash commands.",
       "version": "0.4.4",
       "category": "developer-tools",
-      "tags": ["dailies", "browser-automation", "qa", "skills"]
+      "tags": ["dailies", "demo-video", "browser-automation", "qa", "skills"]
     }
   ],
   "version": "0.4.4"

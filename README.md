@@ -1,36 +1,59 @@
 <div align="center">
   <h1>Dailies</h1>
-  <p><strong>QA harness built for Claude Code.</strong></p>
+  <p><strong>Watch your change work.</strong></p>
+
+  <p>
+    <sub>
+      Built on <a href="https://github.com/wizenheimer/canary"><b>Canary</b></a>, the
+      agent QA harness this began as — its sandbox, session recording and report are
+      Canary's, and they are still the foundation everything here stands on. MIT, with
+      thanks. See <a href="LICENSE">LICENSE</a> for full provenance.
+    </sub>
+  </p>
 
   https://github.com/user-attachments/assets/53d10b52-35cf-496a-a342-e8719574a000
 </div>
 
-Dailies is a QA harness purpose built for coding agents like Claude Code. It reads your code diffs, identifies the affected UI flows, and tests them in real browser instances using Claude Code.
+In film production, **dailies** are the footage the crew reviews at the end of the day to confirm
+that what they shot actually works. This does that for software changes.
 
-Under the hood, it ships with a QuickJS WASM sandbox exposing the full Playwright API, letting Claude automate any long-running UI task — from handling logins to navigating complicated UIs. 
+An agent drives a real browser through the flow your change touches. What comes back is something
+you can *watch* — a narrated, captioned short of the run, scored and titled — and underneath it the
+evidence: a Playwright trace, video, network HAR, console log, a screenshot of every step, and a
+reusable Playwright script you can replay in CI for free.
 
-Instead of clicking through flows by hand to reproduce and verify issues, Dailies provides full session recordings. You get screen recordings with console logs, network requests, HARs, and Playwright traces so you can inspect exactly what the agent did.
+The point is the gap it closes. A diff tells you what changed; a green test tells you nothing
+broke. Neither shows you the thing a person will actually see. Dailies does, in a form you can drop
+into a pull request and hand to someone who will never open your editor.
 
-Every Dailies run captures a reusable Playwright script. Letting you re-run it in CI with zero inference cost on replay.
-
+And it is deliberately a little fun. Reviewing pull requests is repetitive work, so every cut draws
+a **random theme** from 300+ of them — your migration might arrive as a noir detective short, a
+nature documentary, or a sung power ballad. That is not a gimmick bolted on the side; it is the
+reason people actually watch the thing. Pin a house style with `--prompt` when you want one, but
+leaving it off is the default on purpose.
 
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/8ad76566-542e-43b0-a9f2-0220f819710b" />
 
-
-Most testing tools force you to choose between two extremes:
+Most tools make you pick one:
 
 - An opaque agent run you can't reproduce.
-- Raw Playwright scripts you have to write and maintain by hand.
+- Raw Playwright scripts you write and maintain by hand.
 
-Dailies doesn't make you choose: the agent does the QA and hands you a reproducible script.
+Dailies doesn't make you choose. The agent discovers the flow once; you keep the film, the evidence,
+and the script.
 
 ## Features
 
 <img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/145916b9-80ed-4154-858f-256d84783d19" />
 
-- **See exactly what happened.** Trace, video, network, console, and a screenshot of every step — captured automatically.
+- **A film, not a log.** `--cinematic` turns a silent recording into a narrated short: an LLM writes the voice-over, a voice reads it, each step holds long enough to follow, with a title card, burned-in captions and credits. `--song` scores the whole thing with one original sung track instead.
+- **A different theme every time.** Omit `--prompt` and each cut draws from 300+ themes and styles, so a repetitive review job stays worth opening. `--prompt "1970s heist film, as a limerick"` when you want to choose.
+- **See exactly what happened.** Trace, video, network, console, and a screenshot of every step — captured automatically, with an on-screen cursor so you can see where the agent actually clicked.
 - **Reproducible by default.** Dailies turns each run into a real Playwright script. Let your agent discover a flow once; re-run it forever.
 - **One file, zero setup.** Every session renders a self-contained `report.html` — open it, commit it, send it. No server, no build. (That file is the shareable one; the session directory beside it holds the raw trace and cookies — see [what's safe to share](#whats-safe-to-share).)
+- **Nightly demos of your pull requests.** Label a PR and wake up to a video on it. A model reads the diff and decides whether the change is even worth filming.
+- **Teach it your app once.** Commit a `.dailies/flows.md` and every run starts knowing how to sign in and where things are, instead of rediscovering it.
+- **Bring your own model.** The `claude` CLI by default, any OpenAI-compatible endpoint, or Apple Intelligence fully on-device.
 - **Built for agents.** Drop-in plugins for Claude Code, Cursor, and Codex.
 - **Sandboxed.** Scripts run in a QuickJS WASM sandbox with the full Playwright `Page` API — no Node, no host access.
 
@@ -39,16 +62,16 @@ Dailies doesn't make you choose: the agent does the QA and hands you a reproduci
 
 https://github.com/user-attachments/assets/8459994a-b43c-4483-bb4a-00522d1d03fe
 
-You describe the flow in plain language; your agent drives a real browser and hands back **both** a
-report you can just read **and** the exact Playwright script — plus the full trace — behind it. Most
-tools make you pick one: an opaque agent run you can't reproduce, or raw Playwright you write and
-maintain by hand. Dailies gives you both.
+You describe the flow in plain language. Your agent drives a real browser and hands back something
+to watch, the evidence behind it, and the exact Playwright script that produced it.
 
-| You are a…        | Instead of…                                            | Dailies gives you…                                                                       |
-| ----------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| **Developer**     | Writing and maintaining Playwright/E2E scripts by hand | A reusable script captured from every run — re-run it in CI, no agent cost on replay    |
-| **QA engineer**   | Clicking through flows manually to repro and verify    | Evidence by default — trace, video, network, console, and a screenshot of every step    |
-| **PM / reviewer** | Waiting on a build or trusting "works on my machine"   | A self-contained `report.html` you open and read — every step, replayable and shareable |
+| You are a…        | Instead of…                                              | Dailies gives you…                                                                      |
+| ----------------- | -------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| **Developer**     | Writing and maintaining Playwright/E2E scripts by hand   | A reusable script captured from every run — re-run it in CI, no agent cost on replay     |
+| **QA engineer**   | Clicking through flows manually to repro and verify      | Evidence by default — trace, video, network, console, and a screenshot of every step     |
+| **Reviewer**      | Reading a diff and imagining what it looks like          | A demo video on the PR, filmed from the branch, before you open the code                 |
+| **PM / designer** | Waiting on a build or trusting "works on my machine"     | A short you can actually watch, plus a self-contained `report.html` you open and read    |
+| **Whoever demos** | Re-recording the same walkthrough by hand every sprint   | A narrated cut regenerated from the real app on every change, with no screen-recording   |
 
 ## Get started
 
@@ -260,6 +283,10 @@ background job changes what someone eventually sees on a screen. It also names t
 which the recording agent uses as its starting point. Set `demo.decide` to `"paths"` for a
 deterministic glob match instead, or `"always"` to demo every change; under `"agent"`,
 `demo.paths` is a hint, and the fallback when no model provider is available.
+
+Leave `demo.prompt` **unset** unless you specifically want one house style: unset means every
+nightly cut draws its own random theme, which is the point of a demo nobody chose to sit down and
+watch.
 
 > This file becomes agent instructions, so it's only as trustworthy as the repo it came from. Don't
 > point Dailies at a project config from a repo you don't control; the demo workflow deliberately

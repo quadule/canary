@@ -2,17 +2,18 @@
   "name": "dailies-cli",
   "version": "0.4.4",
   "type": "module",
-  "description": "Dailies session orchestrator CLI. Drives the daemon to run capture-enabled QA sessions (trace/video/HAR/console) and renders self-contained verification reports.",
+  "description": "Dailies CLI. Records a browser session as ordered steps \u2014 trace, video, HAR, console \u2014 renders a self-contained report, and can cut the recording into a narrated demo film.",
   "license": "MIT",
   "keywords": [
+    "dailies",
+    "demo-video",
+    "screencast",
     "browser-automation",
     "qa",
     "playwright",
-    "ai-agent",
     "testing",
-    "claude",
-    "cli",
-    "session-recording"
+    "pull-request",
+    "ai-agent"
   ],
   "homepage": "https://github.com/quadule/dailies#readme",
   "bugs": "https://github.com/quadule/dailies/issues",

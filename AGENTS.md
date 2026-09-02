@@ -2,9 +2,20 @@
 
 This file is the entry point for AI agents (and humans new to the repo).
 
-## What dailies is
+## What Dailies is
 
-Dailies is an AI-agent QA toolkit for driving real browsers. The pieces:
+Dailies drives a real browser through a flow and produces **watchable proof it works**: a narrated,
+captioned short of the run, plus the evidence underneath it (Playwright trace, video, network HAR,
+console, a screenshot of every step) and a replayable Playwright script.
+
+It began as a fork of [Canary](https://github.com/wizenheimer/canary), an agent QA harness, and
+Canary's sandbox, session recording and report are still the foundation. The divergence is the
+video pipeline (`apps/dailies/src/video/`, the largest subsystem here), the on-screen cursor and
+human-like interaction helpers that make a recording read like a person, and the nightly PR demo
+workflow. The QA evidence is still underneath — it is what makes the film trustworthy rather than a
+marketing artifact.
+
+The pieces:
 
 1. **`dailies` (orchestrator CLI, `dailies-cli`)** — records capture-enabled QA sessions (trace/video/HAR/console) as a series of script steps and renders a self-contained report. The primary, user-facing CLI.
 2. **`dailies-browser` (engine CLI, `dailies-browser`)** — one-off browser automation: persistent named pages, sandboxed JavaScript, headless or headed. Embeds and supervises the daemon.
@@ -57,6 +68,17 @@ workflow rules — is single-sourced in `docs/snippets/` and stitched by `script
 - `skills/` is the skill pack consumed verbatim by Claude Code (`.claude-plugin/`), Cursor
   (`.cursor-plugin/`), and Codex (`plugins/dailies/`, whose `skills` is a symlink here) — keep
   SKILL.md frontmatter (`name`, `description`) intact and marker-free.
+
+## A project goal: the randomness is a feature
+
+Reviewing pull requests is repetitive, and a demo nobody chose to watch has to earn attention. So
+omitting `--prompt` draws 1-2 random themes plus a weighted style from the 300+ in
+`apps/dailies/src/video/themes.ts`, and that is the intended default — including, especially, in CI.
+
+Do not "helpfully" pin a static `demo.prompt` in a repo's config, or replace the random draw with a
+fixed tone to make output more predictable. A consistent house style is an opt-in, not a default.
+Repeatability for a *specific* run is already covered: the drawn direction is printed with every
+run, so any cut can be reproduced by passing it back as `--prompt`.
 
 ## The `.dailies/` project convention
 

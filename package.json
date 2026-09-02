@@ -3,7 +3,7 @@
   "version": "0.4.4",
   "private": true,
   "type": "module",
-  "description": "AI-agent QA toolkit: drive browsers, record sessions, render self-contained verification artifacts.",
+  "description": "Watchable proof your change works: an agent drives a real browser and hands back a narrated demo video, the full evidence (trace, video, HAR, console), and a replayable Playwright script.",
   "license": "MIT",
   "packageManager": "pnpm@9.15.0",
   "engines": {
