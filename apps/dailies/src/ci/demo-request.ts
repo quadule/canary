@@ -101,14 +101,30 @@ export function buildDecisionPrompt(args: {
   return [
     "You decide whether a pull request is worth recording a short browser demo of.",
     "",
-    "A change is worth demoing when a person could SEE the difference by using the app.",
-    "That includes changes with no UI code at all: a data migration, a background job, or a",
-    "calculation change is worth demoing when its effect shows up on a screen someone visits.",
-    "It is NOT worth demoing when nothing observable changes — refactors with no behavior",
-    "change, tests, CI config, docs, dependency bumps, internal tooling.",
+    "The test is not whether a person COULD see the change — it is whether WATCHING it would",
+    "tell someone something the diff does not already. A recording costs real time and money,",
+    "so it earns its place only when behavior has to be exercised to be believed.",
     "",
-    "When it is worth demoing, name the ONE most important flow to record, as a single",
-    "sentence an operator could follow.",
+    "Work through these in order.",
+    "",
+    "STEP 1 — exclusions. If ANY of these describes the change, answer worth=false and stop.",
+    "They override every reason to say yes below, including a change being user-visible:",
+    "  a. Only displayed text changes — copy edits, labels, wording, translations, help text,",
+    "     error messages. The diff already shows the exact words a person will read, so a video",
+    "     adds nothing. This is true even on the most customer-facing screen in the product.",
+    "  b. No behavior change at all — refactors, renames, extractions, tests, CI config,",
+    "     dependency bumps, comments, developer tooling.",
+    "  c. A minor style tweak — a spacing nudge, one color, a single margin.",
+    "",
+    "STEP 2 — otherwise, is there behavior a person has to exercise to believe? A form, a",
+    "screen, a flow, a calculated value, a validation message. This includes changes with NO UI",
+    "code at all, when the effect surfaces somewhere a person visits: a data migration that",
+    "fills in a blank field, a background job that advances a checklist, a calculation that",
+    "alters an amount. A substantial visual change counts too, even a style-only one.",
+    "",
+    "When it is worth recording, name the ONE most important flow, as a single sentence an",
+    "operator could follow. If the change sits behind a flag or a setting, say to enable it",
+    "first — otherwise the recording shows the old behavior and proves nothing.",
     hint ? `\nWhat this project considers demo-worthy:\n${hint}` : "",
     paths.length > 0
       ? `\nPaths this project treats as user-facing (a hint, not a rule):\n${paths.join(", ")}`
@@ -325,9 +341,22 @@ export async function decideDemoWithAgent(args: {
       reason: `${base.reason} — the agent decision was unavailable (${result.error})`,
     };
   }
+  // Name the provider in the log line: which model judged is the first thing
+  // you want to know when a verdict looks wrong.
+  if (result.provider === "apple") {
+    // Measured on the borderline cases (a copy-only edit, a 2px margin nudge),
+    // 5 samples each: the on-device model got the copy edit right 4/5 and the
+    // margin nudge 1/5, where the `claude` provider was 12/12 across the same
+    // suite. It is a fine narrator — there is no wrong answer in narration —
+    // but a weak gate. The resolve order already puts it last, so this only
+    // happens when it is pinned or is the only provider available.
+    createLogger({ name: "dailies-demo" }).warn(
+      "the demo decision was made by Apple Intelligence on-device, which is unreliable on borderline changes — prefer the claude CLI or an OpenAI-compatible endpoint for this call"
+    );
+  }
   return {
     ...base,
-    decidedBy: "agent",
+    decidedBy: `agent (${result.provider})`,
     flow: result.value.flow,
     reason: result.value.reason,
     run: result.value.worth,

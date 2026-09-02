@@ -320,6 +320,12 @@ they all decline, the run notes name each one and why, and the pass degrades ins
 Apple Intelligence honors your JSON schema at runtime through `DynamicGenerationSchema`, so it needs
 no per-schema Swift. Measured on an M-series Mac: a 30-step narration in ~7s.
 
+**Pick the provider for the job.** On-device is a fine *narrator* — narration has no wrong answer,
+and staying local is worth a lot. It is a weaker *judge*: on the borderline demo decisions (a
+copy-only edit, a 2px margin nudge) it got 5 of 10 samples right where the `claude` CLI was 12 for
+12 on the same suite. The resolve order already puts Apple last, so this only bites if you pin it;
+Dailies warns in the log when the demo decision was made on-device.
+
 The Anthropic Messages API isn't a fourth provider — the `claude` CLI already covers Claude, and
 this package deliberately ships no runtime dependencies. It would slot in behind the same interface.
 

@@ -259,11 +259,38 @@ describe("buildDecisionPrompt", () => {
     paths: [],
   };
 
+  // The prompt is hard-wrapped for readability, so assert against
+  // whitespace-normalized text rather than coupling tests to line breaks.
+  const flat = (args: Parameters<typeof buildDecisionPrompt>[0]) =>
+    buildDecisionPrompt(args).replace(/\s+/g, " ");
+
   it("tells the model a non-UI change can still be demo-worthy", () => {
-    const prompt = buildDecisionPrompt(base);
     // The whole reason this isn't a glob match.
-    expect(prompt).toContain("no UI code at all");
-    expect(prompt).toContain("background job");
+    expect(flat(base)).toContain("NO UI code at all");
+    expect(flat(base)).toContain("background job");
+  });
+
+  it("asks whether watching adds anything, not merely whether it is visible", () => {
+    // A copy edit IS visible but is fully described by the diff — the naive
+    // "could a person see it" criterion gets that case wrong.
+    expect(flat(base)).toContain("not whether a person COULD see");
+    expect(flat(base)).toContain("Only displayed text changes");
+  });
+
+  it("states the exclusions BEFORE the reasons to say yes, and as overriding", () => {
+    // Ordering is load-bearing: a small model reads a long "worth it" list and
+    // then rationalizes past a NEVER rule buried underneath it.
+    const prompt = flat(base);
+    expect(prompt).toContain("override every reason to say yes");
+    expect(prompt.indexOf("STEP 1")).toBeLessThan(prompt.indexOf("STEP 2"));
+    expect(prompt.indexOf("Only displayed text")).toBeLessThan(
+      prompt.indexOf("worth recording, name the ONE")
+    );
+  });
+
+  it("tells the model to enable a flag or setting the change hides behind", () => {
+    // Otherwise the recording shows the old behavior and proves nothing.
+    expect(buildDecisionPrompt(base)).toContain("enable it");
   });
 
   it("includes the PR body and the changed files", () => {

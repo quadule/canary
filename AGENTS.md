@@ -114,6 +114,11 @@ decision. One contract: return an object matching a JSON schema.
   prose, an OpenAI endpoint returns clean JSON, Apple returns a serialized `GeneratedContent`.
 - Tests inject fake providers via `generateJson`'s `providers` argument — the suite must never make
   a real model call.
+- **Providers are not interchangeable across roles.** Narration has no wrong answer, so the
+  on-device Apple provider is a good narrator. The demo decision is a gate, and measured on the
+  borderline cases (a copy-only edit, a 2px margin nudge, 5 samples each) it got 5/10 where the
+  `claude` CLI got 12/12 across the same suite. The resolve order puts Apple last for this reason,
+  and `decideDemoWithAgent` warns when it was the decider. Don't reorder that without re-measuring.
 
 ## Artifact sensitivity
 
