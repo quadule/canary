@@ -4,7 +4,7 @@
 //   node scripts/sync-version.mjs <new-version>
 //
 // Writes <new-version> into the "version" of every workspace package.json
-// (root + apps/* + packages/*, except @usecanary/config which is intentionally
+// (root + apps/* + packages/*, except dailies-config which is intentionally
 // pinned at 0.0.0), plus every plugin-pack manifest when present: the Claude
 // Code manifests under .claude-plugin/ (top-level "version" + each
 // plugins[].version), the Cursor and Codex plugin.json files, and each
@@ -25,8 +25,8 @@ if (!(version && SEMVER.test(version))) {
   process.exit(1);
 }
 
-// @usecanary/config has no meaningful version; leave it at 0.0.0.
-const SKIP = new Set(["@usecanary/config"]);
+// dailies-config has no meaningful version; leave it at 0.0.0.
+const SKIP = new Set(["dailies-config"]);
 
 async function readJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
@@ -98,7 +98,7 @@ try {
 // Cursor + Codex plugin manifests (optional — same pattern as .claude-plugin).
 for (const manifestPath of [
   join(root, ".cursor-plugin", "plugin.json"),
-  join(root, "plugins", "canary", ".codex-plugin", "plugin.json"),
+  join(root, "plugins", "dailies", ".codex-plugin", "plugin.json"),
 ]) {
   try {
     const plugin = await readJson(manifestPath);

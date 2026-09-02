@@ -13,7 +13,7 @@
 - Keep each caption to ONE short sentence — it must fit two lines on screen (~100 characters);
   anything longer is clamped and the overflow is lost. Split a longer thought across captions on
   successive steps. They fade after a few seconds (pass `{ durationMs }` to adjust).
-- Recording for a cinematic edit? Start with `canary session start --cinematic`. The overlay is
+- Recording for a cinematic edit? Start with `dailies session start --cinematic`. The overlay is
   then suppressed (the themed captions burned in by `session end --cinematic` replace it), but the
   text you pass still feeds the narration as your stated intent — so keep writing captions exactly
   as you would otherwise; they're the clearest signal of WHY each step matters.
@@ -21,11 +21,11 @@
   one AI-generated song whose lyrics are written about the steps, captions timed to the singing
   (still record with `session start --cinematic` to suppress overlays). Steer it with
   `--prompt "<genre/vibe>"`; `--no-captions` drops the burned lyric subtitles. Needs the `claude`
-  CLI plus a lyrics-capable music model — a local/remote ACE-Step server (`$CANARY_ACESTEP_URL`) or
+  CLI plus a lyrics-capable music model — a local/remote ACE-Step server (`$DAILIES_ACESTEP_URL`) or
   a Gemini key. Captions are timed to the actual vocals when a transcriber is found on PATH
   (autodetected, English-only: `whisperx` → `mlx_whisper` → whisper.cpp `whisper-cli`; models come
-  from the HuggingFace cache); override with `$CANARY_TRANSCRIBER`, `$CANARY_WHISPER_CLI`,
-  `$CANARY_WHISPER_MODEL`. For the tightest timing, point `$CANARY_TRANSCRIBE_URL` at an
-  OpenAI-compatible server (e.g. a local Whisper-Large-v3-Turbo; `$CANARY_TRANSCRIBE_MODEL` /
-  `$CANARY_TRANSCRIBE_API_KEY`) — it wins over the CLI backends. `$CANARY_SONG_FILE` reuses a generated song. The voice/music env vars ($CANARY_SAY_COMMAND, $CANARY_OMLX_URL, …) are listed in
-  `canary session end --help`.
+  from the HuggingFace cache); override with `$DAILIES_TRANSCRIBER`, `$DAILIES_WHISPER_CLI`,
+  `$DAILIES_WHISPER_MODEL`. For the tightest timing, point `$DAILIES_TRANSCRIBE_URL` at an
+  OpenAI-compatible server (e.g. a local Whisper-Large-v3-Turbo; `$DAILIES_TRANSCRIBE_MODEL` /
+  `$DAILIES_TRANSCRIBE_API_KEY`) — it wins over the CLI backends. `$DAILIES_SONG_FILE` reuses a generated song. The voice/music env vars ($DAILIES_SAY_COMMAND, $DAILIES_OMLX_URL, …) are listed in
+  `dailies session end --help`.

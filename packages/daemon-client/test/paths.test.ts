@@ -2,11 +2,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  canaryDir,
   daemonBundlePath,
   daemonEndpoint,
   daemonPidPath,
   daemonSocketPath,
+  dailiesDir,
   packageJsonPath,
   sandboxClientPath,
   sessionDir,
@@ -19,10 +19,10 @@ import {
 
 describe("paths", () => {
   const home = homedir();
-  const base = join(home, ".canary");
+  const base = join(home, ".dailies");
 
-  it("anchors everything under ~/.canary", () => {
-    expect(canaryDir()).toBe(base);
+  it("anchors everything under ~/.dailies", () => {
+    expect(dailiesDir()).toBe(base);
     expect(daemonSocketPath()).toBe(join(base, "daemon.sock"));
     expect(daemonPidPath()).toBe(join(base, "daemon.pid"));
     expect(daemonBundlePath()).toBe(join(base, "daemon.mjs"));
@@ -34,13 +34,13 @@ describe("paths", () => {
   it("daemonEndpoint picks platform-specific transport", () => {
     const endpoint = daemonEndpoint();
     if (process.platform === "win32") {
-      expect(endpoint.startsWith("\\\\.\\pipe\\canary-daemon-")).toBe(true);
+      expect(endpoint.startsWith("\\\\.\\pipe\\dailies-daemon-")).toBe(true);
     } else {
       expect(endpoint).toBe(daemonSocketPath());
     }
   });
 
-  it("derives the session artifact layout under ~/.canary/sessions/<id>", () => {
+  it("derives the session artifact layout under ~/.dailies/sessions/<id>", () => {
     const sessions = join(base, "sessions");
     expect(sessionsRootDir()).toBe(sessions);
     expect(sessionDir("demo-1")).toBe(join(sessions, "demo-1"));

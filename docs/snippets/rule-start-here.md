@@ -1,6 +1,6 @@
 - STOP — before your FIRST `{{cli}}` command (not just before writing a script), read the
-  **canary-scripting** skill in full: invoke the canary-scripting skill (in this repo you can also
-  open `skills/canary-scripting/SKILL.md`). It holds the script API and the interaction rules the
+  **dailies-scripting** skill in full: invoke the dailies-scripting skill (in this repo you can also
+  open `skills/dailies-scripting/SKILL.md`). It holds the script API and the interaction rules the
   rest of this skill relies on. Don't start a session without it.
 - Follow the workflow's commands as written — don't run `--help` just to explore. Only when you
   need a specific flag and aren't sure of it, check `{{cli}} <command> --help` instead of guessing.
@@ -14,7 +14,7 @@
   BEFORE the navigation commits, so do NOT read `page.url()` or `snapshotForAI()` on the next line
   (you'll get the OLD page; `page.url()` is also client-cached and lags a Turbo nav). Two correct
   options: (1) make the navigating click the LAST action of the step and observe at the start of the
-  next — Canary settles the page at each step boundary, so it's already on the committed destination;
+  next — Dailies settles the page at each step boundary, so it's already on the committed destination;
   or (2) to stay in the same step, `const href = await page.humanClickAndWaitForURL(link)`. To check
   where you landed between steps without a recorded run, `{{cli}} session url <id>` prints the live
   committed URL (read-only, fast).

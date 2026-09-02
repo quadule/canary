@@ -1,0 +1,30 @@
+{
+  "name": "dailies",
+  "version": "0.4.4",
+  "description": "Dailies browser automation + recorded QA sessions: sandbox scripting skills and verify/automate/session/review workflows for Codex.",
+  "author": {
+    "name": "quadule",
+    "url": "https://github.com/quadule"
+  },
+  "homepage": "https://github.com/quadule/dailies",
+  "repository": "https://github.com/quadule/dailies",
+  "license": "MIT",
+  "keywords": ["dailies", "browser-automation", "qa", "codex"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Dailies",
+    "shortDescription": "Automate a browser and record verifiable QA sessions.",
+    "longDescription": "Dailies gives Codex a sandbox scripting reference plus focused workflows to turn a code change into a QA plan, automate a browser one-off, record a capture-enabled QA session (trace/video/HAR/console) with a report, and review recorded sessions.",
+    "developerName": "Dailies",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://github.com/quadule/dailies",
+    "defaultPrompt": [
+      "What should I QA for these changes?",
+      "Automate this browser task.",
+      "Record a QA session for this flow.",
+      "Review my last dailies session."
+    ],
+    "brandColor": "#111827"
+  }
+}

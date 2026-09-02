@@ -1,10 +1,10 @@
 {
-  "name": "@usecanary/cli-kit",
+  "name": "dailies-cli-kit",
   "version": "0.4.4",
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Shared Canary CLI helpers — request ids, duration/result formatting, and the root logger factory (single source of truth).",
+  "description": "Shared Dailies CLI helpers — request ids, duration/result formatting, and the root logger factory (single source of truth).",
   "exports": {
     ".": {
       "source": "./src/index.ts",
@@ -14,14 +14,14 @@
   },
   "scripts": {
     "compile": "tsc --noEmit",
-    "test": "echo \"(no tests for @usecanary/cli-kit)\""
+    "test": "echo \"(no tests for dailies-cli-kit)\""
   },
   "dependencies": {
-    "@usecanary/logger": "workspace:*",
+    "dailies-logger": "workspace:*",
     "pino-pretty": "^13.0.0"
   },
   "devDependencies": {
-    "@usecanary/config": "workspace:*",
+    "dailies-config": "workspace:*",
     "@types/node": "^20.17.10",
     "typescript": "^5.8.0"
   }

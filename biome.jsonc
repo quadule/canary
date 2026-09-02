@@ -19,7 +19,7 @@
   "linter": {
     "rules": {
       "suspicious": {
-        // Enforce structured logging: diagnostics go through @usecanary/logger and
+        // Enforce structured logging: diagnostics go through dailies-logger and
         // user-facing CLI output through process.stdout. (Core leaves this off;
         // tests + scripts/*.mjs are already exempt by the preset.)
         "noConsole": "error"
@@ -41,7 +41,7 @@
       // QuickJS sandbox host: installs a `console` shim for guest scripts,
       // uses async factory signatures for Playwright-dispatcher conformance,
       // and no-op teardown handlers. None of these can use a Node logger.
-      "includes": ["apps/canary-daemon/src/sandbox/**"],
+      "includes": ["apps/dailies-daemon/src/sandbox/**"],
       "linter": {
         "rules": {
           "suspicious": {
@@ -55,7 +55,10 @@
     {
       // commander is CJS; a namespace import (+ cast) is required for its
       // ESM/CJS interop under esbuild.
-      "includes": ["apps/canary-browser/src/cli.ts", "apps/canary/src/cli.ts"],
+      "includes": [
+        "apps/dailies-browser/src/cli.ts",
+        "apps/dailies/src/cli.ts"
+      ],
       "linter": {
         "rules": {
           "performance": { "noNamespaceImport": "off" }
@@ -64,16 +67,16 @@
     },
     {
       // Package public-API barrel + thin re-export shims that re-source shared
-      // helpers from @usecanary/cli-kit so each CLI's existing import paths and
+      // helpers from dailies-cli-kit so each CLI's existing import paths and
       // snapshots stay stable. The rule targets app module graphs, not these.
       "includes": [
         "packages/daemon-client/src/index.ts",
         "packages/cli-kit/src/index.ts",
-        "apps/canary/src/commands/render.ts",
-        "apps/canary/src/util/request-id.ts",
-        "apps/canary-browser/src/commands/render.ts",
-        "apps/canary-browser/src/util/request-id.ts",
-        "apps/canary-browser/src/util/format.ts"
+        "apps/dailies/src/commands/render.ts",
+        "apps/dailies/src/util/request-id.ts",
+        "apps/dailies-browser/src/commands/render.ts",
+        "apps/dailies-browser/src/util/request-id.ts",
+        "apps/dailies-browser/src/util/format.ts"
       ],
       "linter": {
         "rules": {
@@ -84,7 +87,7 @@
     {
       // POSIX open(2)/access(2) flags are combined with bitwise OR/AND.
       "includes": [
-        "apps/canary-daemon/src/temp-files.ts",
+        "apps/dailies-daemon/src/temp-files.ts",
         "packages/daemon-client/src/daemon/npm.ts"
       ],
       "linter": {
@@ -128,10 +131,10 @@
     },
     {
       // Astro viewer app. Its endpoints/server code may log diagnostics to the
-      // terminal that spawned `canary ui` (no shared CLI stdout/stderr contract
+      // terminal that spawned `dailies ui` (no shared CLI stdout/stderr contract
       // like the other apps), and endpoint handlers are conventionally `async`
       // even when a given body doesn't await.
-      "includes": ["apps/canary-ui/**"],
+      "includes": ["apps/dailies-ui/**"],
       "linter": {
         "rules": {
           "suspicious": {
@@ -157,8 +160,8 @@
       // context-memo dependency list. Keep them faithful to upstream rather than
       // hand-editing generated code.
       "includes": [
-        "apps/canary-ui/src/components/ui/sidebar.tsx",
-        "apps/canary-ui/src/hooks/use-mobile.ts"
+        "apps/dailies-ui/src/components/ui/sidebar.tsx",
+        "apps/dailies-ui/src/hooks/use-mobile.ts"
       ],
       "linter": {
         "rules": {

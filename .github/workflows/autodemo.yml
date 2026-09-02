@@ -1,10 +1,10 @@
-# Autodemo — when the `autodemo` label is applied to a PR, a canary-verify agent
+# Autodemo — when the `autodemo` label is applied to a PR, a dailies-verify agent
 # records a browser demo of the change, the workflow finalizes it as a cinematic
 # video, and posts the report + video back to the PR as downloadable artifacts.
 #
 # STATUS: unverified until the first real `autodemo` run — a GitHub Actions
 # workflow can't be smoke-tested locally. The PR-body parsing it relies on IS
-# unit-tested (apps/canary/src/ci/autodemo.test.ts).
+# unit-tested (apps/dailies/src/ci/autodemo.test.ts).
 #
 # REQUIRED REPO SECRETS:
 #   ANTHROPIC_API_KEY  — auth for the Claude Code agent + the `claude -p` narration
@@ -14,7 +14,7 @@
 #                        EITHER macOS `say` OR GEMINI_API_KEY, and CI is Linux, so
 #                        on CI GEMINI_API_KEY is effectively required for narration.
 #
-# PR-BODY CONVENTIONS (see apps/canary/src/ci/autodemo.ts):
+# PR-BODY CONVENTIONS (see apps/dailies/src/ci/autodemo.ts):
 #   autodemo-url: https://staging.example.com/flow   ← REQUIRED target (no URL → no-op)
 #   autodemo-theme: 1970s heist film, as a limerick  ← optional cinematic direction
 #   "plain demo" / "no narration"                    ← opt out of the cinematic cut
@@ -66,7 +66,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
-          CFG=$(pnpm --filter @usecanary/cli exec tsx src/ci/autodemo.ts "${PR_BODY:-}")
+          CFG=$(pnpm --filter dailies-cli exec tsx src/ci/autodemo.ts "${PR_BODY:-}")
           echo "Parsed autodemo config: $CFG"
           TARGET=$(echo "$CFG" | jq -r '.target // empty')
           echo "target=$TARGET" >> "$GITHUB_OUTPUT"
@@ -103,66 +103,66 @@ jobs:
       - run: pnpm build
       - name: Install ffmpeg and a font (title card / credits need drawtext + a font)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
-      # The browser comes from `canary install` below, which pins Chromium to the
-      # embedded daemon's runtime Playwright version (@usecanary/protocol's
+      # The browser comes from `dailies install` below, which pins Chromium to the
+      # embedded daemon's runtime Playwright version (dailies-protocol's
       # DAEMON_RUNTIME_DEPENDENCIES). We deliberately do NOT download it via the
       # daemon package here — that would tie the CI browser to the package's
       # dev-dep rather than the runtime pin. So this step installs only the apt
-      # system libs Chromium links against; `canary install` is the single
+      # system libs Chromium links against; `dailies install` is the single
       # source of the browser, and the ms-playwright cache holds the binary.
       - uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-      # Cache only the daemon's npm deps (~/.canary/node_modules) — NOT
-      # ~/.canary/sessions, which a stale restore could feed to Finalize's
-      # `session list | .[0]` fallback. `canary install` still runs and
+      # Cache only the daemon's npm deps (~/.dailies/node_modules) — NOT
+      # ~/.dailies/sessions, which a stale restore could feed to Finalize's
+      # `session list | .[0]` fallback. `dailies install` still runs and
       # reconciles, so a partial/stale cache is safe; this just skips the
       # npm install on a hit.
       - uses: actions/cache@v4
         with:
-          path: ~/.canary/node_modules
-          key: canary-runtime-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          path: ~/.dailies/node_modules
+          key: dailies-runtime-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
       - name: Install Chromium system dependencies
-        run: pnpm --filter @usecanary/daemon exec playwright install-deps chromium
+        run: pnpm --filter dailies-daemon exec playwright install-deps chromium
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code
-      - name: Put the canary CLIs on PATH
+      - name: Put the dailies CLIs on PATH
         # The root package is private with no `bin`, and nothing depends on
-        # @usecanary/cli, so pnpm never links a `canary` into node_modules/.bin.
+        # dailies-cli, so pnpm never links a `dailies` into node_modules/.bin.
         # Symlink the built CLIs directly. (node resolves the symlink's realpath
         # for import.meta.url, so the bundled daemon assets still resolve.)
         run: |
-          mkdir -p "$HOME/.local/bin" "$HOME/.canary"
-          chmod +x "$GITHUB_WORKSPACE/apps/canary/dist/cli.js" "$GITHUB_WORKSPACE/apps/canary-browser/dist/cli.js"
-          ln -sf "$GITHUB_WORKSPACE/apps/canary/dist/cli.js" "$HOME/.local/bin/canary"
-          ln -sf "$GITHUB_WORKSPACE/apps/canary-browser/dist/cli.js" "$HOME/.local/bin/canary-browser"
+          mkdir -p "$HOME/.local/bin" "$HOME/.dailies"
+          chmod +x "$GITHUB_WORKSPACE/apps/dailies/dist/cli.js" "$GITHUB_WORKSPACE/apps/dailies-browser/dist/cli.js"
+          ln -sf "$GITHUB_WORKSPACE/apps/dailies/dist/cli.js" "$HOME/.local/bin/dailies"
+          ln -sf "$GITHUB_WORKSPACE/apps/dailies-browser/dist/cli.js" "$HOME/.local/bin/dailies-browser"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Verify the canary CLIs are runnable
+      - name: Verify the dailies CLIs are runnable
         # Fail fast and cheaply: if the CLI isn't on PATH the agent would
         # otherwise flail for minutes hitting permission walls (every fallback
-        # `ls`/`cat`/`find` is denied by the `Bash(canary *)` allowlist, and in
+        # `ls`/`cat`/`find` is denied by the `Bash(dailies *)` allowlist, and in
         # headless `-p` mode a denial is returned to the model as a retryable
         # error). This step turns that whole failure class into a ~2s job failure
         # before the agent — and any API spend — starts.
         run: |
-          canary --version
-          canary-browser --help >/dev/null
-      - name: Install the canary daemon runtime
-        # Set up canary's embedded daemon NOW, in a free CI step — not lazily
-        # inside the agent. Last run the agent's first `canary session start`
-        # died with "Embedded daemon dependencies are missing. Run `canary
+          dailies --version
+          dailies-browser --help >/dev/null
+      - name: Install the dailies daemon runtime
+        # Set up dailies's embedded daemon NOW, in a free CI step — not lazily
+        # inside the agent. Last run the agent's first `dailies session start`
+        # died with "Embedded daemon dependencies are missing. Run `dailies
         # install`", then ran the ~150 MB download mid-turn (burning agent
         # wall-clock/tokens). This extracts the daemon bundle, npm-installs its
-        # deps into ~/.canary/node_modules, and downloads the runtime-pinned
+        # deps into ~/.dailies/node_modules, and downloads the runtime-pinned
         # Chromium into ~/.cache/ms-playwright. Both are cached above; the apt
         # libs come from the install-deps step. Idempotent — a cache hit makes it
         # near-free, and it reconciles a stale cached node_modules (the
-        # ~/.canary cache key tracks pnpm-lock, which a protocol-only version
-        # bump doesn't change, so canary install is what actually upgrades it).
-        run: canary install
+        # ~/.dailies cache key tracks pnpm-lock, which a protocol-only version
+        # bump doesn't change, so dailies install is what actually upgrades it).
+        run: dailies install
 
-      - name: Record the demo with the canary-verify agent
+      - name: Record the demo with the dailies-verify agent
         # Hard wall-clock ceiling so a flailing agent can never run unbounded.
         # A normal recording is a few minutes; tune this down once we have a
         # baseline from a green run. This pairs with the --max-budget-usd cap
@@ -199,16 +199,16 @@ jobs:
             "$PR_BODY" \
             "" \
             "Environment: this is a CI runner with NO display. Always pass --headless to" \
-            "'canary session start'. Do NOT attempt xvfb, Xvfb, or DISPLAY= — they are" \
+            "'dailies session start'. Do NOT attempt xvfb, Xvfb, or DISPLAY= — they are" \
             "unavailable here and every such command will be denied. Do NOT pass --no-video;" \
             "the recorded video is required for the cinematic cut." \
             "" \
             "Steps:" \
-            "1. Use the canary:session-agent subagent to record the flow — it already knows" \
-            "   the Canary scripting API. Pass it the headless/no-xvfb constraints above." \
+            "1. Use the dailies:session-agent subagent to record the flow — it already knows" \
+            "   the Dailies scripting API. Pass it the headless/no-xvfb constraints above." \
             "2. Drive the single most important user-facing flow this PR adds or modifies," \
             "   using humanClick/humanFill." \
-            "3. Do NOT run 'canary session end' — leave the session open; CI finalizes it." \
+            "3. Do NOT run 'dailies session end' — leave the session open; CI finalizes it." \
             "4. Print the session id as: SESSION_ID=<id>")
           # The agent records the flow but does NOT end the session — the workflow
           # finalizes it below so the cinematic/theme decision stays in tested code.
@@ -217,13 +217,13 @@ jobs:
             --effort low \
             --max-budget-usd 5 \
             --permission-mode acceptEdits \
-            --allowedTools "Bash(canary *)" \
-            --add-dir "$HOME/.canary" \
+            --allowedTools "Bash(dailies *)" \
+            --add-dir "$HOME/.dailies" \
             --output-format stream-json \
             --verbose \
             --exclude-dynamic-system-prompt-sections \
             --plugin-dir "$GITHUB_WORKSPACE" \
-            --append-system-prompt 'CI run: use the `canary` CLI directly (it is already on PATH) — never `npx @usecanary/cli` or any other npx form. The skill files mention `npx @usecanary/cli` because they target end-users; substitute `canary` for every such reference. This runner has NO display: always pass `--headless` to `canary session start`, and never attempt `xvfb`/`Xvfb`/`DISPLAY=` — those are unavailable and will be denied. Do not pass `--no-video`; the recorded video is required.' \
+            --append-system-prompt 'CI run: use the `dailies` CLI directly (it is already on PATH) — never `npx dailies-cli` or any other npx form. The skill files mention `npx dailies-cli` because they target end-users; substitute `dailies` for every such reference. This runner has NO display: always pass `--headless` to `dailies session start`, and never attempt `xvfb`/`Xvfb`/`DISPLAY=` — those are unavailable and will be denied. Do not pass `--no-video`; the recorded video is required.' \
             2>&1 | tee agent.log | grep -v '"subtype":"thinking_tokens"'
 
       - name: Finalize the cinematic cut
@@ -238,7 +238,7 @@ jobs:
           # Prefer the id the agent printed; fall back to the newest session.
           SID=$(grep -oE 'SESSION_ID=[A-Za-z0-9._-]+' agent.log | tail -1 | cut -d= -f2 || true)
           if [ -z "${SID:-}" ]; then
-            SID=$(canary session list --json | jq -r '.[0].id // .sessions[0].id // empty')
+            SID=$(dailies session list --json | jq -r '.[0].id // .sessions[0].id // empty')
           fi
           if [ -z "${SID:-}" ]; then echo "No recorded session found"; exit 1; fi
           echo "Finalizing session $SID"
@@ -247,7 +247,7 @@ jobs:
             FLAGS+=(--cinematic)
             if [ -n "${PROMPT:-}" ]; then FLAGS+=(--prompt "$PROMPT"); fi
           fi
-          OUT=$(canary session end "$SID" "${FLAGS[@]}" --json)
+          OUT=$(dailies session end "$SID" "${FLAGS[@]}" --json)
           echo "$OUT"
           ARTIFACT_DIR=$(echo "$OUT" | jq -r '.artifactsDir')
           REPORT=$(echo "$OUT" | jq -r '.reportPath')
@@ -261,21 +261,21 @@ jobs:
           # The cinematic cut is the (single) video in the session's video dir.
           VIDEO=$(find "$ARTIFACT_DIR" -name '*.webm' | head -1)
           echo "video=$VIDEO" >> "$GITHUB_OUTPUT"
-          ( cd "$(dirname "$ARTIFACT_DIR")" && zip -r "$GITHUB_WORKSPACE/canary-report.zip" "$(basename "$ARTIFACT_DIR")" >/dev/null )
-          cp "$VIDEO" "$GITHUB_WORKSPACE/canary-demo.webm" || true
+          ( cd "$(dirname "$ARTIFACT_DIR")" && zip -r "$GITHUB_WORKSPACE/dailies-report.zip" "$(basename "$ARTIFACT_DIR")" >/dev/null )
+          cp "$VIDEO" "$GITHUB_WORKSPACE/dailies-demo.webm" || true
 
       - name: Upload the report bundle
         uses: actions/upload-artifact@v4
         with:
-          name: canary-report
-          path: canary-report.zip
+          name: dailies-report
+          path: dailies-report.zip
           if-no-files-found: error
 
       - name: Upload the cinematic video
         uses: actions/upload-artifact@v4
         with:
-          name: canary-demo-video
-          path: canary-demo.webm
+          name: dailies-demo-video
+          path: dailies-demo.webm
           if-no-files-found: warn
 
       - name: Comment the demo on the PR
@@ -284,7 +284,7 @@ jobs:
         run: |
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           gh pr comment "${{ github.event.pull_request.number }}" --body \
-            "🎬 **autodemo** is ready. The cinematic video and the full HTML report are attached to [this run]($RUN_URL#artifacts) — download **canary-demo-video** for the .webm, or **canary-report** for the trace/video/HAR/report bundle. (GitHub has no API to embed video inline; drag the .webm into a comment to play it here.)"
+            "🎬 **autodemo** is ready. The cinematic video and the full HTML report are attached to [this run]($RUN_URL#artifacts) — download **dailies-demo-video** for the .webm, or **dailies-report** for the trace/video/HAR/report bundle. (GitHub has no API to embed video inline; drag the .webm into a comment to play it here.)"
 
       # Fail the job when the QA session's verdict was a failure — but only after
       # the report + video are uploaded and the PR comment is posted above, so the
@@ -292,5 +292,5 @@ jobs:
       - name: Gate the build on the session verdict
         if: always() && steps.finalize.outputs.status == 'failed'
         run: |
-          echo "::error::Canary QA session verdict: FAILED — see the uploaded report."
+          echo "::error::Dailies QA session verdict: FAILED — see the uploaded report."
           exit 1

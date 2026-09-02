@@ -36,5 +36,5 @@ export function currentUserSegment(): string {
 }
 
 export function daemonPipeName(): string {
-  return `canary-daemon-${sanitizePipeSegment(currentUserSegment())}`;
+  return `dailies-daemon-${sanitizePipeSegment(currentUserSegment())}`;
 }

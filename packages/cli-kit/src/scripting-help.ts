@@ -1,11 +1,11 @@
-// Shared scripting-help prose for the `canary` and `canary-browser` CLIs.
+// Shared scripting-help prose for the `dailies` and `dailies-browser` CLIs.
 // The factual content (sandbox rules, script API, workflow rules, shared
 // example bodies) is single-sourced from docs/snippets/ via the generated
 // ./snippets.generated.ts module (`make docs` re-stitches it), so it cannot
 // drift between the CLIs' --help, the agent skills, and the README. This file
 // is the presentation layer: headings, indentation, and the example-bearing
 // guide parameterized only by how each CLI is invoked (a heredoc to
-// `canary-browser` vs `canary run --session … --step …`).
+// `dailies-browser` vs `dailies run --session … --step …`).
 import {
   API_BROWSER,
   API_CONSOLE,
@@ -56,7 +56,7 @@ export function sandboxReference(): string {
 export interface ExampleOptions {
   // Browser-style invocations: attach to a running Chrome (`--connect`).
   connect?: boolean;
-  // Step label for session-style invocations (`canary run … --step <step>`).
+  // Step label for session-style invocations (`dailies run … --step <step>`).
   step?: string;
 }
 
@@ -67,31 +67,31 @@ export type ExampleWrapper = (
   opts?: ExampleOptions
 ) => string;
 
-// canary-browser: heredoc straight to the engine; `--connect` when the example
+// dailies-browser: heredoc straight to the engine; `--connect` when the example
 // targets an already-running Chrome.
 export const browserExample: ExampleWrapper = (scriptBody, opts) =>
   [
-    `canary-browser${opts?.connect === true ? " --connect" : ""} <<'EOF'`,
+    `dailies-browser${opts?.connect === true ? " --connect" : ""} <<'EOF'`,
     scriptBody,
     "EOF",
   ].join("\n");
 
-// canary: every script runs as one named step inside a session.
+// dailies: every script runs as one named step inside a session.
 export const sessionExample: ExampleWrapper = (scriptBody, opts) =>
   [
-    `canary run --session "$id" --step ${opts?.step ?? "<name>"} <<'EOF'`,
+    `dailies run --session "$id" --step ${opts?.step ?? "<name>"} <<'EOF'`,
     scriptBody,
     "EOF",
   ].join("\n");
 
 export interface ScriptingGuideOptions {
-  // Include canary-browser-only material (PowerShell --connect piping, the
+  // Include dailies-browser-only material (PowerShell --connect piping, the
   // "Connecting to a running Chrome instance" section, --browser/--connect/
-  // --headless tips). Must stay out of canary's help. Default false.
+  // --headless tips). Must stay out of dailies's help. Default false.
   browserExtras?: boolean;
   // How examples are invoked for this CLI.
   example: ExampleWrapper;
-  // Section heading: "LLM USAGE GUIDE:" (canary-browser) / "SCRIPTING GUIDE:" (canary).
+  // Section heading: "LLM USAGE GUIDE:" (dailies-browser) / "SCRIPTING GUIDE:" (dailies).
   heading: string;
 }
 
@@ -128,17 +128,17 @@ const POWERSHELL_BLOCK = `  On Windows/PowerShell, use here-strings to pipe mult
     @"
     const page = await browser.getPage("main");
     console.log(await page.title());
-    "@ | canary-browser --connect`;
+    "@ | dailies-browser --connect`;
 
 const CONNECTING_SECTION = `  Connecting to a running Chrome instance:
     Auto-discover Chrome with debugging enabled:
-      canary-browser --connect <<'EOF'
+      dailies-browser --connect <<'EOF'
         const page = await browser.getPage("main");
         console.log(await page.title());
       EOF
 
     Connect to a specific CDP endpoint:
-      canary-browser --connect http://localhost:9222 <<'EOF'
+      dailies-browser --connect http://localhost:9222 <<'EOF'
         const page = await browser.getPage("main");
         console.log(await page.title());
       EOF

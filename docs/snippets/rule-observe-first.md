@@ -21,7 +21,7 @@
   Playwright auto-waits for it, which both confirms the navigation and avoids reading stale content.
   Need the result in the SAME step after a click that navigates? `await
   page.humanClickAndWaitForURL(link)` waits for the URL and load in one call. Otherwise you needn't
-  wait at all: Canary settles the page (load + network-idle + DOM quiescence) at the END of every
+  wait at all: Dailies settles the page (load + network-idle + DOM quiescence) at the END of every
   step, so just end the step and observe at the start of the next — its fresh page is already on the
   committed, quiet destination. Avoid fixed `waitForTimeout`; `waitForLoadState("load")` /
   `"domcontentloaded"` are fine, but `"networkidle"` can hang on apps with long-lived HTTP (SSE,

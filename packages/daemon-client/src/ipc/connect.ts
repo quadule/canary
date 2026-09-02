@@ -1,6 +1,6 @@
 import net from "node:net";
 import { createInterface } from "node:readline";
-import type { Request, Response } from "@usecanary/protocol";
+import type { Request, Response } from "dailies-protocol";
 import { daemonEndpoint } from "../paths.js";
 
 // 5s write timeout on the socket.
@@ -185,4 +185,4 @@ function describe(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export type { BrowserSummary, StatusSummary } from "@usecanary/protocol";
+export type { BrowserSummary, StatusSummary } from "dailies-protocol";

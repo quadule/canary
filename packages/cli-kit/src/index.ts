@@ -5,7 +5,7 @@ import {
   type DestinationStream,
   type Logger,
   type LogLevel,
-} from "@usecanary/logger";
+} from "dailies-logger";
 import pretty from "pino-pretty";
 
 // Shared `--help` prose (sandbox rules, script API, LLM usage guide) composed
@@ -94,15 +94,17 @@ export function renderJsonResult(
   stdout.write(`${JSON.stringify(data, null, 2)}\n`);
 }
 
-// `--json` (or CANARY_LOG_JSON=1) forces machine-readable JSON on stderr,
+// `--json` (or DAILIES_LOG_JSON=1) forces machine-readable JSON on stderr,
 // overriding the interactive pretty default. Peeked from argv because the root
 // logger is constructed before the CLI framework parses options.
 function wantsJsonLogs(): boolean {
-  return process.argv.includes("--json") || process.env.CANARY_LOG_JSON === "1";
+  return (
+    process.argv.includes("--json") || process.env.DAILIES_LOG_JSON === "1"
+  );
 }
 
 function resolveCliLevel(): LogLevel | undefined {
-  if (process.env.CANARY_LOG_LEVEL) {
+  if (process.env.DAILIES_LOG_LEVEL) {
     return; // defer to createLogger's env handling
   }
   if (process.argv.includes("--verbose") || process.argv.includes("-v")) {
@@ -127,9 +129,9 @@ function buildStream(): DestinationStream | undefined {
   return;
 }
 
-// Root CLI logger shared by the canary CLIs. Diagnostics go to stderr so stdout
+// Root CLI logger shared by the dailies CLIs. Diagnostics go to stderr so stdout
 // stays clean for machine-readable output. Quiet by default (warn);
-// `--verbose`/`-v` or CANARY_LOG_LEVEL raises it, `--json` forces structured
+// `--verbose`/`-v` or DAILIES_LOG_LEVEL raises it, `--json` forces structured
 // output. `sync: true` flushes records before the CLI calls process.exit().
 export function createRootLogger(name: string): Logger {
   return createLogger({

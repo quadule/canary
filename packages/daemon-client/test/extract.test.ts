@@ -37,18 +37,18 @@ afterEach(async () => {
 });
 
 describe("ensureDaemonExtracted", () => {
-  it("writes daemon.mjs, sandbox-client.js, and package.json under ~/.canary", async () => {
+  it("writes daemon.mjs, sandbox-client.js, and package.json under ~/.dailies", async () => {
     const daemonPath = await ensureDaemonExtracted();
-    expect(daemonPath).toBe(join(tempHome, ".canary", "daemon.mjs"));
+    expect(daemonPath).toBe(join(tempHome, ".dailies", "daemon.mjs"));
     for (const name of ["daemon.mjs", "sandbox-client.js", "package.json"]) {
-      const info = await stat(join(tempHome, ".canary", name));
+      const info = await stat(join(tempHome, ".dailies", name));
       expect(info.isFile()).toBe(true);
     }
   });
 
   it("skips rewrite when content matches", async () => {
     await ensureDaemonExtracted();
-    const bundlePath = join(tempHome, ".canary", "daemon.mjs");
+    const bundlePath = join(tempHome, ".dailies", "daemon.mjs");
 
     const past = new Date(Date.now() - 10_000);
     await utimes(bundlePath, past, past);
@@ -60,7 +60,7 @@ describe("ensureDaemonExtracted", () => {
   });
 
   it("rewrites when content is stale", async () => {
-    const dir = join(tempHome, ".canary");
+    const dir = join(tempHome, ".dailies");
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "daemon.mjs"), "STALE");
     await ensureDaemonExtracted();

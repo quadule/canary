@@ -25,7 +25,7 @@ jobs:
       - name: Lint and format check (ultracite/biome)
         run: pnpm lint
 
-      - name: Install Playwright browsers (for daemon + canary tests)
-        run: pnpm --filter @usecanary/daemon exec playwright install --with-deps chromium
+      - name: Install Playwright browsers (for daemon + dailies tests)
+        run: pnpm --filter dailies-daemon exec playwright install --with-deps chromium
 
       - run: pnpm check

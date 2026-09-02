@@ -1,4 +1,4 @@
-# canary — developer task runner
+# dailies — developer task runner
 #
 # Thin, self-documenting wrapper over pnpm + turbo. Run `make` (or `make help`)
 # for the menu. Workspace-scoped targets go through `turbo --filter` so the
@@ -16,10 +16,10 @@ EXEC  := pnpm exec
 TURBO := $(EXEC) turbo
 
 # Workspace filter aliases.
-BROWSER := @usecanary/browser
-DAEMON  := @usecanary/daemon
-UI      := @usecanary/ui
-CLI     := @usecanary/cli
+BROWSER := dailies-browser
+DAEMON  := dailies-daemon
+UI      := dailies-ui
+CLI     := dailies-cli
 
 .PHONY: help install hooks outdated clean reset \
         dev dev-browser dev-daemon dev-ui dev-cli \
@@ -57,7 +57,7 @@ reset: clean ## clean + remove all node_modules (full re-install needed after)
 dev: ## Run every workspace's dev script (turbo, parallel + persistent)
 	pnpm dev
 
-dev-browser: ## Run the canary-browser CLI from source (tsx)
+dev-browser: ## Run the dailies-browser CLI from source (tsx)
 	$(TURBO) run dev --filter=$(BROWSER)
 
 dev-daemon: ## Run the daemon from source (tsx)
@@ -66,7 +66,7 @@ dev-daemon: ## Run the daemon from source (tsx)
 dev-ui: ## Run the session viewer in dev mode (astro dev)
 	$(TURBO) run dev --filter=$(UI)
 
-dev-cli: ## Run the canary session orchestrator from source (tsx)
+dev-cli: ## Run the dailies session orchestrator from source (tsx)
 	$(TURBO) run dev --filter=$(CLI)
 
 ##@ Build
@@ -74,7 +74,7 @@ dev-cli: ## Run the canary session orchestrator from source (tsx)
 build: ## Build all workspaces in topological order
 	pnpm build
 
-build-browser: ## Build canary-browser (builds + embeds the daemon first)
+build-browser: ## Build dailies-browser (builds + embeds the daemon first)
 	$(TURBO) run build --filter=$(BROWSER)
 
 build-daemon: ## Build the daemon bundle + sandbox client
@@ -83,7 +83,7 @@ build-daemon: ## Build the daemon bundle + sandbox client
 build-ui: ## Build the session viewer (astro build, self-contained node standalone)
 	$(TURBO) run build --filter=$(UI)
 
-build-cli: ## Build the canary session orchestrator
+build-cli: ## Build the dailies session orchestrator
 	$(TURBO) run build --filter=$(CLI)
 
 ##@ Quality
@@ -111,7 +111,7 @@ docs-check: ## Verify stitched docs are in sync with docs/snippets/ (CI)
 test: ## Run all tests
 	pnpm test
 
-test-browser: ## Test canary-browser
+test-browser: ## Test dailies-browser
 	$(TURBO) run test --filter=$(BROWSER)
 
 test-daemon: ## Test the daemon
@@ -120,10 +120,10 @@ test-daemon: ## Test the daemon
 test-ui: ## Test the session viewer
 	$(TURBO) run test --filter=$(UI)
 
-test-cli: ## Test the canary session orchestrator
+test-cli: ## Test the dailies session orchestrator
 	$(TURBO) run test --filter=$(CLI)
 
-watch-browser: build-daemon ## Watch-test canary-browser (needs daemon built)
+watch-browser: build-daemon ## Watch-test dailies-browser (needs daemon built)
 	pnpm --filter $(BROWSER) test:watch
 
 watch-daemon: ## Watch-test the daemon
@@ -132,7 +132,7 @@ watch-daemon: ## Watch-test the daemon
 watch-ui: ## Watch-test the session viewer
 	pnpm --filter $(UI) test:watch
 
-watch-cli: ## Watch-test the canary session orchestrator
+watch-cli: ## Watch-test the dailies session orchestrator
 	pnpm --filter $(CLI) test:watch
 
 ##@ CI
@@ -153,25 +153,25 @@ ui: build-ui ## Build and serve the local session viewer
 
 install-local: build link plugin-dev ## Build + global npm links + Claude Code plugin from this checkout
 
-link: ## Globally symlink the CLIs so `npx @usecanary/cli` / `canary` run this checkout
-	npm install -g ./apps/canary ./apps/canary-browser ./apps/canary-ui
+link: ## Globally symlink the CLIs so `npx dailies-cli` / `dailies` run this checkout
+	npm install -g ./apps/dailies ./apps/dailies-browser ./apps/dailies-ui
 	@echo "Linked. New builds (make build) are picked up automatically;"
-	@echo "restart the daemon to load them: canary stop"
+	@echo "restart the daemon to load them: dailies stop"
 
 unlink: ## Remove the global npm links (next npx falls back to the registry)
-	npm uninstall -g @usecanary/cli @usecanary/browser @usecanary/ui
+	npm uninstall -g dailies-cli dailies-browser dailies-ui
 
-plugin-dev: ## Point the Claude Code canary plugin at this checkout (replaces the installed copy)
-	-claude plugin marketplace remove canary-marketplace 2>/dev/null
+plugin-dev: ## Point the Claude Code dailies plugin at this checkout (replaces the installed copy)
+	-claude plugin marketplace remove dailies-marketplace 2>/dev/null
 	claude plugin marketplace add "$(CURDIR)"
-	claude plugin install canary@canary-marketplace --scope user
+	claude plugin install dailies@dailies-marketplace --scope user
 	@echo "Installed. The plugin cache is a SNAPSHOT - run 'make plugin-update' after skill edits."
 
 # `claude plugin update` compares versions and the dev version rarely changes,
 # so refresh by reinstalling — that always re-copies the checkout.
 plugin-update: ## Re-copy this checkout's skills into the installed Claude Code plugin
-	-claude plugin uninstall canary@canary-marketplace 2>/dev/null
-	claude plugin install canary@canary-marketplace --scope user
+	-claude plugin uninstall dailies@dailies-marketplace 2>/dev/null
+	claude plugin install dailies@dailies-marketplace --scope user
 	@echo "Updated. Restart Claude Code sessions to load the new skill content."
 
 ##@ Release

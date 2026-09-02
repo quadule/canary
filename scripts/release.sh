@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Guided release cutter for canary.
+# Guided release cutter for dailies.
 #
 # Bumps every workspace package.json (+ the Claude plugin manifests) in lockstep
 # via scripts/sync-version.mjs, refreshes the lockfile, validates the build and

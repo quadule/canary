@@ -22,11 +22,11 @@ export interface CreateLoggerOptions {
    * provided. Defaults to fd 2 (stderr) so stdout stays clean for program output.
    */
   destination?: string | number;
-  /** Level used when neither `level` nor `CANARY_LOG_LEVEL` is set. Default: "info". */
+  /** Level used when neither `level` nor `DAILIES_LOG_LEVEL` is set. Default: "info". */
   fallbackLevel?: LogLevel;
-  /** Explicit level. Overrides the `CANARY_LOG_LEVEL` environment variable. */
+  /** Explicit level. Overrides the `DAILIES_LOG_LEVEL` environment variable. */
   level?: LogLevel;
-  /** Base `name` binding attached to every record (e.g. "daemon", "canary"). */
+  /** Base `name` binding attached to every record (e.g. "daemon", "dailies"). */
   name?: string;
   /** pino redaction paths, e.g. `["req.headers.authorization"]`. */
   redact?: string[];
@@ -41,12 +41,12 @@ export interface CreateLoggerOptions {
   sync?: boolean;
 }
 
-/** Resolve the effective log level from options then `CANARY_LOG_LEVEL` then fallback. */
+/** Resolve the effective log level from options then `DAILIES_LOG_LEVEL` then fallback. */
 export function resolveLevel(opts: CreateLoggerOptions = {}): LogLevel {
   if (opts.level) {
     return opts.level;
   }
-  const fromEnv = process.env.CANARY_LOG_LEVEL?.trim().toLowerCase();
+  const fromEnv = process.env.DAILIES_LOG_LEVEL?.trim().toLowerCase();
   if (fromEnv && VALID_LEVELS.has(fromEnv)) {
     return fromEnv as LogLevel;
   }

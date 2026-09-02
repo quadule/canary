@@ -1,10 +1,10 @@
 ---
-description: Automate a one-off browser task with Canary — navigate, click, scrape, screenshot — and return the result.
+description: Automate a one-off browser task with Dailies — navigate, click, scrape, screenshot — and return the result.
 argument-hint: "<what to automate>"
 ---
 
 Delegate to the `automate-agent` subagent. Give it the task: **$ARGUMENTS**.
 
-Ask it to write a Canary script (using the `canary-scripting` API), run it with
-`npx @usecanary/browser run`, and report the result. For a *recorded* run with a report instead of a
-one-off, use `/canary:session`.
+Ask it to write a Dailies script (using the `dailies-scripting` API), run it with
+`npx dailies-browser run`, and report the result. For a *recorded* run with a report instead of a
+one-off, use `/dailies:session`.

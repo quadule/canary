@@ -1,13 +1,13 @@
 {
-  "name": "canary",
-  "description": "Canary browser automation + recorded QA sessions: a sandbox scripting reference, verify/automate/session/review skills, JTBD subagents, and /canary slash commands.",
+  "name": "dailies",
+  "description": "Dailies browser automation + recorded QA sessions: a sandbox scripting reference, verify/automate/session/review skills, JTBD subagents, and /dailies slash commands.",
   "version": "0.4.4",
   "author": {
-    "name": "wizenheimer",
-    "url": "https://github.com/wizenheimer"
+    "name": "quadule",
+    "url": "https://github.com/quadule"
   },
-  "homepage": "https://github.com/wizenheimer/canary",
-  "repository": "https://github.com/wizenheimer/canary",
+  "homepage": "https://github.com/quadule/dailies",
+  "repository": "https://github.com/quadule/dailies",
   "license": "MIT",
-  "keywords": ["canary", "browser-automation", "qa", "playwright", "testing"]
+  "keywords": ["dailies", "browser-automation", "qa", "playwright", "testing"]
 }

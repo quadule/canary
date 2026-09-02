@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Changed
+
+- **Renamed: Canary is now Dailies.** The project forked from
+  [Canary](https://github.com/wizenheimer/canary) as a QA harness, but its center of gravity moved
+  to turning a recorded browser run into something you can *watch* — narration, an original score,
+  captions, a title card and credits. In film production, dailies are the footage the crew reviews
+  to confirm what was shot actually works, which is this tool's job.
+
+  What changed for you:
+
+  - The CLIs are `dailies`, `dailies-browser` and `dailies-viewer`.
+  - Packages publish unscoped: `dailies-cli`, `dailies-browser`, `dailies-ui`, `create-dailies`
+    (the `@usecanary` scope is gone).
+  - Skills, subagents and slash commands are `dailies-*` and `/dailies:*`.
+  - Environment variables are `DAILIES_*`.
+  - State lives in `~/.dailies`, and the viewer's per-root organization sidecar is
+    `.dailies-ui.json`.
+
+  This is a **breaking rename with no compatibility path**: old package names, binaries, env vars
+  and paths are simply gone. Carry an existing install over with `mv ~/.canary ~/.dailies`.
+
+  Historical entries below predate the rename and are left as they were written.
+
 ### Added
 
 - **HAR credential scrubbing, on by default.** A session is driven against a logged-in app, so

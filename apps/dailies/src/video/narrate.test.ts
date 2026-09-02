@@ -1,0 +1,1037 @@
+import { existsSync, readFileSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { parseFilterNames } from "./ffmpeg.js";
+import {
+  buildAudioMix,
+  buildModelCredits,
+  groupedLyricSteps,
+  groupStepsForLyrics,
+  layoutSongCues,
+  lyricsPathFor,
+  planRetime,
+  precinematicVideoPath,
+  songHoldSec,
+  songTargetSec,
+  stepFootageSec,
+  titleStyle,
+  voiceCredit,
+  wrapTitle,
+} from "./narrate.js";
+import {
+  buildLyricsPrompt,
+  buildNarrationPrompt,
+  changeScaleHint,
+  extractCaptions,
+  normalizeTitle,
+  parseLyricsJson,
+  parseNarrationJson,
+} from "./script-llm.js";
+import {
+  customSaySynth,
+  parseInstalledVoices,
+  pickVoice,
+  sayCommand,
+  speechText,
+} from "./speech.js";
+import {
+  buildSrt,
+  captionLineMax,
+  secToSrtTimestamp,
+  wrapCaption,
+} from "./srt.js";
+
+describe("secToSrtTimestamp", () => {
+  it("formats zero as 00:00:00,000", () => {
+    expect(secToSrtTimestamp(0)).toBe("00:00:00,000");
+  });
+
+  it("formats sub-second values with zero-padded milliseconds", () => {
+    expect(secToSrtTimestamp(2.5)).toBe("00:00:02,500");
+    expect(secToSrtTimestamp(0.07)).toBe("00:00:00,070");
+    expect(secToSrtTimestamp(0.004)).toBe("00:00:00,004");
+  });
+
+  it("rolls minutes and seconds over correctly", () => {
+    expect(secToSrtTimestamp(61.2)).toBe("00:01:01,200");
+    expect(secToSrtTimestamp(125)).toBe("00:02:05,000");
+  });
+
+  it("handles values past one hour", () => {
+    expect(secToSrtTimestamp(3661.123)).toBe("01:01:01,123");
+  });
+
+  it("clamps negatives to zero", () => {
+    expect(secToSrtTimestamp(-5)).toBe("00:00:00,000");
+  });
+});
+
+describe("buildSrt", () => {
+  it("numbers cues from 1 and emits start/end/text blocks", () => {
+    const srt = buildSrt([
+      { start: 2.5, end: 6.2, text: "Our operative approaches." },
+      { start: 6.2, end: 9, text: "The credentials are entered." },
+    ]);
+    expect(srt).toBe(
+      "1\n00:00:02,500 --> 00:00:06,200\nOur operative approaches.\n\n" +
+        "2\n00:00:06,200 --> 00:00:09,000\nThe credentials are entered.\n"
+    );
+  });
+
+  it("returns an empty string for no cues", () => {
+    expect(buildSrt([])).toBe("");
+  });
+});
+
+describe("buildAudioMix", () => {
+  it("returns an empty string for zero tracks", () => {
+    expect(buildAudioMix([])).toBe("");
+  });
+
+  it("wires a single full-volume track at index 1 into amix", () => {
+    expect(buildAudioMix([{ delayMs: 2500 }])).toBe(
+      "[1:a]adelay=2500|2500[a0];[a0]amix=inputs=1:normalize=0:dropout_transition=0[aout]"
+    );
+  });
+
+  it("delays narration tracks and scales a music bed's volume", () => {
+    expect(
+      buildAudioMix([
+        { delayMs: 0 },
+        { delayMs: 3500 },
+        { delayMs: 0, volume: 0.16 },
+      ])
+    ).toBe(
+      "[1:a]adelay=0|0[a0];" +
+        "[2:a]adelay=3500|3500[a1];" +
+        "[3:a]adelay=0|0,volume=0.160[a2];" +
+        "[a0][a1][a2]amix=inputs=3:normalize=0:dropout_transition=0[aout]"
+    );
+  });
+
+  it("cross-fades the single score track from quiet bed to credits swell", () => {
+    expect(
+      buildAudioMix([
+        {
+          delayMs: 0,
+          volume: 0.16,
+          fadeOutAtSec: 18.5,
+          fadeOutDurSec: 1.5,
+        },
+        {
+          delayMs: 20_000,
+          volume: 0.6,
+          fadeInAtSec: 20,
+          fadeInDurSec: 1.5,
+        },
+      ])
+    ).toBe(
+      "[1:a]adelay=0|0,volume=0.160,afade=t=out:st=18.500:d=1.500[a0];" +
+        "[2:a]adelay=20000|20000,volume=0.600,afade=t=in:st=20.000:d=1.500[a1];" +
+        "[a0][a1]amix=inputs=2:normalize=0:dropout_transition=0[aout]"
+    );
+  });
+});
+
+describe("parseNarrationJson", () => {
+  const valid =
+    '{"title":"THE CAPER","steps":[{"index":0,"narration":"He approaches."}]}';
+
+  it("parses clean JSON", () => {
+    expect(parseNarrationJson(valid)).toEqual({
+      title: "THE CAPER",
+      steps: [{ index: 0, narration: "He approaches." }],
+    });
+  });
+
+  const fence = "```";
+
+  it("strips ```json fences before parsing", () => {
+    expect(parseNarrationJson(`${fence}json\n${valid}\n${fence}`)).toEqual({
+      title: "THE CAPER",
+      steps: [{ index: 0, narration: "He approaches." }],
+    });
+  });
+
+  it("strips bare ``` fences", () => {
+    expect(parseNarrationJson(`${fence}\n${valid}\n${fence}`)).not.toBeNull();
+  });
+
+  it("recovers JSON from a chatty preamble (first { to last })", () => {
+    expect(
+      parseNarrationJson(
+        `Sure! Here is the narration:\n${valid}\nHope it helps!`
+      )
+    ).toEqual({
+      title: "THE CAPER",
+      steps: [{ index: 0, narration: "He approaches." }],
+    });
+  });
+
+  it("strips libass override tags from narration", () => {
+    const parsed = parseNarrationJson(
+      '{"title":"X","steps":[{"index":0,"narration":"{\\\\pos(9,9)}sneaky {\\\\fs99}text"}]}'
+    );
+    expect(parsed?.steps[0]?.narration).toBe("sneaky text");
+  });
+
+  it("returns null on garbage", () => {
+    expect(parseNarrationJson("not json at all")).toBeNull();
+    expect(parseNarrationJson("")).toBeNull();
+  });
+
+  it("returns null when the shape is wrong", () => {
+    expect(parseNarrationJson('{"title":"x"}')).toBeNull();
+    expect(parseNarrationJson('{"steps":[]}')).toBeNull();
+    expect(parseNarrationJson('{"title":42,"steps":[]}')).toBeNull();
+    expect(
+      parseNarrationJson(
+        '{"title":"x","steps":[{"index":"0","narration":"y"}]}'
+      )
+    ).toBeNull();
+    expect(
+      parseNarrationJson('{"title":"x","steps":[{"index":0}]}')
+    ).toBeNull();
+    expect(parseNarrationJson("[]")).toBeNull();
+    expect(parseNarrationJson("null")).toBeNull();
+  });
+
+  it("recovers valid JSON despite a preamble or trailing prose (incl. braces)", () => {
+    const body = '{"title":"T","steps":[{"index":0,"narration":"clean line"}]}';
+    const expected = {
+      title: "T",
+      steps: [{ index: 0, narration: "clean line" }],
+    };
+    expect(parseNarrationJson(`Sure! Here is the narration:\n${body}`)).toEqual(
+      expected
+    );
+    // Trailing prose that itself contains a brace must not drag the parse past
+    // the real closing brace (the old firstOpen..lastClose slice would break).
+    expect(parseNarrationJson(`${body}\n\nNote: adjust {as needed}.`)).toEqual(
+      expected
+    );
+  });
+
+  it("returns null on a truncated (unbalanced) reply", () => {
+    expect(
+      parseNarrationJson(
+        '{"title":"T","steps":[{"index":0,"narration":"cut off'
+      )
+    ).toBeNull();
+  });
+});
+
+describe("buildNarrationPrompt", () => {
+  const steps = [
+    { index: 0, name: "Open the login page", script: "page.open('/login')" },
+    { index: 1, name: "Fill the password field" },
+  ];
+
+  it("embeds the creative direction and every step name", () => {
+    const prompt = buildNarrationPrompt({
+      direction: "1970s heist thriller, narrated as a limerick",
+      steps,
+    });
+    expect(prompt).toContain(
+      "Creative direction: 1970s heist thriller, narrated as a limerick"
+    );
+    expect(prompt).toContain("Open the login page");
+    expect(prompt).toContain("Fill the password field");
+  });
+
+  it("demands strict JSON output", () => {
+    const prompt = buildNarrationPrompt({
+      direction: "nature documentary",
+      steps,
+    });
+    expect(prompt).toContain("STRICT JSON");
+    expect(prompt).toContain('"title"');
+  });
+
+  it("includes a step's script slice when present", () => {
+    const prompt = buildNarrationPrompt({
+      direction: "noir",
+      steps,
+    });
+    expect(prompt).toContain("page.open('/login')");
+  });
+
+  it("surfaces showCaption text as an intent note, even past the slice", () => {
+    // The caption sits far beyond SCRIPT_SLICE_CHARS (200) so the script slice
+    // alone would drop it — extractCaptions reads the full script.
+    const pad = "// filler ".repeat(40);
+    const prompt = buildNarrationPrompt({
+      direction: "noir",
+      steps: [
+        {
+          index: 0,
+          name: "Submit the form",
+          script: `${pad}\nawait page.showCaption("Verifying the discount applies");`,
+        },
+      ],
+    });
+    expect(prompt).toContain('intent: "Verifying the discount applies"');
+  });
+
+  it("embeds the change scale as a SECONDARY cue when provided", () => {
+    const withChange = buildNarrationPrompt({
+      direction: "noir",
+      change: {
+        label: "45 commits, 71 files, +7386/-402",
+        scaleHint: "large — go expansive",
+      },
+      steps,
+    });
+    expect(withChange).toContain("change under review is 45 commits");
+    expect(withChange).toContain("SECONDARY");
+    expect(withChange).toContain("go expansive");
+    const without = buildNarrationPrompt({ direction: "noir", steps });
+    expect(without).not.toContain("change under review");
+  });
+});
+
+describe("precinematicVideoPath", () => {
+  it("inserts .precinematic before the extension", () => {
+    expect(precinematicVideoPath("/s/abc/video.webm")).toBe(
+      "/s/abc/video.precinematic.webm"
+    );
+    expect(precinematicVideoPath("/s/abc/clip.mp4")).toBe(
+      "/s/abc/clip.precinematic.mp4"
+    );
+  });
+});
+
+describe("songTargetSec", () => {
+  it("scales with LYRIC-LINE count, clamped to [90s, 165s]", () => {
+    expect(songTargetSec(0)).toBe(90);
+    expect(songTargetSec(8)).toBe(90); // 2.5 + 72 + 12 = 86.5 → floored
+    expect(songTargetSec(11)).toBe(114); // 2.5 + 99 + 12 = 113.5 → 114
+    expect(songTargetSec(16)).toBe(159); // 2.5 + 144 + 12 = 158.5 → 159
+    expect(songTargetSec(30)).toBe(165); // 2.5 + 270 + 12 = 284.5 → capped
+  });
+});
+
+describe("stepFootageSec", () => {
+  it("uses gaps between step positions, and the last step's own duration", () => {
+    expect(
+      stepFootageSec([
+        { videoTime: 0, durationMs: 9999 },
+        { videoTime: 2, durationMs: 9999 },
+        { videoTime: 7, durationMs: 3000 }, // last: falls back to durationMs
+      ])
+    ).toEqual([2, 5, 3]);
+  });
+});
+
+describe("groupStepsForLyrics", () => {
+  it("groups consecutive steps until each group reaches the minimum span", () => {
+    // 2+2+2 -> [0,1,2] hits 6>=5.5; 2+2 -> [3,4] is 4<5.5 so folds trailing in
+    expect(groupStepsForLyrics([2, 2, 2, 2, 2], 5.5)).toEqual([
+      [0, 1, 2],
+      [3, 4],
+    ]);
+  });
+  it("keeps a long step as its own group and folds a short tail into the last", () => {
+    expect(groupStepsForLyrics([6, 1, 1], 5.5)).toEqual([[0], [1, 2]]);
+  });
+  it("returns a single group when nothing reaches the threshold", () => {
+    expect(groupStepsForLyrics([1, 1, 2], 5.5)).toEqual([[0, 1, 2]]);
+  });
+  it("handles an empty list", () => {
+    expect(groupStepsForLyrics([], 5.5)).toEqual([]);
+  });
+});
+
+describe("groupedLyricSteps", () => {
+  it("joins each group's names and scripts into one indexed entry", () => {
+    const steps = [
+      { name: "open", script: "goto('/')" },
+      { name: "search", script: "fill('q')" },
+      { name: "buy", script: "click('pay')" },
+    ];
+    expect(groupedLyricSteps(steps, [[0, 1], [2]])).toEqual([
+      { index: 0, name: "open → search", script: "goto('/')\nfill('q')" },
+      { index: 1, name: "buy", script: "click('pay')" },
+    ]);
+  });
+});
+
+describe("normalizeTitle", () => {
+  it("turns a literal backslash-n into a real newline (for two-line titles)", () => {
+    expect(normalizeTitle("SHE FORGOT\\nEVERYTHING")).toBe(
+      "SHE FORGOT\nEVERYTHING"
+    );
+    // wrapTitle then splits it into two lines.
+    expect(wrapTitle(normalizeTitle("A\\nB"), 40)).toEqual(["A", "B"]);
+  });
+  it("leaves a real newline and plain title untouched (trimmed)", () => {
+    expect(normalizeTitle("THE\nCAPER")).toBe("THE\nCAPER");
+    expect(normalizeTitle("  PLAIN TITLE  ")).toBe("PLAIN TITLE");
+  });
+});
+
+describe("speechText", () => {
+  it("turns verse slash/pipe separators into spoken pauses", () => {
+    expect(speechText("roses are red / violets are blue")).toBe(
+      "roses are red, violets are blue"
+    );
+    expect(speechText("dawn|dusk|night")).toBe("dawn, dusk, night");
+    expect(speechText("a // b")).toBe("a, b");
+  });
+  it("does not leave doubled commas or stray spaces", () => {
+    expect(speechText("one , / two")).toBe("one, two");
+    expect(speechText("  keep   it  tidy  ")).toBe("keep it tidy");
+  });
+  it("leaves ordinary prose untouched", () => {
+    expect(speechText("The quick brown fox jumps.")).toBe(
+      "The quick brown fox jumps."
+    );
+  });
+});
+
+describe("songHoldSec", () => {
+  it("floors short lines and scales with word count", () => {
+    expect(songHoldSec("two words")).toBe(3.5); // floor
+    expect(songHoldSec("")).toBe(3.5);
+    // 10 words → 10/2.5 + 1 = 5s
+    expect(
+      songHoldSec("one two three four five six seven eight nine ten")
+    ).toBe(5);
+  });
+  it("caps very long lines", () => {
+    expect(songHoldSec(Array.from({ length: 40 }, () => "x").join(" "))).toBe(
+      6.5
+    );
+  });
+});
+
+describe("layoutSongCues", () => {
+  it("leaves well-spread lines at their natural times", () => {
+    const cues = layoutSongCues(
+      [
+        { start: 2, text: "a" },
+        { start: 6, text: "b" },
+        { start: 10, text: "c" },
+      ],
+      30
+    );
+    expect(cues.map((c) => c.start)).toEqual([2, 6, 10]);
+    // Non-last hold to the next start; last gets the tail (3s default).
+    expect(cues[0]?.end).toBe(6);
+    expect(cues[2]?.end).toBe(13);
+  });
+
+  it("pushes bunched lines apart so they never overlap", () => {
+    const cues = layoutSongCues(
+      [
+        { start: 2, text: "a" },
+        { start: 9, text: "b" },
+        { start: 9.1, text: "c" },
+        { start: 9.2, text: "d" },
+      ],
+      40,
+      { minDurSec: 1.4 }
+    );
+    // Each cue starts at or after the previous end — no overlap.
+    for (let i = 1; i < cues.length; i++) {
+      expect(cues[i]?.start).toBeGreaterThanOrEqual(cues[i - 1]?.end ?? 0);
+    }
+    // The bunched trio is spaced by the minimum display duration.
+    expect(cues[2]?.start).toBeCloseTo(10.4, 5);
+    expect(cues[3]?.start).toBeCloseTo(11.8, 5);
+  });
+
+  it("clamps to the video end and drops lines with no room left", () => {
+    const cues = layoutSongCues(
+      [
+        { start: 1, text: "a" },
+        { start: 1.1, text: "b" },
+        { start: 1.2, text: "c" },
+      ],
+      3,
+      { minDurSec: 1.4, tailSec: 3 }
+    );
+    expect(cues.every((c) => c.end <= 3)).toBe(true);
+    // Only the lines that fit before the 3s end survive.
+    expect(cues.length).toBeLessThan(3);
+  });
+});
+
+describe("lyricsPathFor", () => {
+  it("swaps the video extension for .lyrics.txt", () => {
+    expect(lyricsPathFor("/s/abc/video.webm")).toBe("/s/abc/video.lyrics.txt");
+    expect(lyricsPathFor("/s/abc/clip.mp4")).toBe("/s/abc/clip.lyrics.txt");
+  });
+});
+
+describe("sayCommand", () => {
+  it("defaults to `say` and honors $DAILIES_SAY_COMMAND", () => {
+    expect(sayCommand({})).toBe("say");
+    expect(sayCommand({ DAILIES_SAY_COMMAND: "/usr/local/bin/mysay" })).toBe(
+      "/usr/local/bin/mysay"
+    );
+    expect(sayCommand({ DAILIES_SAY_COMMAND: "  " })).toBe("say");
+  });
+});
+
+describe("customSaySynth", () => {
+  it("passes the text as the only arg and writes to $DAILIES_SAY_OUTPUT", async () => {
+    // A stand-in TTS command: it carries its own arg, reads the text from "$1",
+    // and writes to the env-provided output path — exactly the custom contract.
+    const synth = customSaySynth(
+      'printf "%s" "$1" > "$DAILIES_SAY_OUTPUT" # --some-flag'
+    );
+    const out = path.join(os.tmpdir(), `dailies-customsay-${process.pid}.txt`);
+    try {
+      await synth.run("hello from dailies", out);
+      expect(readFileSync(out, "utf8")).toBe("hello from dailies");
+    } finally {
+      rmSync(out, { force: true });
+    }
+  });
+});
+
+describe("voiceCredit", () => {
+  it("formats the oMLX, Gemini, and say/custom cases", () => {
+    expect(voiceCredit("omlx-tts", "omlx:Qwen3-TTS")).toBe(
+      "Voice — oMLX Qwen3-TTS"
+    );
+    expect(voiceCredit("gemini-tts", "gemini:Charon")).toBe(
+      "Voice — Charon (Google Gemini)"
+    );
+    expect(voiceCredit(undefined, "Ava (Premium)")).toBe(
+      "Voice — Ava (Premium)"
+    );
+    expect(voiceCredit(undefined, "")).toBe("Voice — system speech");
+  });
+});
+
+describe("buildModelCredits", () => {
+  it("always credits narration, then voice, then any music/title art used", () => {
+    expect(
+      buildModelCredits({
+        voiceLabel: "omlx:M",
+        ttsId: "omlx-tts",
+        musicId: "archive-music",
+        titleArtId: "gemini-image",
+      })
+    ).toEqual([
+      "Narration — Claude (Anthropic)",
+      "Voice — oMLX M",
+      "Music — archive.org (Creative Commons)",
+      "Title art — Nano Banana (Google Gemini)",
+    ]);
+  });
+
+  it("does not credit the built-in local gradient as title art", () => {
+    expect(
+      buildModelCredits({
+        voiceLabel: "Samantha",
+        ttsId: undefined,
+        musicId: undefined,
+        titleArtId: "local-gradient",
+      })
+    ).toEqual(["Narration — Claude (Anthropic)", "Voice — Samantha"]);
+  });
+
+  it("drops the generic music line when a dedicated Music credit already names it", () => {
+    // A resolved provider.credit() (the "Music" section) credits the score
+    // richly; the generic "Music — <tool>" line would be a second credit.
+    expect(
+      buildModelCredits({
+        voiceLabel: "omlx:M",
+        ttsId: "omlx-tts",
+        musicId: "acestep-music",
+        titleArtId: undefined,
+        hasMusicCredit: true,
+      })
+    ).toEqual(["Narration — Claude (Anthropic)", "Voice — oMLX M"]);
+  });
+
+  it("omits music and title art when none were used", () => {
+    expect(
+      buildModelCredits({
+        voiceLabel: "Samantha",
+        ttsId: undefined,
+        musicId: undefined,
+        titleArtId: undefined,
+      })
+    ).toEqual(["Narration — Claude (Anthropic)", "Voice — Samantha"]);
+  });
+
+  it("credits lyrics (not narration) and drops the voice line in song mode", () => {
+    expect(
+      buildModelCredits({
+        voiceLabel: "ignored",
+        ttsId: "omlx-tts",
+        musicId: "acestep-music",
+        titleArtId: undefined,
+        song: true,
+      })
+    ).toEqual(["Lyrics — Claude (Anthropic)", "Music — ACE-Step 1.5 (local)"]);
+  });
+});
+
+describe("parseLyricsJson", () => {
+  it("parses {title, steps:[{index, lyric}]} into ordered lines", () => {
+    const raw =
+      '{"title":"THE BUILD","steps":[{"index":0,"lyric":"we open the door"},{"index":1,"lyric":"we ship it green"}]}';
+    expect(parseLyricsJson(raw)).toEqual({
+      title: "THE BUILD",
+      lines: [
+        { index: 0, text: "we open the door" },
+        { index: 1, text: "we ship it green" },
+      ],
+    });
+  });
+
+  it("strips code fences, tolerates a preamble, and drops blank lines", () => {
+    const fence = "```";
+    const body =
+      '{"title":"X","steps":[{"index":0,"lyric":"la"},{"index":1,"lyric":"  "}]}';
+    expect(parseLyricsJson(`${fence}json\n${body}\n${fence}`)).toEqual({
+      title: "X",
+      lines: [{ index: 0, text: "la" }],
+    });
+    expect(parseLyricsJson(`Here you go: ${body}`)).toEqual({
+      title: "X",
+      lines: [{ index: 0, text: "la" }],
+    });
+  });
+
+  it("rejects a bad title, a missing/empty steps array, or malformed entries", () => {
+    expect(parseLyricsJson('{"title":"x"}')).toBeNull();
+    expect(parseLyricsJson('{"steps":[{"index":0,"lyric":"a"}]}')).toBeNull();
+    expect(
+      parseLyricsJson('{"title":"","steps":[{"index":0,"lyric":"a"}]}')
+    ).toBeNull();
+    // All lines blank → no usable line survives.
+    expect(
+      parseLyricsJson('{"title":"x","steps":[{"index":0,"lyric":"  "}]}')
+    ).toBeNull();
+    expect(parseLyricsJson('{"title":"x","steps":[{"index":0}]}')).toBeNull();
+    expect(parseLyricsJson('{"title":"x","steps":"nope"}')).toBeNull();
+    expect(parseLyricsJson("not json")).toBeNull();
+    expect(parseLyricsJson("")).toBeNull();
+  });
+});
+
+describe("buildLyricsPrompt", () => {
+  it("asks for one short singable line per step, as strict per-step JSON", () => {
+    const prompt = buildLyricsPrompt({
+      direction: "80s power ballad",
+      videoSeconds: 12,
+      steps: [
+        { index: 0, name: "open", script: "await page.goto('/')" },
+        { index: 1, name: "login" },
+      ],
+    });
+    expect(prompt).toContain("80s power ballad");
+    expect(prompt).toContain(
+      '{"title": string, "steps": [{"index": number, "lyric": string}]}'
+    );
+    // One line per step, count called out.
+    expect(prompt).toContain("2 lines total");
+    expect(prompt).toContain("0. open");
+    expect(prompt).toContain("1. login");
+    // No spoken narration in song mode.
+    expect(prompt).toContain("there is no spoken narration");
+  });
+
+  it("holds lines short and singable regardless of section length (ACE-Step best practice)", () => {
+    // A long overall runtime with few sections used to ask for very long lines
+    // (words scaled with the per-section window), which ACE-Step sings sparsely.
+    // The line budget is now fixed and short no matter the length.
+    const short = buildLyricsPrompt({
+      direction: "epic",
+      videoSeconds: 12,
+      steps: [{ index: 0, name: "open" }],
+    });
+    const long = buildLyricsPrompt({
+      direction: "epic",
+      videoSeconds: 600,
+      steps: [{ index: 0, name: "open" }],
+    });
+    // Same short line guidance either way — length never inflates the line.
+    expect(short).toContain("6–10 syllables");
+    expect(long).toContain("6–10 syllables");
+    expect(long).toContain(
+      "Do NOT make a line longer just because its section is long"
+    );
+    // The old "sung in Ns" per-section budget is gone.
+    expect(long).not.toMatch(/sung in roughly/);
+  });
+});
+
+describe("extractCaptions", () => {
+  it("returns [] for empty or caption-free scripts", () => {
+    expect(extractCaptions(undefined)).toEqual([]);
+    expect(extractCaptions("await page.humanClick('#go')")).toEqual([]);
+  });
+
+  it("pulls text from every showCaption call, across quote styles", () => {
+    const script = [
+      `await page.showCaption("double quoted");`,
+      `await page.showCaption('single quoted');`,
+      "await page.showCaption(`template literal`);",
+    ].join("\n");
+    expect(extractCaptions(script)).toEqual([
+      "double quoted",
+      "single quoted",
+      "template literal",
+    ]);
+  });
+
+  it("unescapes embedded quotes and ignores the durationMs option", () => {
+    const script = `await page.showCaption("she said \\"hi\\"", { durationMs: 5000 });`;
+    expect(extractCaptions(script)).toEqual(['she said "hi"']);
+  });
+});
+
+describe("wrapTitle", () => {
+  it("greedily word-wraps to the char limit", () => {
+    expect(wrapTitle("THE GREAT PULL REQUEST CAPER", 12)).toEqual([
+      "THE GREAT",
+      "PULL REQUEST",
+      "CAPER",
+    ]);
+  });
+
+  it("honors explicit newlines as forced breaks", () => {
+    expect(wrapTitle("ACT ONE\nThe Setup", 100)).toEqual([
+      "ACT ONE",
+      "The Setup",
+    ]);
+  });
+
+  it("keeps an over-long single word whole", () => {
+    expect(wrapTitle("SUPERCALIFRAGILISTIC", 8)).toEqual([
+      "SUPERCALIFRAGILISTIC",
+    ]);
+  });
+
+  it("never returns an empty array", () => {
+    expect(wrapTitle("", 10)).toEqual([""]);
+  });
+});
+
+describe("wrapCaption", () => {
+  it("leaves a short caption on a single line", () => {
+    expect(wrapCaption("Our operative approaches.", 48)).toBe(
+      "Our operative approaches."
+    );
+  });
+
+  it("wraps a longer caption onto two lines", () => {
+    const out = wrapCaption(
+      "The operative enters the stolen credentials and waits for the redirect.",
+      30,
+      2
+    );
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(2);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(31); // 30 + room for the ellipsis
+    }
+  });
+
+  it("truncates with an ellipsis when it would exceed two lines", () => {
+    const out = wrapCaption(
+      "This narration is far too long to ever fit within a mere two short caption lines on screen.",
+      20,
+      2
+    );
+    const lines = out.split("\n");
+    expect(lines).toHaveLength(2);
+    expect(out.endsWith("…")).toBe(true);
+    for (const line of lines) {
+      expect(line.length).toBeLessThanOrEqual(20);
+    }
+  });
+
+  it("returns an empty string for blank input", () => {
+    expect(wrapCaption("   ", 48)).toBe("");
+  });
+});
+
+describe("captionLineMax", () => {
+  it("gives the full budget at the 1280px default and scales down when narrow", () => {
+    expect(captionLineMax(1280)).toBe(48);
+    expect(captionLineMax(800)).toBe(30);
+  });
+
+  it("caps wide videos and floors tiny ones", () => {
+    expect(captionLineMax(1920)).toBe(48); // capped at CAPTION_LINE_MAX
+    expect(captionLineMax(320)).toBe(24); // floored
+  });
+
+  it("falls back to the default budget when width is unknown", () => {
+    expect(captionLineMax(undefined)).toBe(48);
+    expect(captionLineMax(0)).toBe(48);
+  });
+});
+
+describe("changeScaleHint", () => {
+  it("sizes by length/energy without imposing a format", () => {
+    expect(changeScaleHint(1, 10)).toContain("very small");
+    expect(changeScaleHint(45, 7788)).toContain("large");
+    // Format-agnostic: never names a film/trailer that could fight the theme.
+    expect(changeScaleHint(45, 7788)).not.toMatch(/film|trailer|epic movie/);
+  });
+
+  it("scales through the middle tiers", () => {
+    expect(changeScaleHint(2, 200)).toContain("small");
+    expect(changeScaleHint(7, 600)).toContain("medium");
+  });
+});
+
+describe("titleStyle", () => {
+  it("maps categories to accent colors (white default)", () => {
+    expect(titleStyle(undefined).color).toBe("white");
+    expect(titleStyle("commercial").color).toBe("0xFFD400");
+  });
+
+  it("resolves font to an installed file or undefined (cross-platform)", () => {
+    const font = titleStyle("movie").font;
+    expect(font === undefined || existsSync(font)).toBe(true);
+  });
+});
+
+describe("parseInstalledVoices", () => {
+  it("keeps the full `-v` name, quality tag, and locale per line", () => {
+    const stdout = [
+      "Ava (Premium)       en_US    # Hello! My name is Ava.",
+      "Samantha            en_US    # Hello! My name is Samantha.",
+      "Daniel (Enhanced)   en_GB    # Hello! My name is Daniel.",
+    ].join("\n");
+    const voices = parseInstalledVoices(stdout);
+
+    const ava = voices.find((v) => v.name === "Ava");
+    // The "(Premium)" suffix IS part of the usable -v name — passing the bare
+    // name selects the compact variant.
+    expect(ava?.full).toBe("Ava (Premium)");
+    expect(ava?.quality).toBe("Premium");
+    expect(ava?.locale).toBe("en_US");
+
+    const samantha = voices.find((v) => v.name === "Samantha");
+    expect(samantha?.full).toBe("Samantha");
+    expect(samantha?.quality).toBe("Default");
+
+    const daniel = voices.find((v) => v.name === "Daniel");
+    expect(daniel?.full).toBe("Daniel (Enhanced)");
+    expect(daniel?.quality).toBe("Enhanced");
+    expect(daniel?.locale).toBe("en_GB");
+  });
+
+  it("ignores blank lines and returns an empty array for empty input", () => {
+    expect(parseInstalledVoices("")).toEqual([]);
+    expect(parseInstalledVoices("\n\n  \n")).toEqual([]);
+  });
+});
+
+describe("pickVoice", () => {
+  const original = process.env.DAILIES_SAY_VOICE;
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env.DAILIES_SAY_VOICE;
+    } else {
+      process.env.DAILIES_SAY_VOICE = original;
+    }
+  });
+
+  const parse = (lines: string[]) => parseInstalledVoices(lines.join("\n"));
+
+  it("never picks a robotic base voice when a premium one is installed", () => {
+    delete process.env.DAILIES_SAY_VOICE;
+    const voices = parse([
+      "Ava (Premium)       en_US    # Hello!",
+      "Samantha            en_US    # Hello!",
+    ]);
+    // Only one premium voice, so the pick is deterministic regardless of random.
+    for (let i = 0; i < 10; i++) {
+      expect(pickVoice(voices)).toBe("Ava (Premium)");
+    }
+  });
+
+  it("prefers Premium over Enhanced, US English over other English", () => {
+    delete process.env.DAILIES_SAY_VOICE;
+    const voices = parse([
+      "Daniel (Enhanced)   en_GB    # Hello!",
+      "Serena (Premium)    en_GB    # Hello!",
+      "Ava (Premium)       en_US    # Hello!",
+    ]);
+    for (let i = 0; i < 10; i++) {
+      expect(pickVoice(voices)).toBe("Ava (Premium)");
+    }
+  });
+
+  it("falls through to an enhanced voice when no premium exists", () => {
+    delete process.env.DAILIES_SAY_VOICE;
+    const voices = parse([
+      "Daniel (Enhanced)   en_US    # Hello!",
+      "Samantha            en_US    # Hello!",
+    ]);
+    expect(pickVoice(voices)).toBe("Daniel (Enhanced)");
+  });
+
+  it("honors an explicit $DAILIES_SAY_VOICE override", () => {
+    process.env.DAILIES_SAY_VOICE = "Karen (Premium)";
+    expect(pickVoice(parse(["Ava (Premium)  en_US  # Hi"]))).toBe(
+      "Karen (Premium)"
+    );
+  });
+
+  it("falls back to Samantha when nothing is installed", () => {
+    delete process.env.DAILIES_SAY_VOICE;
+    expect(pickVoice([])).toBe("Samantha");
+  });
+});
+
+describe("parseFilterNames", () => {
+  it("extracts filter names from `ffmpeg -filters` rows", () => {
+    const stdout = [
+      "Filters:",
+      "  T. adelay            A->A       Delay one or more audio channels.",
+      "  .. amix              N->A       Audio mixing.",
+      "  T. drawtext          V->V       Draw text on top of video frames.",
+      "  .. concat            N->N       Concatenate audio and video streams.",
+    ].join("\n");
+    const names = parseFilterNames(stdout);
+    expect(names.has("adelay")).toBe(true);
+    expect(names.has("amix")).toBe(true);
+    expect(names.has("drawtext")).toBe(true);
+    expect(names.has("concat")).toBe(true);
+  });
+
+  it("omits filters absent from a minimal build", () => {
+    const stdout = [
+      "  T. adelay            A->A       Delay one or more audio channels.",
+      "  .. amix              N->A       Audio mixing.",
+    ].join("\n");
+    const names = parseFilterNames(stdout);
+    expect(names.has("drawtext")).toBe(false);
+    expect(names.has("subtitles")).toBe(false);
+  });
+
+  it("ignores header and legend lines without an I/O column", () => {
+    expect(parseFilterNames("Filters:\n  Legend without arrows\n").size).toBe(
+      0
+    );
+  });
+});
+
+describe("planRetime", () => {
+  it("freezes a step whose narration outruns its footage, and shifts later steps", () => {
+    // Two steps 3s apart in an 8s video; narration is 12s and 11s.
+    const plan = planRetime({
+      stepTimes: [1, 4],
+      clipDurSec: [12, 11],
+      totalSec: 8,
+    });
+    expect(plan.leadSec).toBe(1); // [0,1) preserved before the first step
+    // footage: step0 = 4-1 = 3, step1 = 8-4 = 4
+    expect(plan.footage).toEqual([3, 4]);
+    // hold = max(0, dur - footage): 12-3=9, 11-4=7
+    expect(plan.holds).toEqual([9, 7]);
+    // starts: step0 begins after the lead; step1 after step0's full slot (3+9)
+    expect(plan.starts).toEqual([1, 1 + 3 + 9]);
+    // each slot is long enough for its narration (no overlap)
+    const [start0 = 0, start1 = 0] = plan.starts;
+    expect(start1 - start0).toBeGreaterThanOrEqual(12);
+  });
+
+  it("adds no hold when footage already covers the narration", () => {
+    const plan = planRetime({
+      stepTimes: [0, 5],
+      clipDurSec: [2, 1],
+      totalSec: 10,
+    });
+    expect(plan.holds).toEqual([0, 0]);
+    expect(plan.starts).toEqual([0, 5]);
+  });
+
+  it("handles a step with no narration (zero duration)", () => {
+    const plan = planRetime({
+      stepTimes: [1, 4],
+      clipDurSec: [0, 6],
+      totalSec: 8,
+    });
+    expect(plan.holds[0]).toBe(0);
+    expect(plan.holds[1]).toBe(2); // 6 - (8-4)=2
+  });
+
+  it("inserts a leading still pad before each step's action", () => {
+    // Same as the first case but with a 0.5s start pad before each step.
+    const plan = planRetime({
+      stepTimes: [1, 4],
+      clipDurSec: [12, 11],
+      totalSec: 8,
+      startPadSec: 0.5,
+    });
+    expect(plan.footage).toEqual([3, 4]);
+    expect(plan.holds).toEqual([9, 7]);
+    // step0 action starts after the lead + its pad; step1 after step0's full slot
+    // (pad + footage + hold) + its own pad.
+    expect(plan.starts).toEqual([1 + 0.5, 1 + 0.5 + 3 + 9 + 0.5]);
+  });
+
+  it("floors the gap between consecutive lines with gapSec (but not after the last)", () => {
+    // Two back-to-back lines that each exactly fill their footage: with no gap the
+    // next line would start the instant the previous ends. A 0.6s gap adds a beat
+    // to every non-last step's hold.
+    const plan = planRetime({
+      stepTimes: [0, 3],
+      clipDurSec: [3, 4], // step0 line == footage (3s); step1 is last
+      totalSec: 7,
+      gapSec: 0.6,
+    });
+    // step0: max(0, 3-3+0.6) = 0.6 gap-hold; step1 (last): max(0, 4-4+0) = 0
+    expect(plan.holds).toEqual([0.6, 0]);
+    // the second line now starts 0.6s after the first ends (3 + 0.6)
+    const [s0 = 0, s1 = 0] = plan.starts;
+    expect(s1 - (s0 + 3)).toBeCloseTo(0.6, 5);
+  });
+
+  it("adds no extra hold for gapSec when footage already leaves that much slack", () => {
+    // step0 footage 5s, line only 2s → 3s of natural gap already, well over 0.6s.
+    const plan = planRetime({
+      stepTimes: [0, 5],
+      clipDurSec: [2, 1],
+      totalSec: 10,
+      gapSec: 0.6,
+    });
+    expect(plan.holds).toEqual([0, 0]);
+    expect(plan.starts).toEqual([0, 5]);
+  });
+});
+
+describe("planRetime — onset-anchored (song step-sync)", () => {
+  it("clips overruns and freeze-pads underruns to hit each onset window", () => {
+    const plan = planRetime({
+      stepTimes: [0, 3, 7],
+      clipDurSec: [],
+      totalSec: 10,
+      onsets: [5, 12, 18],
+      bodyEnd: 25,
+    });
+    expect(plan.leadSec).toBe(5); // instrumental lead before the first line
+    expect(plan.starts).toEqual([5, 12, 18]); // each step starts at its onset
+    // footage = min(natural, window): [min(3,7), min(4,6), min(3,7)]
+    expect(plan.footage).toEqual([3, 4, 3]);
+    // hold = window - footage: [7-3, 6-4, 7-3]
+    expect(plan.holds).toEqual([4, 2, 4]);
+  });
+  it("hard-cuts a step whose footage overruns its window (tail clipped, no drift)", () => {
+    const plan = planRetime({
+      stepTimes: [0],
+      clipDurSec: [],
+      totalSec: 20,
+      onsets: [2],
+      bodyEnd: 5,
+    });
+    expect(plan.footage).toEqual([3]); // 20s of footage clipped to the 3s window
+    expect(plan.holds).toEqual([0]);
+    expect(plan.starts).toEqual([2]);
+  });
+});

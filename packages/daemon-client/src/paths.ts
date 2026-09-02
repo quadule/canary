@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { daemonPipeName } from "./ipc/pipename.js";
 
-const DIR_NAME = ".canary";
+const DIR_NAME = ".dailies";
 const DAEMON_SOCKET = "daemon.sock";
 const DAEMON_PID = "daemon.pid";
 const DAEMON_BUNDLE = "daemon.mjs";
@@ -23,37 +23,37 @@ export function home(): string {
   return dir;
 }
 
-export function canaryDir(): string {
+export function dailiesDir(): string {
   return join(home(), DIR_NAME);
 }
 
 export function daemonSocketPath(): string {
-  return join(canaryDir(), DAEMON_SOCKET);
+  return join(dailiesDir(), DAEMON_SOCKET);
 }
 
 export function daemonPidPath(): string {
-  return join(canaryDir(), DAEMON_PID);
+  return join(dailiesDir(), DAEMON_PID);
 }
 
 export function daemonBundlePath(): string {
-  return join(canaryDir(), DAEMON_BUNDLE);
+  return join(dailiesDir(), DAEMON_BUNDLE);
 }
 
 export function sandboxClientPath(): string {
-  return join(canaryDir(), SANDBOX_CLIENT);
+  return join(dailiesDir(), SANDBOX_CLIENT);
 }
 
 export function packageJsonPath(): string {
-  return join(canaryDir(), PACKAGE_JSON);
+  return join(dailiesDir(), PACKAGE_JSON);
 }
 
 export function tmpDir(): string {
-  return join(canaryDir(), TMP_DIR);
+  return join(dailiesDir(), TMP_DIR);
 }
 
 // Endpoint path used by net.createConnection / createServer. On POSIX this
 // is a Unix domain socket path; on Windows it is a named-pipe path
-// (`\\.\pipe\canary-daemon-{user}`) — Node's `net` module accepts both.
+// (`\\.\pipe\dailies-daemon-{user}`) — Node's `net` module accepts both.
 export function daemonEndpoint(): string {
   if (process.platform === "win32") {
     return `\\\\.\\pipe\\${daemonPipeName()}`;
@@ -61,12 +61,12 @@ export function daemonEndpoint(): string {
   return daemonSocketPath();
 }
 
-// ---- Session artifact layout: ~/.canary/sessions/<id>/ ----
+// ---- Session artifact layout: ~/.dailies/sessions/<id>/ ----
 // Shared by the daemon (writes trace/video/HAR/console + manifest) and the
-// `canary` orchestrator (writes session.json, reads artifacts, renders report).
+// `dailies` orchestrator (writes session.json, reads artifacts, renders report).
 
 export function sessionsRootDir(): string {
-  return join(canaryDir(), SESSIONS_DIR);
+  return join(dailiesDir(), SESSIONS_DIR);
 }
 
 export function sessionDir(sessionId: string): string {

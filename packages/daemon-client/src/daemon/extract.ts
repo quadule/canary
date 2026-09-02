@@ -2,11 +2,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import {
   DAEMON_RUNTIME_DEPENDENCIES,
   EMBEDDED_PACKAGE_JSON,
-} from "@usecanary/protocol";
+} from "dailies-protocol";
 import { DAEMON_BUNDLE, SANDBOX_CLIENT } from "../assets/embedded.generated.js";
 import {
-  canaryDir,
   daemonBundlePath,
+  dailiesDir,
   packageJsonPath,
   sandboxClientPath,
 } from "../paths.js";
@@ -16,9 +16,9 @@ const SANDBOX_CLIENT_TEXT: string = SANDBOX_CLIENT;
 const PACKAGE_JSON_TEXT: string = EMBEDDED_PACKAGE_JSON;
 
 // Write the embedded daemon bundle, sandbox client, and package.json
-// template into ~/.canary/ if missing or stale. Returns the daemon bundle path.
+// template into ~/.dailies/ if missing or stale. Returns the daemon bundle path.
 export async function ensureDaemonExtracted(): Promise<string> {
-  const dir = canaryDir();
+  const dir = dailiesDir();
   await mkdir(dir, { recursive: true });
 
   const daemonPath = daemonBundlePath();
@@ -35,7 +35,7 @@ export async function ensureDaemonExtracted(): Promise<string> {
 }
 
 // Returns true if the npm-managed runtime has been installed (i.e.
-// `canary install` has been run). The set checked is derived from the single
+// `dailies install` has been run). The set checked is derived from the single
 // source of truth (DAEMON_RUNTIME_DEPENDENCIES), so a new runtime dependency is
 // gated automatically without editing this allowlist.
 export async function embeddedRuntimeInstalled(

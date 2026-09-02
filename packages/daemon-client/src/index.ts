@@ -1,8 +1,8 @@
-// @usecanary/daemon-client — shared daemon transport, endpoint/paths resolution,
-// and daemon lifecycle/extract. Consumed by the `canary` and `canary-browser`
+// dailies-daemon-client — shared daemon transport, endpoint/paths resolution,
+// and daemon lifecycle/extract. Consumed by the `dailies` and `dailies-browser`
 // CLIs so both drive the same daemon and embed the same daemon bundle.
 
-export type { BrowserSummary, StatusSummary } from "@usecanary/protocol";
+export type { BrowserSummary, StatusSummary } from "dailies-protocol";
 export { findDaemonCommand } from "./daemon/entry.js";
 export {
   embeddedRuntimeInstalled,
@@ -29,11 +29,11 @@ export {
 } from "./ipc/connect.js";
 export { daemonPipeName, sanitizePipeSegment } from "./ipc/pipename.js";
 export {
-  canaryDir,
   daemonBundlePath,
   daemonEndpoint,
   daemonPidPath,
   daemonSocketPath,
+  dailiesDir,
   home,
   packageJsonPath,
   sandboxClientPath,

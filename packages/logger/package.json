@@ -1,10 +1,10 @@
 {
-  "name": "@usecanary/logger",
+  "name": "dailies-logger",
   "version": "0.4.4",
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "Canary shared logger — pino-backed structured logging (single source of truth).",
+  "description": "Dailies shared logger — pino-backed structured logging (single source of truth).",
   "exports": {
     ".": {
       "source": "./src/index.ts",
@@ -19,7 +19,7 @@
     "pino": "^9.5.0"
   },
   "devDependencies": {
-    "@usecanary/config": "workspace:*",
+    "dailies-config": "workspace:*",
     "typescript": "^5.7.2"
   }
 }

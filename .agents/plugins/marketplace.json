@@ -1,14 +1,14 @@
 {
-  "name": "canary-marketplace",
+  "name": "dailies-marketplace",
   "interface": {
-    "displayName": "Canary"
+    "displayName": "Dailies"
   },
   "plugins": [
     {
-      "name": "canary",
+      "name": "dailies",
       "source": {
         "source": "local",
-        "path": "./plugins/canary"
+        "path": "./plugins/dailies"
       },
       "policy": {
         "installation": "AVAILABLE",

@@ -1,4 +1,4 @@
-All file I/O is async (await it), sandboxed to `~/.canary/tmp/` (no filesystem escape), and
+All file I/O is async (await it), sandboxed to `~/.dailies/tmp/` (no filesystem escape), and
 returns the full path to the file:
 
 - `saveScreenshot(buffer, name)` — persist a screenshot buffer; buffer first:

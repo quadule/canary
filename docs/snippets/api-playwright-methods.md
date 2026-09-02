@@ -15,7 +15,7 @@
   `page.getAttribute(sel, name)` — read by selector
 - `page.inputValue(sel)` / `page.isChecked(sel)` / `page.isVisible(sel)` / `page.isHidden(sel)` —
   input and visibility state
-- `page.humanClick(target)` / `page.humanFill(target, text)` — Canary helpers that act like a
+- `page.humanClick(target)` / `page.humanFill(target, text)` — Dailies helpers that act like a
   person for the recording: smooth-scroll the element into view, glide the on-screen cursor onto
   it and let it land, then click — or, for a fill, focus and type with real key events. `target` is
   a selector string or a locator. Prefer these for recorded interactions — they reveal the target
@@ -26,7 +26,7 @@
   `humanClick` returns BEFORE the navigation commits — a `page.url()` or `snapshotForAI()` on the
   next line shows the OLD page. Either make that click the LAST action of the step (the step-end
   settle commits it; observe in the next step) or use `humanClickAndWaitForURL` to stay in this step.
-- `page.humanClickAndWaitForURL(target, opts?)` — Canary helper: `humanClick` a control that
+- `page.humanClickAndWaitForURL(target, opts?)` — Dailies helper: `humanClick` a control that
   NAVIGATES, then wait for it the race-free way. Captures `location.href` BEFORE the click and waits
   — under one `opts.timeout` (default 15000) — for the URL to settle AND `opts.loadState` (default
   `"load"`). Returns the new href. The one-liner for "click this link and continue on the new page":
@@ -37,31 +37,31 @@
 - `page.fill(sel, value)` / `page.click(sel)` / `page.type(sel, text)` / `page.press(sel, key)` —
   lower-level acts on elements (`fill` sets the value atomically — no cursor travel or typing on
   camera; reach for `humanClick` / `humanFill` in recordings)
-- `page.showCaption(text, opts?)` — Canary helper: overlay a short caption on the page to label a
+- `page.showCaption(text, opts?)` — Dailies helper: overlay a short caption on the page to label a
   moment in the recording for a human viewer; fades after `opts.durationMs` (default 3000).
   Cosmetic only — use sparingly, not to echo step names. In a session started with `--cinematic`
   the overlay is suppressed (the burned-in themed captions replace it), but the text still feeds
   the narration as intent — so keep calling it
-- `page.showSpotlight(target?)` — Canary helper: animate a spotlight vignette to focus on an
+- `page.showSpotlight(target?)` — Dailies helper: animate a spotlight vignette to focus on an
   element (`target` is a selector or locator). The spotlight opens wide then tightens to
   circumscribe the element's bounding box, drawing the reviewer's eye before you interact.
   Omit `target` to spotlight the current cursor position. Use for subtle elements a viewer
   might miss — validation errors, small toggles, non-obvious fields
-- `page.reveal(target)` — Canary helper: smooth-scroll a region into view and glide the cursor onto
+- `page.reveal(target)` — Dailies helper: smooth-scroll a region into view and glide the cursor onto
   it WITHOUT clicking (the `humanClick` motion minus the press). Use to show something in the
   recording; never `window.scrollTo` / `page.evaluate(() => scrollTo(...))` (invisible on camera).
   You don't need it to observe — `snapshotForAI` sees the whole page regardless of scroll
-- `page.lookAt(target)` — Canary helper: `reveal` an element, then rest the cursor on it a beat
+- `page.lookAt(target)` — Dailies helper: `reveal` an element, then rest the cursor on it a beat
   longer — a deliberate "now look here" before you talk about it. No click
-- `page.circle(target, opts?)` / `page.underline(target)` / `page.pointAt(target)` — Canary gesture
+- `page.circle(target, opts?)` / `page.underline(target)` / `page.pointAt(target)` — Dailies gesture
   helpers: draw the viewer's eye to an element with a hand-like cursor flourish — circle it
   (`opts.loops`, default 1), sweep an underline beneath it (short elements get a double pass), or
   nudge toward it twice. Cosmetic only — they reveal the element and move the cursor but never click
   or change focus. Use to emphasise something on camera, not as a substitute for `humanClick`
-- `page.highlightText(target, opts?)` — Canary helper: drag-select an element's text so the browser
+- `page.highlightText(target, opts?)` — Dailies helper: drag-select an element's text so the browser
   paints its native selection highlight while the cursor sweeps across — for calling out a specific
   passage. `opts.clearAfterMs` clears the selection that long after the sweep. Cosmetic; no click
-- Settling is AUTOMATIC — you never call a settle yourself. Canary settles the page (document load +
+- Settling is AUTOMATIC — you never call a settle yourself. Dailies settles the page (document load +
   a bounded network-idle + DOM-mutation quiescence) at the END of every step, so each step's
   screenshot and the next step's fresh page both start committed and quiet. WITHIN a step, wait on a
   concrete signal: a navigation → `humanClickAndWaitForURL` / `waitForURLChange`; a known element →
@@ -72,7 +72,7 @@
   `"hidden"` / `"detached"`) / `page.waitForURL(pattern)` (polls the live URL, so it resolves on
   History API / Turbo / SPA navigations too; `pattern` is a glob, RegExp, or predicate) /
   `page.waitForLoadState(state)` / `page.waitForFunction(fn)` / `page.waitForTimeout(ms)` — waiting
-- `page.waitForURLChange(opts?)` — Canary helper: wait until the live URL changes (returns the new
+- `page.waitForURLChange(opts?)` — Dailies helper: wait until the live URL changes (returns the new
   href) when you DON'T know the destination — e.g. confirming a click navigated. For the common
   click→nav case, reach for `humanClickAndWaitForURL` instead — it wraps this. Use this directly when
   the nav isn't triggered by a single click. Capture the start URL before the click and pass it:
@@ -80,8 +80,8 @@
   page.waitForURLChange({ from });` — or run both at once: `await Promise.all([page.waitForURLChange(),
   page.humanClick(link)])`. (`page.url()` is client-cached and won't reflect a Turbo nav; the helper
   reads `location.href`.) Then act on a known destination element before observing — or simply end the
-  step, since Canary settles the committed page for the next one
-- `page.setInputFiles(target, files, opts?)` — Canary helper: attach files to a file `<input>`.
+  step, since Dailies settles the committed page for the next one
+- `page.setInputFiles(target, files, opts?)` — Dailies helper: attach files to a file `<input>`.
   `files` is one filename or an array; each must already live in the sandbox temp dir (write it
   with `writeFile(name, data)` first, or have the user drop it in via takeover). The bytes are read
   host-side — confined to that dir — and handed to the browser as an in-memory payload, so a script
@@ -101,10 +101,10 @@
   `page.content()` / `page.setContent(html)` — full HTML
 - `page.on("console", handler)` — observe page console events
 - Browser dialogs (`alert` / `confirm` / `prompt`) freeze the page until answered. By default
-  Canary fails the step on an unanswered one (it dismisses the dialog — cancelling whatever opened
+  Dailies fails the step on an unanswered one (it dismisses the dialog — cancelling whatever opened
   it — and reports a clear error) so a silently-cancelled flow can't pass unnoticed. When a flow
   expects a dialog, say so **before** the action that triggers it: `await page.acceptDialogs()`
   (click OK / confirm), `await page.dismissDialogs()` (cancel quietly, no failure), or
   `await page.failOnDialogs()` to restore the strict default. The choice lasts for the current step
-  only. A standard `page.on("dialog", …)` handler does **not** work — Canary answers dialogs itself
+  only. A standard `page.on("dialog", …)` handler does **not** work — Dailies answers dialogs itself
   — so use these methods.

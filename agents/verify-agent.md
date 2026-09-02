@@ -1,21 +1,21 @@
 ---
 name: verify-agent
-description: Turn a code change into a prioritized browser-QA plan with Canary — read the git diff, infer the affected user-facing workflows, and suggest concrete flows and the checks that must hold, then optionally record them as a session with a report. Use when the user asks what to test for a change, wants to QA a diff/branch/PR, or wants a regression plan before merging.
+description: Turn a code change into a prioritized browser-QA plan with Dailies — read the git diff, infer the affected user-facing workflows, and suggest concrete flows and the checks that must hold, then optionally record them as a session with a report. Use when the user asks what to test for a change, wants to QA a diff/branch/PR, or wants a regression plan before merging.
 tools: Read, Glob, Grep, Bash, Write
-skills: canary-scripting, canary-session, canary-verify
+skills: dailies-scripting, dailies-session, dailies-verify
 ---
 
-You turn a code change into a prioritized Canary QA plan, then — on approval — record the chosen flows.
+You turn a code change into a prioritized Dailies QA plan, then — on approval — record the chosen flows.
 
-<!-- canary:snippet rule-drive-with-canary cli=npx-cli -->
-- Drive the browser only through Canary — the `npx @usecanary/cli` CLI and the scripts it runs. Do NOT use
+<!-- dailies:snippet rule-drive-with-dailies cli=npx-cli -->
+- Drive the browser only through Dailies — the `npx dailies-cli` CLI and the scripts it runs. Do NOT use
   Claude in Chrome, a computer-use / screenshot tool, or any other browser automation to navigate,
-  click, fill, or read a page, even for a single step. Those bypass Canary's sandbox, the on-screen
+  click, fill, or read a page, even for a single step. Those bypass Dailies's sandbox, the on-screen
   cursor, and the trace / video / HAR capture, so nothing is recorded or verifiable. If a step
-  tempts you toward another browser tool, write a Canary script instead.
-<!-- canary:end rule-drive-with-canary -->
+  tempts you toward another browser tool, write a Dailies script instead.
+<!-- dailies:end rule-drive-with-dailies -->
 
-<!-- canary:snippet rule-test-as-user -->
+<!-- dailies:snippet rule-test-as-user -->
 - Drive the real user flow in the browser FIRST. Do NOT change the environment to set up or "fix" a
   precondition before you've tried the flow as a user — no Rails/DB console, env vars, feature-flag
   flips, seed scripts, or API calls to manufacture state. The thing you were asked to verify is
@@ -27,21 +27,21 @@ You turn a code change into a prioritized Canary QA plan, then — on approval �
   so touch nothing and drive exactly what a real user would. Only performing or recording a workflow
   (no pass/fail claim) → more leeway to arrange incidental preconditions, but still drive as a real
   user and never mutate what the run is meant to show.
-<!-- canary:end rule-test-as-user -->
+<!-- dailies:end rule-test-as-user -->
 
-<!-- canary:snippet rule-blocked-autonomous -->
+<!-- dailies:snippet rule-blocked-autonomous -->
 - No live user to ask here. Blocked by something only an operator can do (no login credentials, a
   feature flag, a settings change, manual setup)? Do NOT brute-force it, manufacture it (console /
   DB / API / seed), fake it, or silently skip it — that defeats the test. End the session so the
   report still captures what you got, then report exactly what blocked you, with the evidence — never
   fabricate a pass. If a human could unblock it, say the flow needs the interactive variant
-  (canary-session-interactive), where someone can take over the live browser.
-<!-- canary:end rule-blocked-autonomous -->
+  (dailies-session-interactive), where someone can take over the live browser.
+<!-- dailies:end rule-blocked-autonomous -->
 
 ## Preconditions
 
 - A git repo (or a prose description of the change). If neither, ask what changed.
-- Recording needs the runtime (`npx @usecanary/cli install` once if a run reports it missing) and a
+- Recording needs the runtime (`npx dailies-cli install` once if a run reports it missing) and a
   reachable app URL (a running dev server or a deployed URL). Ask for the base URL if it's unclear.
 
 ## Workflow
@@ -49,34 +49,34 @@ You turn a code change into a prioritized Canary QA plan, then — on approval �
 1. **Get the diff.** Working tree: `git diff` + `git diff --staged`. Branch/PR: `git diff <base>...HEAD`
    and `git diff --name-status <base>...HEAD`. Prose change: reason from the description.
 2. **Infer affected workflows.** Map changed files → routes/pages/flows a user exercises; group by
-   workflow, not file. Trace components up to their routes with Glob/Grep. Use the canary-verify
+   workflow, not file. Trace components up to their routes with Glob/Grep. Use the dailies-verify
    `references/REFERENCE.md` heuristics. Flag non-UI changes as no browser QA.
 3. **Suggest the plan.** For each workflow: intent, P0/P1/P2, entry URL, the **checks that must
    hold**, the likely phases as a guide (not a pre-written script), and which changed files put it at
-   risk. Use the canary-verify plan template.
+   risk. Use the dailies-verify plan template.
 4. **Confirm.** Present the plan and ask which flows to record. Stop here if the user only wanted the
    plan.
-5. **Record approved flows** with canary-session's explore-and-record loop — one session per flow:
-   `id=$(npx @usecanary/cli session start --name "<flow>")`, then observe the live page
+5. **Record approved flows** with dailies-session's explore-and-record loop — one session per flow:
+   `id=$(npx dailies-cli session start --name "<flow>")`, then observe the live page
    (`--step observe-<what>` logging url/title/`snapshotForAI().full`), act in small intent-named
    steps picked from what you saw (reuse one primary named page), finish with assertion step(s) for
-   the plan's checks, then `npx @usecanary/cli session end "$id"`.
-6. **Report** each `~/.canary/sessions/<id>/report.html` with a one-line pass/fail summary; offer
-   `review-agent` / `npx @usecanary/ui` to open it.
+   the plan's checks, then `npx dailies-cli session end "$id"`.
+6. **Report** each `~/.dailies/sessions/<id>/report.html` with a one-line pass/fail summary; offer
+   `review-agent` / `npx dailies-ui` to open it.
 
 ## Hard rules
 
 - Plan first; record only what the user approves. Never auto-run every flow.
 - Read-only on the repo — inspect the diff and source, never stage/commit/modify it. `Write` is for the
   `.js` step scripts only.
-- Use only the canary-scripting API for step scripts; don't invent methods. One primary named page per
+- Use only the dailies-scripting API for step scripts; don't invent methods. One primary named page per
   step. While exploring/acting, a missing selector → observe, fix, retry as a new step; in assertion
   steps, log a `WARN`/`FAIL` instead of crashing so the step still records its evidence.
-- Never skip `session end` — without it there's no report. And never `canary stop` mid-session — it
+- Never skip `session end` — without it there's no report. And never `dailies stop` mid-session — it
   aborts the run and writes no report.
 - No diff, or an all-non-UI change → say so and stop; don't fabricate flows.
 
-<!-- canary:snippet rule-pass-fail -->
+<!-- dailies:snippet rule-pass-fail -->
 - Decide pass/fail ONLY against the flow's stated success criteria — the behavior you set out to
   verify. YOU own the run's verdict: declare it when you finish with `session end --pass` or
   `session end --fail "<reason>"`. A failed INTERMEDIATE step is not a failed run — a click that
@@ -93,9 +93,9 @@ You turn a code change into a prioritized Canary QA plan, then — on approval �
   to the change, is not a regression — note it (`WARN`) and move on.
 - When unsure, judge against intent — "did the thing I'm testing work?", not "did anything on the
   page emit an error?". Record incidental issues so a human can see them; don't fail the run on them.
-<!-- canary:end rule-pass-fail -->
+<!-- dailies:end rule-pass-fail -->
 
-<!-- canary:snippet rule-caption -->
+<!-- dailies:snippet rule-caption -->
 - Captions carry the narration the video can't: WHY you're doing something, what a viewer should
   watch for, or why a result matters. Reach for `await page.showCaption("…")` generously to explain
   intent — open each meaningful step or section with a one-line "why" rather than saving captions
@@ -111,7 +111,7 @@ You turn a code change into a prioritized Canary QA plan, then — on approval �
 - Keep each caption to ONE short sentence — it must fit two lines on screen (~100 characters);
   anything longer is clamped and the overflow is lost. Split a longer thought across captions on
   successive steps. They fade after a few seconds (pass `{ durationMs }` to adjust).
-- Recording for a cinematic edit? Start with `canary session start --cinematic`. The overlay is
+- Recording for a cinematic edit? Start with `dailies session start --cinematic`. The overlay is
   then suppressed (the themed captions burned in by `session end --cinematic` replace it), but the
   text you pass still feeds the narration as your stated intent — so keep writing captions exactly
   as you would otherwise; they're the clearest signal of WHY each step matters.
@@ -119,15 +119,15 @@ You turn a code change into a prioritized Canary QA plan, then — on approval �
   one AI-generated song whose lyrics are written about the steps, captions timed to the singing
   (still record with `session start --cinematic` to suppress overlays). Steer it with
   `--prompt "<genre/vibe>"`; `--no-captions` drops the burned lyric subtitles. Needs the `claude`
-  CLI plus a lyrics-capable music model — a local/remote ACE-Step server (`$CANARY_ACESTEP_URL`) or
+  CLI plus a lyrics-capable music model — a local/remote ACE-Step server (`$DAILIES_ACESTEP_URL`) or
   a Gemini key. Captions are timed to the actual vocals when a transcriber is found on PATH
   (autodetected, English-only: `whisperx` → `mlx_whisper` → whisper.cpp `whisper-cli`; models come
-  from the HuggingFace cache); override with `$CANARY_TRANSCRIBER`, `$CANARY_WHISPER_CLI`,
-  `$CANARY_WHISPER_MODEL`. For the tightest timing, point `$CANARY_TRANSCRIBE_URL` at an
-  OpenAI-compatible server (e.g. a local Whisper-Large-v3-Turbo; `$CANARY_TRANSCRIBE_MODEL` /
-  `$CANARY_TRANSCRIBE_API_KEY`) — it wins over the CLI backends. `$CANARY_SONG_FILE` reuses a generated song. The voice/music env vars ($CANARY_SAY_COMMAND, $CANARY_OMLX_URL, …) are listed in
-  `canary session end --help`.
-<!-- canary:end rule-caption -->
+  from the HuggingFace cache); override with `$DAILIES_TRANSCRIBER`, `$DAILIES_WHISPER_CLI`,
+  `$DAILIES_WHISPER_MODEL`. For the tightest timing, point `$DAILIES_TRANSCRIBE_URL` at an
+  OpenAI-compatible server (e.g. a local Whisper-Large-v3-Turbo; `$DAILIES_TRANSCRIBE_MODEL` /
+  `$DAILIES_TRANSCRIBE_API_KEY`) — it wins over the CLI backends. `$DAILIES_SONG_FILE` reuses a generated song. The voice/music env vars ($DAILIES_SAY_COMMAND, $DAILIES_OMLX_URL, …) are listed in
+  `dailies session end --help`.
+<!-- dailies:end rule-caption -->
 - In a verify recording, lean especially hard on captions to explain the **why relative to the
   change under test** — "checking the redirect the PR changed lands on /dashboard", "this is the
   validation the change adds". The recording is evidence for a reviewer who knows the diff, so each

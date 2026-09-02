@@ -1,13 +1,13 @@
 import { spawn } from "node:child_process";
-import { canaryDir } from "../paths.js";
+import { dailiesDir } from "../paths.js";
 import { ensureDaemonExtracted } from "./extract.js";
 import { npmCommand } from "./npm.js";
 
-// Install Playwright + runtime deps under ~/.canary/. Extracts the
+// Install Playwright + runtime deps under ~/.dailies/. Extracts the
 // embedded daemon bundle, then `npm install` + `playwright install chromium`.
-// Shared by the `canary` and `canary-browser` CLIs.
+// Shared by the `dailies` and `dailies-browser` CLIs.
 export async function installDaemonRuntime(): Promise<number> {
-  const base = canaryDir();
+  const base = dailiesDir();
   await ensureDaemonExtracted();
   const npm = npmCommand();
   await runInstall(npm, ["install"], base);

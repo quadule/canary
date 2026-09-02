@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in canary.
+Thanks for your interest in dailies.
 
 ## Before you open a PR
 
@@ -20,15 +20,15 @@ make check       # what CI runs
 Per-workspace:
 
 ```bash
-pnpm --filter @usecanary/daemon  dev   # daemon in watch mode
-pnpm --filter @usecanary/browser dev   # CLI in watch mode
-pnpm --filter @usecanary/cli     dev   # canary in watch mode
+pnpm --filter dailies-daemon  dev   # daemon in watch mode
+pnpm --filter dailies-browser dev   # CLI in watch mode
+pnpm --filter dailies-cli     dev   # dailies in watch mode
 ```
 
 ## House rules
 
-- No `console.*` in committed code — use `@usecanary/logger` for diagnostics and `process.stdout` for CLI output (enforced by Biome's `noConsole`).
+- No `console.*` in committed code — use `dailies-logger` for diagnostics and `process.stdout` for CLI output (enforced by Biome's `noConsole`).
 - All new code is TypeScript with `strict: true` and no `any`.
-- Tests are vitest; colocated for daemon, in `test/` for cli + canary.
+- Tests are vitest; colocated for daemon, in `test/` for cli + dailies.
 - Ultracite (Biome) formats and lints everything; the pre-commit hook runs `ultracite fix` on staged files (`pnpm lint` / `pnpm format` to run manually).
 - Shared doc content (scripting API, workflow rules) lives in `docs/snippets/` — edit there and run `make docs`; don't hand-edit the stitched regions in `skills/`/`README.md` or `packages/cli-kit/src/snippets.generated.ts` (`make check` fails on drift).

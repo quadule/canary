@@ -1,5 +1,5 @@
 {
-  "extends": "@usecanary/config/node-app.json",
+  "extends": "dailies-config/node-app.json",
   "compilerOptions": {
     "noEmit": true,
     "exactOptionalPropertyTypes": false

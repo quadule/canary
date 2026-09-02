@@ -1,0 +1,548 @@
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { copyFile, stat } from "node:fs/promises";
+import { formatDurationMs, requestId } from "dailies-cli-kit";
+import {
+  sendRequest,
+  sessionReportPath,
+  sessionResultsPath,
+} from "dailies-daemon-client";
+import type { SessionEndRequest, SessionEndResult } from "dailies-protocol";
+import { logger } from "../logger.js";
+import { writeSessionReport } from "../report/load-and-render.js";
+import { endResultFromDisk } from "../session/artifacts.js";
+import {
+  readSessionRecord,
+  type SessionRecord,
+  type SessionStep,
+  updateSessionRecord,
+  writeSessionRecord,
+} from "../session/registry.js";
+import { scrubHarFile } from "../session/scrub-har.js";
+import {
+  condenseVideo,
+  findFfmpeg,
+  remapToCondensed,
+  type Segment,
+} from "../video/condense.js";
+import {
+  type CinematicStep,
+  cinematicProcess,
+  precinematicVideoPath,
+} from "../video/narrate.js";
+import { stopDaemonIfIdle } from "./daemon-stop.js";
+
+interface SessionEndOpts {
+  captions?: boolean;
+  cinematic?: boolean;
+  condense?: boolean;
+  open?: boolean;
+  prompt?: string;
+  // Replace credential header values in network.har (default on). --no-scrub-har
+  // keeps them, for a HAR that has to be replayed against the same session.
+  scrubHar?: boolean;
+  // Song mode: score the whole video with one LLM-written, model-sung song
+  // instead of per-step spoken narration. A flavor of the cinematic pass.
+  song?: boolean;
+  stopDaemon?: boolean;
+  // The agent's explicit run verdict (session end --pass/--fail). Stamped on the
+  // record so the report's pass/fail reflects the agent's judgment, not just the
+  // per-step exit codes.
+  verdict?: { status: "pass" | "fail"; reason?: string };
+}
+
+// Open a file/URL in the OS default app, detached and best-effort: opening the
+// report is a convenience, so a missing opener or headless host must never fail
+// `session end`.
+function openInOSDefault(target: string): void {
+  let command = "xdg-open";
+  let args = [target];
+  if (process.platform === "darwin") {
+    command = "open";
+  } else if (process.platform === "win32") {
+    command = "cmd";
+    args = ["/c", "start", "", target];
+  }
+  try {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.on("error", () => {
+      // no opener on this host — ignore
+    });
+    child.unref();
+  } catch {
+    // ignore — best effort
+  }
+}
+
+// How much to keep around each step's script execution. The browser is driven
+// during a step; the long idle gaps BETWEEN steps (the agent reasoning) plus the
+// leading page load and the trailing tail are the dead air worth trimming.
+export const STEP_PAD_BEFORE_SEC = 0.6;
+// Generous tail: an action's visual effect (a navigation, a re-render) often
+// lands just AFTER the step's script returns, and the video clock can begin a
+// touch before createdAt — both must stay inside the kept window.
+export const STEP_PAD_AFTER_SEC = 1.5;
+
+// Map each recorded step to a keep-window in video time. The video starts at the
+// session's createdAt, and each step is stamped with the same wall clock, so
+// (step.startedAt - createdAt) is the step's offset into the recording.
+//
+// Failed steps (ok === false) are left out. A step that timed out or errored —
+// e.g. an agent stuck retrying the login page — records as a long, mostly frozen
+// stretch whose only value (the failure) is already captured in the report and
+// results.json. Keeping its window would pad the condensed cut (and the cinematic
+// demo) with dead air from attempts that didn't work; dropping it trims those
+// stuck retries out. If every step failed we return no windows and condenseVideo
+// falls back to whole-video freezedetect, so a wholly-failed run still trims.
+export function stepKeepWindows(record: SessionRecord): Segment[] {
+  const t0 = Date.parse(record.createdAt);
+  if (!Number.isFinite(t0)) {
+    return [];
+  }
+  const windows: Segment[] = [];
+  for (const step of record.steps) {
+    if (!step.ok) {
+      continue;
+    }
+    const startMs = Date.parse(step.startedAt);
+    if (!Number.isFinite(startMs)) {
+      continue;
+    }
+    const start = (startMs - t0) / 1000;
+    windows.push({
+      start: Math.max(0, start - STEP_PAD_BEFORE_SEC),
+      end: start + step.durationMs / 1000 + STEP_PAD_AFTER_SEC,
+    });
+  }
+  return windows;
+}
+
+// Seconds into the recording where real content began — a session start --url's
+// settle time, relative to the video start (createdAt, same clock). 0 when no
+// start URL was used (no head trim). Exported for testing.
+export function contentStartFloorSec(record: SessionRecord): number {
+  if (!record.contentStartedAt) {
+    return 0;
+  }
+  const t0 = Date.parse(record.createdAt);
+  const content = Date.parse(record.contentStartedAt);
+  if (!(Number.isFinite(t0) && Number.isFinite(content))) {
+    return 0;
+  }
+  return Math.max(0, (content - t0) / 1000);
+}
+
+// Trim dead air from the recorded videos before the report is rendered,
+// refreshing each artifact's byte size so the manifest reflects the condensed
+// file. Interaction-aware when the session has timed steps: keep the step
+// windows, trim the idle gaps / leading load / trailing tail. Otherwise fall
+// back to freezedetect. Best-effort: without ffmpeg or on failure, originals
+// are kept and the report renders unchanged.
+async function condenseSessionVideos(
+  result: SessionEndResult,
+  record: SessionRecord
+): Promise<void> {
+  const videos = result.artifacts.filter((a) => a.kind === "video");
+  if (videos.length === 0) {
+    return;
+  }
+  const ffmpeg = await findFfmpeg();
+  if (!ffmpeg) {
+    logger.info("ffmpeg not found; keeping raw session videos");
+    return;
+  }
+  const keepWindows = stepKeepWindows(record);
+  // A session start --url stamped when its page finished settling; trim the video
+  // head to that (same clock basis as createdAt) so the pre-load about:blank is
+  // dropped even in the freezedetect / near-t0-first-step cases.
+  const headTrimSec = contentStartFloorSec(record);
+  // Re-encoding can take a few seconds per video; without feedback the command
+  // looks hung. Progress goes to stderr (stdout stays machine-readable).
+  const label = videos.length === 1 ? "recording" : "recordings";
+  process.stderr.write(`Condensing ${videos.length} ${label}…\n`);
+  // All videos share the same step keep-windows, so any condensed video's kept
+  // segments give the same original→condensed time remap. Capture the first to
+  // stamp each step's position in the trimmed video for the timeline.
+  let mappingKeeps: Segment[] | undefined;
+  for (const video of videos) {
+    const outcome = await condenseVideo(video.path, logger, {
+      ffmpegPath: ffmpeg,
+      headTrimSec,
+      keepWindows,
+    });
+    if (outcome.condensed) {
+      mappingKeeps ??= outcome.keeps;
+      video.bytes = await stat(video.path)
+        .then((s) => s.size)
+        .catch(() => video.bytes);
+      const from = formatDurationMs(
+        Math.round((outcome.durationSec ?? 0) * 1000)
+      );
+      const to = formatDurationMs(Math.round((outcome.keptSec ?? 0) * 1000));
+      process.stderr.write(`  ✓ ${from} → ${to}\n`);
+      logger.info({ video: video.path }, `condensed video: ${from} → ${to}`);
+      // Preserve the condensed cut as the pre-cinematic source. Condensing is
+      // destructive + in-place, so this sidecar also MARKS the video as
+      // already-condensed: a later `session end` (especially --cinematic) reuses
+      // it instead of condensing the already-condensed file again — which would
+      // shrink it further and desync the stamped step times from the pixels.
+      await copyFile(video.path, precinematicVideoPath(video.path)).catch(
+        (err) =>
+          logger.warn(
+            { err, video: video.path },
+            "could not preserve condensed cut"
+          )
+      );
+    } else if (outcome.reason === "nothing to trim") {
+      logger.debug(
+        { video: video.path, reason: outcome.reason },
+        "video left unchanged"
+      );
+    } else {
+      // An actual failure (e.g. the encode threw) silently keeps the raw video,
+      // which reads as "condense didn't help". Surface it so a regression shows.
+      logger.warn(
+        { video: video.path, reason: outcome.reason },
+        "could not condense video; keeping the original"
+      );
+    }
+  }
+
+  // Stamp each step's position in the condensed video so the report/viewer
+  // timeline can sync to it. Mutating record.steps here flows into the manifest
+  // (built from the record just after this).
+  const t0 = Date.parse(record.createdAt);
+  if (mappingKeeps && Number.isFinite(t0)) {
+    for (const step of record.steps) {
+      const startMs = Date.parse(step.startedAt);
+      if (Number.isFinite(startMs)) {
+        step.videoTime = remapToCondensed((startMs - t0) / 1000, mappingKeeps);
+      }
+    }
+  }
+}
+
+interface CinematicOpts {
+  captions: boolean;
+  prompt?: string;
+  // Song mode: replace narration with one sung song (see narrate.ts).
+  song?: boolean;
+}
+
+// Apply the opt-in cinematic pass (LLM narration + macOS TTS + burned captions +
+// an opening title card) to the primary recording, AFTER condensing has stamped
+// each step's position in the trimmed video. The pass re-times the video (it
+// freezes each step's frame so its narration fits, then prepends a title card),
+// which MOVES every step — so we replace each step.videoTime with the returned
+// cinematic positions to keep the report/viewer timeline synced. Best-effort: on
+// a non-macOS host, a missing `claude`/`say`, or any failure, the video is left
+// as the plain condensed cut and the timeline is unchanged.
+async function cinematizeSessionVideo(
+  result: SessionEndResult,
+  record: SessionRecord,
+  opts: CinematicOpts
+): Promise<void> {
+  const video = result.artifacts.find((a) => a.kind === "video");
+  if (!video) {
+    return;
+  }
+  const ffmpeg = await findFfmpeg();
+  if (!ffmpeg) {
+    logger.info("ffmpeg not found; skipping cinematic pass");
+    return;
+  }
+  // Keep references to the record steps we pass through, so the re-timed
+  // positions can be written straight back onto them in order. Use the SAME
+  // finiteness predicate cinematicProcess uses internally, so the returned
+  // stepTimes line up index-for-index with timedSteps (no off-by-one).
+  // Source each step's position from the preserved condensed time when present —
+  // a cinematic re-run reads the clean condensed cut, and videoTime has by then
+  // been overwritten with cinematic positions (precinematicVideoTime has not).
+  const sourceTimeOf = (s: SessionStep): number | undefined =>
+    s.precinematicVideoTime ?? s.videoTime;
+  const timedSteps = record.steps.filter((s) =>
+    Number.isFinite(sourceTimeOf(s))
+  );
+  const steps: CinematicStep[] = timedSteps.map((s) => ({
+    name: s.name,
+    script: s.script,
+    durationMs: s.durationMs,
+    videoTime: sourceTimeOf(s) as number,
+  }));
+  if (steps.length === 0) {
+    // Steps are only timed when the video was condensed; --no-condense leaves
+    // them untimed. Tell the user why their requested cinematic pass did nothing.
+    process.stderr.write(
+      "  ⚠ cinematic pass skipped: no timed steps (did you pass --no-condense?)\n"
+    );
+    logger.warn("no timed steps; skipping cinematic pass");
+    return;
+  }
+  process.stderr.write(
+    opts.song ? "Scoring a cinematic song…\n" : "Adding cinematic narration…\n"
+  );
+  const outcome = await cinematicProcess(video.path, steps, {
+    ffmpegPath: ffmpeg,
+    prompt: opts.prompt,
+    captions: opts.captions,
+    song: opts.song,
+    log: logger,
+    onProgress: (message) => process.stderr.write(`  · ${message}\n`),
+  });
+  if (!outcome.applied) {
+    process.stderr.write(`  ⚠ cinematic pass skipped: ${outcome.reason}\n`);
+    logger.warn({ reason: outcome.reason }, "cinematic pass not applied");
+    return;
+  }
+  // Re-timing moved every step (per-step freezes + the title card), so REPLACE
+  // each step's position with the cinematic one — keeping click-to-seek and the
+  // playhead highlight aligned to the narrated cut.
+  outcome.stepTimes?.forEach((t, i) => {
+    const step = timedSteps[i];
+    if (step) {
+      // Persist the condensed source position on the first cinematic run (before
+      // videoTime is overwritten) so future --cinematic re-runs reuse it.
+      if (step.precinematicVideoTime === undefined) {
+        step.precinematicVideoTime = steps[i]?.videoTime;
+      }
+      step.videoTime = t;
+    }
+  });
+  video.bytes = await stat(video.path)
+    .then((s) => s.size)
+    .catch(() => video.bytes);
+  process.stderr.write(
+    opts.song ? "  ✓ song added\n" : "  ✓ narration added\n"
+  );
+  // Surface the chosen parameters so a delightful random run can be reproduced
+  // (pin via --prompt and, for narration, $DAILIES_SAY_VOICE / $DAILIES_SAY_RATE).
+  if (outcome.meta) {
+    const { direction, voice, rate, song, music } = outcome.meta;
+    process.stderr.write(
+      song
+        ? `  🎵 ${direction} · song: ${music}\n`
+        : `  🎬 ${direction} · voice: ${voice} @ ${rate} wpm\n`
+    );
+  }
+  // Surface any degradation (e.g. this ffmpeg lacks drawtext/subtitles) so the
+  // user isn't left wondering where the title card or burned captions went.
+  for (const note of outcome.notes ?? []) {
+    process.stderr.write(`  ⚠ ${note}\n`);
+  }
+  logger.info({ video: video.path }, "cinematic pass applied");
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the `session end` orchestrator — collect artifacts, resolve the verdict, condense, optionally run the cinematic pass, render the report; each stage is independently switchable by flag.
+export async function sessionEnd(
+  id: string,
+  json: boolean,
+  opts: SessionEndOpts = {}
+): Promise<number> {
+  await readSessionRecord(id); // friendly "No such session" if unknown
+
+  const request: SessionEndRequest = {
+    id: requestId("session-end"),
+    type: "session-end",
+    sessionId: id,
+    reason: "end",
+  };
+  let result: SessionEndResult | undefined;
+  let code = 1;
+  try {
+    code = await sendRequest(request, (data) => {
+      result = data as SessionEndResult;
+    });
+  } catch (err) {
+    // Daemon unreachable (e.g. it was stopped). Fall through to reconcile the
+    // record and finalize a report from whatever artifacts are on disk.
+    logger.warn(
+      { err, sessionId: id },
+      "daemon unreachable; finalizing from on-disk artifacts"
+    );
+  }
+
+  // Reconcile the on-disk record regardless of the daemon outcome: if the daemon
+  // restarted / lost the session, never leave a zombie "active" record behind.
+  const record = await updateSessionRecord(id, (r) => {
+    if (r.status === "active") {
+      r.status = "ended";
+    }
+    r.endedAt = new Date(result?.session.endedAt ?? Date.now()).toISOString();
+    // Record the agent's explicit verdict (if given) so it drives the report's
+    // pass/fail and survives a later re-render.
+    if (opts.verdict) {
+      r.verdict = opts.verdict;
+    }
+  });
+
+  // Degraded = the daemon did not cleanly finalize the live session (it was
+  // unreachable, restarted, or returned an error), so the report is rebuilt
+  // from whatever artifacts were already flushed to disk and may be partial.
+  let degraded = code !== 0 || !result;
+  if (degraded) {
+    logger.warn(
+      { sessionId: id },
+      "daemon could not finalize the session; building the report from on-disk artifacts"
+    );
+  }
+  const endResult =
+    code === 0 && result ? result : await endResultFromDisk(record);
+
+  // The daemon stamps contentStartedAt when real content first painted (the first
+  // non-about:blank load). For a normal session that happens DURING step 1 —
+  // after session start already wrote the record — so it isn't on the record yet;
+  // pull it from the end result now (a --url session already has it from start).
+  // condense's head-trim uses it to drop the pre-content blank.
+  if (
+    !record.contentStartedAt &&
+    typeof endResult.session.contentStartedAt === "number"
+  ) {
+    record.contentStartedAt = new Date(
+      endResult.session.contentStartedAt
+    ).toISOString();
+  }
+
+  // Scrub credentials out of the HAR before anything else can copy or share it.
+  // Playwright records `Cookie` / `Authorization` verbatim, and a session
+  // directory is meant to be handed to someone else.
+  if (opts.scrubHar !== false) {
+    const harArtifact = endResult.artifacts.find((a) => a.kind === "har");
+    if (harArtifact) {
+      const outcome = await scrubHarFile(harArtifact.path, logger);
+      if (outcome.scrubbed) {
+        if (outcome.replaced > 0) {
+          logger.info(
+            { har: harArtifact.path, replaced: outcome.replaced },
+            `scrubbed ${outcome.replaced} credential value(s) from network.har`
+          );
+        }
+      } else {
+        // Loudly: the artifact is still on disk WITH its credentials, and the
+        // whole point of the pass is that someone is about to share it.
+        logger.warn(
+          { har: harArtifact.path, reason: outcome.reason },
+          "could not scrub network.har — it still contains credential headers; do not share this session directory"
+        );
+      }
+    }
+  }
+
+  // The preserved condensed cut (written by a prior condense) marks the video as
+  // already-condensed. Skip condensing then: it's destructive + in-place, so
+  // re-condensing an already-condensed video would shrink it again and desync the
+  // stamped step times. A later cinematic pass sources from the preserved cut and
+  // its stamped timings instead. First runs (raw video) condense normally.
+  const videoArtifact = endResult.artifacts.find((a) => a.kind === "video");
+  const cinematicRequested = opts.cinematic === true || opts.song === true;
+  const alreadyCondensed =
+    videoArtifact !== undefined &&
+    existsSync(precinematicVideoPath(videoArtifact.path));
+  if (opts.condense !== false && !alreadyCondensed) {
+    await condenseSessionVideos(endResult, record);
+    // Persist the stamped step videoTimes now (not just in the cinematic branch)
+    // so a LATER `session end --cinematic` on this already-condensed session can
+    // source them without re-condensing.
+    await writeSessionRecord(record).catch((err) =>
+      logger.warn(
+        { err, sessionId: id },
+        "could not persist condensed step timings"
+      )
+    );
+  } else if (alreadyCondensed && cinematicRequested) {
+    process.stderr.write(
+      "  ↻ re-running cinematic from the preserved condensed cut\n"
+    );
+  }
+
+  // Cinematic narration (or a cinematic song) is opt-in and runs after condensing
+  // (it keys off the stamped step.videoTime and the trimmed video). Default output
+  // is unchanged.
+  if (cinematicRequested) {
+    // Both narration and song mode BURN captions (song shows the per-step lyric
+    // lines), so either way page.showCaption overlays baked into the recording
+    // would double up. Warn when the session wasn't started --cinematic (which
+    // suppresses the overlays); still run the pass (handy for testing).
+    if (!record.cinematic) {
+      process.stderr.write(
+        "  ⚠ this session was not started with --cinematic, so any page.showCaption overlays are baked into the video; the burned captions will be added on top (possible double captions). Start with `dailies session start --cinematic` to suppress the overlays.\n"
+      );
+    }
+    await cinematizeSessionVideo(endResult, record, {
+      prompt: opts.prompt,
+      captions: opts.captions !== false,
+      song: opts.song,
+    });
+    // Persist the step timings the cinematic pass stamped — notably
+    // precinematicVideoTime (the condensed source positions). Step times are
+    // otherwise only in-memory at session end; without this a re-run would have
+    // no preserved timings to source from after we skip re-condensing.
+    await writeSessionRecord(record).catch((err) => {
+      logger.warn(
+        { err, sessionId: id },
+        "could not persist cinematic timings"
+      );
+    });
+  }
+
+  // Resilient like `session abort`: a report-write failure must not crash the
+  // command after the record was already flipped to "ended" (it can be rebuilt
+  // by re-running `session end`, which is idempotent on an ended record).
+  // Capture the run's verdict from the manifest so CI can gate on it.
+  let runStatus: "passed" | "failed" | "aborted" | undefined;
+  let verdictReason: string | undefined;
+  try {
+    const manifest = await writeSessionReport(id, record, endResult);
+    runStatus = manifest.status;
+    verdictReason = manifest.verdictReason;
+  } catch (err) {
+    degraded = true;
+    logger.warn({ err, sessionId: id }, "failed to write the session report");
+  }
+
+  if (json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          artifactsDir: endResult.session.artifactsDir,
+          artifacts: endResult.artifacts,
+          reportPath: sessionReportPath(id),
+          resultsPath: sessionResultsPath(id),
+          // The run verdict (agent-declared or the fallback tally) + any reason,
+          // so a CI job can fail the build on a failed session.
+          status: runStatus,
+          verdictReason,
+        },
+        null,
+        2
+      )}\n`
+    );
+  } else {
+    process.stdout.write(
+      `Session ${id} ended.\nArtifacts: ${endResult.session.artifactsDir}\nReport:    ${sessionReportPath(id)}\n${runStatus ? `Result:    ${runStatus.toUpperCase()}${verdictReason ? ` — ${verdictReason}` : ""}\n` : ""}`
+    );
+  }
+
+  // Open the rendered report in the OS default browser when asked (the
+  // interactive flow passes --open so the user sees it without an extra step).
+  if (opts.open) {
+    const reportPath = sessionReportPath(id);
+    if (!json) {
+      process.stdout.write(`Opening ${reportPath}…\n`);
+    }
+    openInOSDefault(reportPath);
+  }
+
+  if (opts.stopDaemon) {
+    await stopDaemonIfIdle(id, json);
+  }
+  // Surface a non-zero exit when the daemon could not cleanly finalize the
+  // session (or the report failed to write), so a CI wrapper can distinguish a
+  // clean end from a degraded reconcile. The report is still written either way.
+  if (degraded) {
+    return code === 0 ? 1 : code;
+  }
+  return 0;
+}

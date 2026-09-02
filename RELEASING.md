@@ -1,29 +1,29 @@
 # Releasing
 
-Canary publishes a small set of public packages to npm under the `@usecanary` scope;
+Dailies publishes a small set of public packages to npm under the `dailies` scope;
 the rest stay private (bundled or embedded into the public ones).
 
 ## What publishes
 
 | Package          | npm                | bin              | Notes                                              |
 | ---------------- | ------------------ | ---------------- | -------------------------------------------------- |
-| `@usecanary/cli`    | public             | `canary`         | Self-contained esbuild bundle (deps inlined)       |
-| `@usecanary/browser`| public             | `canary-browser` | Self-contained bundle; embeds the daemon           |
-| `@usecanary/ui`     | public             | —                | Astro node standalone — self-contained `dist/` (no runtime deps) |
-| `create-canary`  | public (unscoped)  | `create-canary`  | `npm create canary` setup wizard                   |
-| `@usecanary/daemon` | **private**        | —                | Embedded as a string into the CLI bundles          |
-| `@usecanary/protocol`, `@usecanary/logger`, `@usecanary/cli-kit`, `@usecanary/daemon-client`, `@usecanary/config` | **private** | — | Bundled into the CLIs by esbuild |
+| `dailies-cli`    | public             | `dailies`         | Self-contained esbuild bundle (deps inlined)       |
+| `dailies-browser`| public             | `dailies-browser` | Self-contained bundle; embeds the daemon           |
+| `dailies-ui`     | public             | —                | Astro node standalone — self-contained `dist/` (no runtime deps) |
+| `create-dailies`  | public (unscoped)  | `create-dailies`  | `npm create dailies` setup wizard                   |
+| `dailies-daemon` | **private**        | —                | Embedded as a string into the CLI bundles          |
+| `dailies-protocol`, `dailies-logger`, `dailies-cli-kit`, `dailies-daemon-client`, `dailies-config` | **private** | — | Bundled into the CLIs by esbuild |
 
-`@usecanary/daemon`'s Playwright runtime and `@usecanary/ui` are **not** package dependencies — they're
-fetched into `~/.canary/` at runtime (`canary install` for the daemon, first `canary ui` for the viewer),
-so a plain `npm i -g @usecanary/cli` stays small.
+`dailies-daemon`'s Playwright runtime and `dailies-ui` are **not** package dependencies — they're
+fetched into `~/.dailies/` at runtime (`dailies install` for the daemon, first `dailies ui` for the viewer),
+so a plain `npm i -g dailies-cli` stays small.
 
 ## Prerequisites (one-time)
 
-1. **npm scope** — the `@usecanary` org (or user scope) must exist on npmjs.com, and the `NPM_TOKEN`
+1. **npm scope** — the `dailies` org (or user scope) must exist on npmjs.com, and the `NPM_TOKEN`
    repo secret must be an automation token with publish rights. Scoped packages publish with
    `--access public` (already in the workflow).
-2. **`create-canary` name** — confirm the unscoped name `create-canary` is available/owned on npm.
+2. **`create-dailies` name** — confirm the unscoped name `create-dailies` is available/owned on npm.
 3. **Provenance** — the release workflow sets `id-token: write` so npm records build provenance;
    the `repository` field in each manifest must point at this repo (it does).
 
@@ -76,9 +76,9 @@ stamps the same version into every manifest that update detection reads:
 
 - **Claude Code** compares `.claude-plugin/marketplace.json` `plugins[].version` against the
   installed plugin — **no version bump, no visible update**. Users pull it with
-  `/plugin marketplace update canary-marketplace` (or per-marketplace auto-update, which is OFF by
+  `/plugin marketplace update dailies-marketplace` (or per-marketplace auto-update, which is OFF by
   default for third-party marketplaces).
-- **Cursor / Codex** read `.cursor-plugin/plugin.json` and `plugins/canary/.codex-plugin/plugin.json`
+- **Cursor / Codex** read `.cursor-plugin/plugin.json` and `plugins/dailies/.codex-plugin/plugin.json`
   versions — both synced by the release flow. (Each `skills/*/SKILL.md` `metadata.version` is also
   synced for honesty, not detection.)
 
@@ -90,6 +90,6 @@ the skills, README, and both CLIs' `--help` by `make docs` — edit snippets, re
 
 ```bash
 pnpm build
-pnpm --filter @usecanary/cli pack         # -> canary-cli-<v>.tgz
-tar -tf canary-cli-*.tgz               # expect only dist/ (and examples/), no node_modules
+pnpm --filter dailies-cli pack         # -> dailies-cli-<v>.tgz
+tar -tf dailies-cli-*.tgz               # expect only dist/ (and examples/), no node_modules
 ```

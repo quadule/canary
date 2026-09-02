@@ -12,7 +12,7 @@ const log = logger.child({ component: "daemon-supervisor" });
 const STARTUP_DEADLINE_MS = 5000;
 const POLL_INTERVAL_MS = 100;
 
-// Returns the daemon PID from ~/.canary/daemon.pid, or null if the
+// Returns the daemon PID from ~/.dailies/daemon.pid, or null if the
 // file is missing/unreadable/unparseable.
 export async function currentDaemonPid(): Promise<number | null> {
   try {
@@ -37,7 +37,7 @@ export async function ensureDaemonRunning(): Promise<void> {
     !(await embeddedRuntimeInstalled(command.workdir))
   ) {
     throw new Error(
-      "Embedded daemon dependencies are missing. Run `canary install` first."
+      "Embedded daemon dependencies are missing. Run `dailies install` first."
     );
   }
 

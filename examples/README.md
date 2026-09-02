@@ -11,17 +11,17 @@ them as starting points and update as needed.
 ## Run a quick one-off (no recording)
 
 ```bash
-canary install                        # once: downloads Chromium
-canary-browser run examples/hacker-news/demo.js
+dailies install                        # once: downloads Chromium
+dailies-browser run examples/hacker-news/demo.js
 ```
 
 ## Record a session you can open in the viewer
 
 ```bash
-id=$(canary session start --name "Hacker News demo")
-canary run examples/hacker-news/demo.js --session "$id" --step "browse"
-canary session end "$id"
-canary ui                             # browse the recorded session (in this repo); end users: canary-viewer
+id=$(dailies session start --name "Hacker News demo")
+dailies run examples/hacker-news/demo.js --session "$id" --step "browse"
+dailies session end "$id"
+dailies ui                             # browse the recorded session (in this repo); end users: dailies-viewer
 ```
 
 Demos: `hacker-news/`, `product-hunt/`, `github-trending/`, `wikipedia/`.

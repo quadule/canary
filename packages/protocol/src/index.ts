@@ -1,7 +1,7 @@
-// Canary daemon IPC protocol — single source of truth.
+// Dailies daemon IPC protocol — single source of truth.
 //
 // All requests and responses on the daemon's named-pipe / Unix socket are
-// validated against these Zod schemas. CLIs (`canary`, `canary-browser`)
+// validated against these Zod schemas. CLIs (`dailies`, `dailies-browser`)
 // import the inferred TypeScript types only; the daemon imports the schemas
 // for runtime validation.
 //
@@ -252,7 +252,7 @@ export interface StatusSummary {
 }
 
 // ---------- Session result payloads ----------
-// Shaped by the daemon, consumed by the `canary` orchestrator. Like the other
+// Shaped by the daemon, consumed by the `dailies` orchestrator. Like the other
 // result payloads, these are not validated on the wire.
 
 export type SessionPhase = "active" | "ending" | "ended" | "aborted" | "failed";
@@ -301,7 +301,7 @@ export interface SessionListResult {
 }
 
 // Deterministic, content-derived hash so two distinct step names can't map to
-// the same slug. Pure JS (djb2) — no node:crypto — so @usecanary/protocol stays
+// the same slug. Pure JS (djb2) — no node:crypto — so dailies-protocol stays
 // dependency-light. 32-bit, base36; collision across a session's handful of
 // steps is astronomically unlikely.
 function slugHash(value: string): string {
@@ -342,15 +342,15 @@ export const SESSION_SCREENSHOTS_DIR = "screenshots";
 export const SESSION_SCREENSHOT_EXT = ".png";
 // Freeform files any external tool may drop into the session dir before
 // `session end` runs (e.g. a generated report, log, or artifact from a step
-// outside Canary's own capture). Discovered non-recursively at finalization
+// outside Dailies's own capture). Discovered non-recursively at finalization
 // and surfaced as "attachment" artifacts — unlike video/screenshots, not
 // gated by CaptureOptions, since dropping a file is the opt-in itself.
 export const SESSION_ATTACHMENTS_DIR = "attachments";
 
 // ---------- Daemon runtime ----------
 // Single source of truth for the npm-managed runtime the daemon needs in
-// ~/.canary (installed by `canary install`). Both the daemon's socket `install`
-// handler (apps/canary-daemon) and the daemon-client extract path write the
+// ~/.dailies (installed by `dailies install`). Both the daemon's socket `install`
+// handler (apps/dailies-daemon) and the daemon-client extract path write the
 // identical EMBEDDED_PACKAGE_JSON, and the readiness check derives its allowlist
 // from DAEMON_RUNTIME_DEPENDENCIES — so adding a dependency can't drift them.
 
@@ -366,7 +366,7 @@ export const DAEMON_RUNTIME_DEPENDENCIES = {
 
 export const EMBEDDED_PACKAGE_JSON: string = JSON.stringify(
   {
-    name: "canary-runtime",
+    name: "dailies-runtime",
     private: true,
     type: "module",
     dependencies: DAEMON_RUNTIME_DEPENDENCIES,

@@ -1,5 +1,5 @@
 {
-  "extends": "@usecanary/config/base.json",
+  "extends": "dailies-config/base.json",
   "compilerOptions": {
     "rootDir": "./src",
     "noEmit": true
