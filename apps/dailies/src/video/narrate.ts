@@ -26,6 +26,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { Logger } from "dailies-logger";
 import { resolveAceStepMusic } from "./acestep.js";
@@ -47,6 +48,7 @@ import {
   encodeSlice,
   FFMPEG_BASE_ARGS,
   isOnPath,
+  mapLimit,
   type ProbedVideo,
   probeVideo,
   run,
@@ -1321,10 +1323,49 @@ async function renderClip(args: {
   return { step, narration, m4aPath, durationSec };
 }
 
-// Synthesize a clip for every step that the LLM gave narration text. Prefers the
-// TTS provider (when present); on its FIRST failure, notes it once and falls back
-// to `say` for the rest (a consistent voice beats a half-provider mix). The step's
-// enumerated index keys the narration map (same indexing the prompt used).
+// How many narration clips to synthesize at once. Each clip is one independent
+// TTS call (a local `say`, or one HTTP request) plus a short ffmpeg transcode, so
+// overlapping them is pure wall-clock savings: 8 concurrent macOS `say -o`
+// renders were measured producing BYTE-IDENTICAL audio to the same lines rendered
+// serially, in 4s instead of 11s. Kept modest — a hosted TTS shouldn't be hit
+// with a whole session at once — and bounded by the machine's own parallelism.
+// Override with $DAILIES_TTS_CONCURRENCY (1 restores the old serial pass).
+const DEFAULT_TTS_CONCURRENCY = 4;
+export function ttsConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const override = Number(env.DAILIES_TTS_CONCURRENCY);
+  if (Number.isFinite(override) && override >= 1) {
+    return Math.trunc(override);
+  }
+  return Math.max(
+    1,
+    Math.min(DEFAULT_TTS_CONCURRENCY, os.availableParallelism())
+  );
+}
+
+// The steps the LLM actually wrote narration for, each carrying its ENUMERATED
+// step index — that's the key the narration map uses (the same indexing the prompt
+// used) and the suffix each clip's temp files get. Pure → unit-tested.
+export function narrationJobs(
+  steps: CinematicStep[],
+  byIndex: Map<number, string>
+): { index: number; step: CinematicStep; text: string }[] {
+  const jobs: { index: number; step: CinematicStep; text: string }[] = [];
+  for (const [index, step] of steps.entries()) {
+    const text = byIndex.get(index)?.trim();
+    if (text) {
+      jobs.push({ index, step, text });
+    }
+  }
+  return jobs;
+}
+
+// Synthesize a clip for every step that the LLM gave narration text, several in
+// flight (see ttsConcurrency). Prefers the TTS provider when present; its FIRST
+// failure latches the provider off, so the lines still queued go straight to
+// `say` instead of each paying another failing call/timeout — then a second pass
+// voices everything the provider didn't with `say`. A `say` failure is NOT caught
+// (as before): it throws through to cinematicProcess, which skips the pass.
+// Returns clips in step order, so the caller's cue/offset arrays stay in lockstep.
 async function synthesizeClips(args: {
   ffmpeg: string;
   say?: SpeechSynth;
@@ -1349,44 +1390,66 @@ async function synthesizeClips(args: {
     log,
     echo,
   } = args;
-  let provider: SpeechSynth | undefined = tts
-    ? { ext: "wav", run: (t, o) => tts.synthesize(t, o) }
-    : undefined;
-  const clips: RenderedClip[] = [];
-  for (const [i, step] of steps.entries()) {
-    const text = byIndex.get(i)?.trim();
-    if (!text) {
-      continue;
-    }
-    const base = {
-      ffmpeg,
-      step,
-      narration: text,
-      videoPath,
-      index: i,
-      temps,
-      echo,
+  const jobs = narrationJobs(steps, byIndex);
+  const limit = ttsConcurrency();
+  const clipArgs = (job: {
+    index: number;
+    step: CinematicStep;
+    text: string;
+  }) => ({
+    ffmpeg,
+    step: job.step,
+    narration: job.text,
+    videoPath,
+    index: job.index,
+    temps,
+    echo,
+  });
+
+  // Pass 1: the TTS provider. `down` latches on the first failure so queued lines
+  // skip the provider entirely rather than each paying its own failing call.
+  const rendered: (RenderedClip | null)[] = jobs.map(() => null);
+  if (tts) {
+    const synth: SpeechSynth = {
+      ext: "wav",
+      run: (t, o) => tts.synthesize(t, o),
     };
-    let clip: RenderedClip | null = null;
-    if (provider) {
-      try {
-        clip = await renderClip({ ...base, synth: provider });
-      } catch (err) {
-        log.debug({ err }, "cinematic: TTS provider failed; using `say`");
-        notes.push(
-          `narration voiced by macOS \`say\` — the TTS provider (${tts?.id}) failed`
-        );
-        provider = undefined;
+    let down = false;
+    const voiced = await mapLimit(jobs, limit, async (job) => {
+      if (down) {
+        return null;
       }
-    }
-    if (clip === null && provider === undefined && say) {
-      clip = await renderClip({ ...base, synth: say });
-    }
-    if (clip) {
-      clips.push(clip);
+      try {
+        return await renderClip({ ...clipArgs(job), synth });
+      } catch (err) {
+        down = true;
+        log.debug({ err }, "cinematic: TTS provider failed; using `say`");
+        return null;
+      }
+    });
+    voiced.forEach((clip, slot) => {
+      rendered[slot] = clip;
+    });
+    if (down) {
+      notes.push(
+        `narration voiced by macOS \`say\` — the TTS provider (${tts.id}) failed`
+      );
     }
   }
-  return clips;
+
+  // Pass 2: everything the provider didn't voice falls back to `say`.
+  if (say) {
+    const pending = jobs
+      .map((job, slot) => ({ job, slot }))
+      .filter((p) => rendered[p.slot] === null);
+    const spoken = await mapLimit(pending, limit, (p) =>
+      renderClip({ ...clipArgs(p.job), synth: say })
+    );
+    pending.forEach((p, k) => {
+      rendered[p.slot] = spoken[k] ?? null;
+    });
+  }
+  return rendered.filter((clip): clip is RenderedClip => clip !== null);
 }
 
 // Render a 2.5s title card matching the source geometry, encoded to webm
