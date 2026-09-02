@@ -35,6 +35,7 @@ import {
   branchContributors,
   buildCreditSections,
   buildCreditsRoll,
+  type Contributor,
   type CreditSection,
 } from "./credits.js";
 import {
@@ -624,29 +625,28 @@ export function titleArtToolName(id: string | undefined): string | undefined {
   }
 }
 
-// Append a scrolling end-credits roll after the body. The caller assembles the
-// sections (contributors + music + tools), so this just renders and concatenates.
-// Best-effort: returns the body unchanged when there's nothing to credit or on
-// any failure. Credits sit at the very end, so they don't shift any step's
-// videoTime.
-async function appendCredits(args: {
+// Render the scrolling end-credits roll as its OWN segment, for the caller to
+// concatenate after the body. The caller assembles the sections (contributors +
+// music + tools), so this just renders. Best-effort: returns undefined when
+// there's nothing to credit or the render fails, and the caller then simply
+// leaves it out of the concat. Credits sit at the very end, so they never shift
+// a step's videoTime.
+async function renderCreditsSegment(args: {
   ffmpeg: string;
-  body: string;
   videoPath: string;
   heading: string;
   sections: CreditSection[];
   geometry: ProbedVideo;
   temps: string[];
   log: Logger;
-}): Promise<string> {
-  const { ffmpeg, body, videoPath, heading, sections, geometry, temps, log } =
-    args;
+}): Promise<string | undefined> {
+  const { ffmpeg, videoPath, heading, sections, geometry, temps, log } = args;
   if (!sections.some((s) => s.entries.length > 0)) {
-    return body;
+    return;
   }
+  const creditsPath = `${videoPath}.credits.webm`;
+  temps.push(creditsPath);
   try {
-    const creditsPath = `${videoPath}.credits.webm`;
-    temps.push(creditsPath);
     await buildCreditsRoll({
       ffmpeg,
       sections,
@@ -654,14 +654,10 @@ async function appendCredits(args: {
       geometry,
       outPath: creditsPath,
     });
-    const outPath = `${videoPath}.withcredits.webm`;
-    const listPath = `${videoPath}.credits-list.txt`;
-    temps.push(outPath, listPath);
-    await concatSegments(ffmpeg, [body, creditsPath], outPath, listPath);
-    return outPath;
+    return creditsPath;
   } catch (err) {
     log.debug({ err }, "cinematic: credits roll failed; skipping it");
-    return body;
+    return;
   }
 }
 
@@ -724,7 +720,12 @@ async function generateMusic(args: {
   ffmpeg: string;
   provider: MusicProvider | undefined;
   directionText: string;
-  bodyPath: string;
+  // The credits-roll segment sitting at the END of finalBodyPath, or undefined
+  // when there's no roll. Its own measured length gives the credits region — the
+  // single flat concat no longer produces a title+body intermediate to subtract
+  // from the total, and summing the re-time plan instead would trade a measured
+  // value for a computed one.
+  creditsPath: string | undefined;
   finalBodyPath: string;
   videoPath: string;
   temps: string[];
@@ -736,7 +737,7 @@ async function generateMusic(args: {
     ffmpeg,
     provider,
     directionText,
-    bodyPath,
+    creditsPath,
     finalBodyPath,
     videoPath,
     temps,
@@ -762,13 +763,15 @@ async function generateMusic(args: {
     notes.push("instrumental score unavailable");
     return [];
   }
-  const creditsStart = await audioDurationSec(ffmpeg, bodyPath);
-  const hasCredits = Boolean(creditsStart && total - creditsStart > 1);
-  if (!hasCredits) {
+  const creditsLen = creditsPath
+    ? ((await audioDurationSec(ffmpeg, creditsPath)) ?? 0)
+    : 0;
+  if (creditsLen <= 1) {
     // No credits region — just the quiet bed under the whole thing.
     return [{ path: bedPath, delaySec: 0, volume: NARRATION_MUSIC_GAIN }];
   }
-  const cs = creditsStart as number;
+  // Where the credits open: the roll is the tail of the final body.
+  const cs = Math.max(0, total - creditsLen);
   const ramp = MUSIC_SWELL_RAMP_SEC;
   // Narration bed: quiet, faded out just before the credits so it doesn't stack
   // with the swell below it.
@@ -785,7 +788,6 @@ async function generateMusic(args: {
   // window so the credits open on a strong section, at full volume, fading in at
   // the credits start. One download → quiet bed + a full-energy credits swell.
   try {
-    const creditsLen = total - cs;
     const loudOff = await pickLoudestOffset(ffmpeg, bedPath, creditsLen);
     const creditsClip = `${videoPath}.credits.wav`;
     temps.push(creditsClip);
@@ -812,11 +814,29 @@ async function generateMusic(args: {
   return tracks;
 }
 
+// The credits roll's non-footage inputs: the branch contributors (a `git log`)
+// and the score's credit line, resolved WITHOUT generating audio (the provider
+// caches its pick, so generateMusic later reuses the credited track). Fetched
+// together, and started before the re-time so both overlap its ffmpeg encodes —
+// neither is CPU-bound, so they don't contend with libvpx.
+async function resolveCreditInputs(args: {
+  repoDir: string;
+  base: string;
+  provider: MusicProvider | undefined;
+  directionText: string;
+}): Promise<{ contributors: Contributor[]; musicCredit: string | undefined }> {
+  const [contributors, musicCredit] = await Promise.all([
+    branchContributors(args.repoDir, args.base),
+    args.provider?.credit?.(args.directionText).catch(() => undefined),
+  ]);
+  return { contributors, musicCredit };
+}
+
 // Turn the condensed body + narration clips into the final cinematic video:
-// re-time so each step holds for its line, prepend the title card (optionally
-// over a generated background), append the credits, and generate any music.
-// Returns the final body, where each step/clip lands, and the music tracks — or
-// null if the source duration can't be probed for re-timing.
+// re-time so each step holds for its line, render the title card (optionally over
+// a generated background) and the credits roll, join all three in one concat, and
+// generate any music. Returns the final body, where each step/clip lands, and the
+// music tracks — or null if the source duration can't be probed for re-timing.
 async function assembleVideo(args: {
   ffmpeg: string;
   videoPath: string;
@@ -869,12 +889,41 @@ async function assembleVideo(args: {
   // guessing geometry corrupts the concat.
   const geometry = await probeVideo(ffmpeg, videoPath);
   const frameRate = geometry?.frameRate ?? 30;
+  // The title card and the credits roll both need the exact source geometry, so
+  // a failed probe (no ffprobe) skips them rather than guessing — narrowing them
+  // behind one binding keeps that gate in a single place.
+  const extrasGeometry = hasDrawtext ? geometry : undefined;
+
+  // Start the non-footage work — the title-background provider (network/GPU) and
+  // the credit lookups (`git log` + a track search) — BEFORE the re-time, so it
+  // overlaps the per-step encodes instead of queueing behind them. Gated exactly
+  // as before: without drawtext/geometry there's no card or roll to feed.
+  const backgroundJob = extrasGeometry
+    ? renderTitleBackground({
+        provider: providers.titleBackground,
+        directionText,
+        geometry: extrasGeometry,
+        videoPath,
+        temps,
+        notes,
+        log,
+        progress,
+      })
+    : Promise.resolve(undefined);
+  const creditInputsJob = extrasGeometry
+    ? resolveCreditInputs({
+        repoDir,
+        base,
+        provider: providers.music,
+        directionText,
+      })
+    : Promise.resolve({ contributors: [], musicCredit: undefined });
 
   progress("re-timing the video to fit the narration…");
   const clipDurSec = narratableSteps.map(
     (step) => clips.find((c) => c.step === step)?.durationSec ?? 0
   );
-  const retimed = await retimeForNarration({
+  const retimed = await retimeSegments({
     ffmpeg,
     videoPath,
     steps: narratableSteps,
@@ -884,27 +933,17 @@ async function assembleVideo(args: {
     gapSec: narrationGapSec(process.env),
   });
   if (!retimed) {
+    // Drain the in-flight jobs before bailing so neither can settle after we've
+    // returned (and so their temps are on the cleanup list).
+    await Promise.allSettled([backgroundJob, creditInputsJob]);
     return null;
   }
-
-  const background =
-    hasDrawtext && geometry
-      ? await renderTitleBackground({
-          provider: providers.titleBackground,
-          directionText,
-          geometry,
-          videoPath,
-          temps,
-          notes,
-          log,
-          progress,
-        })
-      : undefined;
+  const background = await backgroundJob;
 
   progress("painting the title card…");
-  const { body, titleOffsetSec } = await applyTitleCard({
+  const titleCard = await renderTitleSegment({
     ffmpeg,
-    retimedPath: retimed.path,
+    videoPath,
     title,
     style: titleStyle(category),
     background,
@@ -916,6 +955,7 @@ async function assembleVideo(args: {
     notes,
     log,
   });
+  const { titleOffsetSec } = titleCard;
 
   const stepTimes = retimed.starts.map((s) => s + titleOffsetSec);
   const clipOffsetsSec = clips.map((clip) => {
@@ -923,43 +963,44 @@ async function assembleVideo(args: {
     return (idx >= 0 ? (retimed.starts[idx] ?? 0) : 0) + titleOffsetSec;
   });
 
-  let finalBody = body;
-  if (hasDrawtext && geometry) {
+  let creditsPath: string | undefined;
+  if (extrasGeometry) {
     progress("rolling the credits…");
-    // Resolve the music credit WITHOUT generating audio (the provider caches its
-    // pick so generateMusic below reuses the credited track), then assemble the
-    // sections: people, music, and the tools actually used this run.
-    const musicCredit = await providers.music
-      ?.credit?.(directionText)
-      .catch(() => undefined);
-    const sections = buildCreditSections({
-      contributors: await branchContributors(repoDir, base),
-      music: musicCredit,
-      models: buildModelCredits({
-        voiceLabel,
-        ttsId: providers.tts?.id,
-        musicId: providers.music?.id,
-        titleArtId: background ? providers.titleBackground?.id : undefined,
-        hasMusicCredit: Boolean(musicCredit),
-      }),
-    });
-    finalBody = await appendCredits({
+    const { contributors, musicCredit } = await creditInputsJob;
+    creditsPath = await renderCreditsSegment({
       ffmpeg,
-      body,
       videoPath,
       heading: title,
-      sections,
-      geometry,
+      // People, music, and the tools actually used this run.
+      sections: buildCreditSections({
+        contributors,
+        music: musicCredit,
+        models: buildModelCredits({
+          voiceLabel,
+          ttsId: providers.tts?.id,
+          musicId: providers.music?.id,
+          titleArtId: background ? providers.titleBackground?.id : undefined,
+          hasMusicCredit: Boolean(musicCredit),
+        }),
+      }),
+      geometry: extrasGeometry,
       temps,
       log,
     });
   }
 
+  const finalBody = await assembleBody({
+    ffmpeg,
+    videoPath,
+    pieces: [titleCard.path, ...retimed.segs, creditsPath],
+    temps,
+  });
+
   const music = await generateMusic({
     ffmpeg,
     provider: providers.music,
     directionText,
-    bodyPath: body,
+    creditsPath,
     finalBodyPath: finalBody,
     videoPath,
     temps,
@@ -1110,6 +1151,33 @@ async function assembleSongVideo(args: {
 
   const geometry = await probeVideo(ffmpeg, videoPath);
   const frameRate = geometry?.frameRate ?? 30;
+  // The title card and the credits roll both need the exact source geometry, so
+  // a failed probe (no ffprobe) skips them rather than guessing — narrowing them
+  // behind one binding keeps that gate in a single place.
+  const extrasGeometry = hasDrawtext ? geometry : undefined;
+
+  // Same overlap as the narration path: the title-background provider and the
+  // credit lookups start before the re-time's encodes rather than behind them.
+  const backgroundJob = extrasGeometry
+    ? renderTitleBackground({
+        provider: providers.titleBackground,
+        directionText,
+        geometry: extrasGeometry,
+        videoPath,
+        temps,
+        notes,
+        log,
+        progress,
+      })
+    : Promise.resolve(undefined);
+  const creditInputsJob = extrasGeometry
+    ? resolveCreditInputs({
+        repoDir,
+        base,
+        provider: providers.music,
+        directionText,
+      })
+    : Promise.resolve({ contributors: [], musicCredit: undefined });
 
   // Re-time the body: each step plays at natural speed then freezes its last frame to
   // fill its budget (preserving motion + quality). When `onsets` are given (the
@@ -1117,7 +1185,7 @@ async function assembleSongVideo(args: {
   // the on-screen step tracks what's being sung — the song-mode analog of narration's
   // per-step hold; otherwise it falls back to the even `holdDurSec` split.
   progress("re-timing the video to the song…");
-  const retimed = await retimeForNarration({
+  const retimed = await retimeSegments({
     ffmpeg,
     videoPath,
     steps: narratableSteps,
@@ -1128,27 +1196,15 @@ async function assembleSongVideo(args: {
     bodyEnd,
   });
   if (!retimed) {
+    await Promise.allSettled([backgroundJob, creditInputsJob]);
     return null;
   }
-
-  const background =
-    hasDrawtext && geometry
-      ? await renderTitleBackground({
-          provider: providers.titleBackground,
-          directionText,
-          geometry,
-          videoPath,
-          temps,
-          notes,
-          log,
-          progress,
-        })
-      : undefined;
+  const background = await backgroundJob;
 
   progress("painting the title card…");
-  const { body, titleOffsetSec } = await applyTitleCard({
+  const titleCard = await renderTitleSegment({
     ffmpeg,
-    retimedPath: retimed.path,
+    videoPath,
     title,
     style: titleStyle(category),
     background,
@@ -1160,38 +1216,41 @@ async function assembleSongVideo(args: {
     notes,
     log,
   });
-
+  const { titleOffsetSec } = titleCard;
   const stepTimes = retimed.starts.map((s) => s + titleOffsetSec);
 
-  let finalBody = body;
-  if (hasDrawtext && geometry) {
+  let creditsPath: string | undefined;
+  if (extrasGeometry) {
     progress("rolling the credits…");
-    const musicCredit = await providers.music
-      ?.credit?.(directionText)
-      .catch(() => undefined);
-    const sections = buildCreditSections({
-      contributors: await branchContributors(repoDir, base),
-      music: musicCredit,
-      models: buildModelCredits({
-        voiceLabel: "",
-        ttsId: undefined,
-        musicId: providers.music?.id,
-        titleArtId: background ? providers.titleBackground?.id : undefined,
-        song: true,
-        hasMusicCredit: Boolean(musicCredit),
-      }),
-    });
-    finalBody = await appendCredits({
+    const { contributors, musicCredit } = await creditInputsJob;
+    creditsPath = await renderCreditsSegment({
       ffmpeg,
-      body,
       videoPath,
       heading: title,
-      sections,
-      geometry,
+      sections: buildCreditSections({
+        contributors,
+        music: musicCredit,
+        models: buildModelCredits({
+          voiceLabel: "",
+          ttsId: undefined,
+          musicId: providers.music?.id,
+          titleArtId: background ? providers.titleBackground?.id : undefined,
+          song: true,
+          hasMusicCredit: Boolean(musicCredit),
+        }),
+      }),
+      geometry: extrasGeometry,
       temps,
       log,
     });
   }
+
+  const finalBody = await assembleBody({
+    ffmpeg,
+    videoPath,
+    pieces: [titleCard.path, ...retimed.segs, creditsPath],
+    temps,
+  });
 
   return { finalBody, geometry, stepTimes, titleOffsetSec };
 }
@@ -1527,9 +1586,14 @@ export function narrationGapSec(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 // Re-time the video so each step holds its frame long enough for its narration.
-// Returns the new video path and each step's new start (pre-title-card). Null if
-// the source duration can't be probed.
-async function retimeForNarration(args: {
+// Returns the per-step SEGMENTS (in order, ready to concatenate) and each step's
+// new start (pre-title-card). Null if the source duration can't be probed.
+//
+// The segments are deliberately NOT concatenated here: the title card and the
+// credits roll are separate segments too, and assembleBody joins all of them in
+// ONE concat-copy pass. Concatenating here as well would rewrite the whole body
+// an extra time (it used to be rewritten three times: retime, title, credits).
+async function retimeSegments(args: {
   ffmpeg: string;
   videoPath: string;
   steps: CinematicStep[];
@@ -1543,7 +1607,7 @@ async function retimeForNarration(args: {
   // the body end. When given, planRetime hard-cuts each step to its onset window.
   onsets?: number[];
   bodyEnd?: number;
-}): Promise<{ path: string; starts: number[] } | null> {
+}): Promise<{ segs: string[]; starts: number[] } | null> {
   const { ffmpeg, videoPath, steps, clipDurSec, frameRate, temps } = args;
   const totalSec = await audioDurationSec(ffmpeg, videoPath);
   if (totalSec === undefined || totalSec <= 0) {
@@ -1588,64 +1652,41 @@ async function retimeForNarration(args: {
     });
     segs.push(segPath);
   }
-  const outPath = `${videoPath}.retimed.webm`;
-  const listPath = `${videoPath}.retime.txt`;
-  temps.push(outPath, listPath);
-  await concatSegments(ffmpeg, segs, outPath, listPath);
-  return { path: outPath, starts: plan.starts };
+  return { segs, starts: plan.starts };
 }
 
-// Build the title card matched to the source geometry and concat it ahead of the
-// body, returning the new (title-prefixed) video path. Pushes its temps for
-// cleanup. Only called when drawtext is available AND geometry is known — the
-// title MUST match the body's exact geometry or the concat-copy silently locks
-// the body into the title's resolution and corrupts the picture.
-async function prependTitleCard(args: {
+// Join the title card, the re-timed body segments and the credits roll into the
+// final body in ONE concat-copy pass. Every piece is already libvpx/webm at the
+// source geometry and CFR-pinned, so the demuxer stream-copies them — but each
+// pass still rewrites the whole file, which is why there is exactly one.
+async function assembleBody(args: {
   ffmpeg: string;
   videoPath: string;
-  title: string;
-  style: { font: string; color: string };
-  background?: string;
-  dimBackground?: boolean;
-  geometry: ProbedVideo;
+  pieces: (string | undefined)[];
   temps: string[];
 }): Promise<string> {
-  const {
+  const { ffmpeg, videoPath, pieces, temps } = args;
+  const outPath = `${videoPath}.body.webm`;
+  const listPath = `${videoPath}.body.txt`;
+  temps.push(outPath, listPath);
+  await concatSegments(
     ffmpeg,
-    videoPath,
-    title,
-    style,
-    background,
-    dimBackground,
-    geometry,
-    temps,
-  } = args;
-  const titlePath = `${videoPath}.title.webm`;
-  temps.push(titlePath);
-  await buildTitleCard({
-    ffmpeg,
-    title,
-    style,
-    background,
-    dimBackground,
-    geometry,
-    temps,
-    outPath: titlePath,
-  });
-  const concatPath = `${videoPath}.concat.webm`;
-  const listPath = `${videoPath}.concat.txt`;
-  temps.push(concatPath, listPath);
-  await concatSegments(ffmpeg, [titlePath, videoPath], concatPath, listPath);
-  return concatPath;
+    pieces.filter((p): p is string => Boolean(p)),
+    outPath,
+    listPath
+  );
+  return outPath;
 }
 
-// Decide whether to prepend the title card, returning the body path to mix onto
-// and the timeline offset it introduced. Skips (and records a note) when drawtext
-// is unavailable or geometry couldn't be probed — guessing geometry would corrupt
-// the concat.
-async function applyTitleCard(args: {
+// Render the opening title card as its own segment (for assembleBody to put in
+// front of the body), plus the timeline offset it introduces. Skips it — path
+// undefined, offset 0, and a note — when drawtext is unavailable, no font is
+// installed, or the geometry couldn't be probed: the title MUST match the body's
+// exact geometry or the concat-copy silently locks the body into the title's
+// resolution and corrupts the picture, so guessing is not an option.
+async function renderTitleSegment(args: {
   ffmpeg: string;
-  retimedPath: string;
+  videoPath: string;
   title: string;
   style: { font: string | undefined; color: string };
   background?: string;
@@ -1655,10 +1696,10 @@ async function applyTitleCard(args: {
   temps: string[];
   notes: string[];
   log: Logger;
-}): Promise<{ body: string; titleOffsetSec: number }> {
+}): Promise<{ path: string | undefined; titleOffsetSec: number }> {
   const {
     ffmpeg,
-    retimedPath,
+    videoPath,
     title,
     style,
     background,
@@ -1670,17 +1711,19 @@ async function applyTitleCard(args: {
     log,
   } = args;
   if (hasDrawtext && geometry && style.font) {
-    const body = await prependTitleCard({
+    const titlePath = `${videoPath}.title.webm`;
+    temps.push(titlePath);
+    await buildTitleCard({
       ffmpeg,
-      videoPath: retimedPath,
       title,
       style: { font: style.font, color: style.color },
       background,
       dimBackground,
       geometry,
       temps,
+      outPath: titlePath,
     });
-    return { body, titleOffsetSec: TITLE_SEC };
+    return { path: titlePath, titleOffsetSec: TITLE_SEC };
   }
   let note = "title card skipped — this ffmpeg has no `drawtext` filter";
   if (hasDrawtext && !geometry) {
@@ -1691,7 +1734,7 @@ async function applyTitleCard(args: {
   }
   notes.push(note);
   log.warn({ ffmpeg }, `cinematic: ${note}`);
-  return { body: retimedPath, titleOffsetSec: 0 };
+  return { path: undefined, titleOffsetSec: 0 };
 }
 
 // Final pass: mix the delayed narration clips onto the concatenated video and
