@@ -30,7 +30,7 @@ export function minContextArgs(env: NodeJS.ProcessEnv): string[] {
     "--system-prompt",
     "You are a precise generator. Output only what the user's message asks for, with no preamble or commentary.",
     "--model",
-    env.DAILIES_CLAUDE_MODEL?.trim() || "sonnet",
+    claudeModel(env),
   ];
 }
 
@@ -61,6 +61,11 @@ export function readEnvelope(stdout: string): unknown {
     return tryParseJson(env.result) ?? undefined;
   }
   return;
+}
+
+// The model the CLI is pinned to, matching minContextArgs.
+export function claudeModel(env: NodeJS.ProcessEnv): string {
+  return env.DAILIES_CLAUDE_MODEL?.trim() || "sonnet";
 }
 
 export function createClaudeCliProvider(
@@ -94,6 +99,8 @@ export function createClaudeCliProvider(
     },
 
     id: "claude",
+
+    model: claudeModel(env),
 
     isAvailable(): Promise<boolean> {
       return isOnPath("claude", ["--version"]);

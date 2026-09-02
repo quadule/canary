@@ -137,6 +137,10 @@ export function createAppleProvider(): TextProvider {
 
     id: "apple",
 
+    // Foundation Models exposes no version string; the system model is whatever
+    // the OS ships.
+    model: "apple-on-device",
+
     async isAvailable(): Promise<boolean> {
       // Only plausible on macOS, and only with a Swift toolchain to build the
       // helper. Whether the MODEL is available is decided by the helper itself

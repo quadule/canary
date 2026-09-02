@@ -1,6 +1,6 @@
 import { createLogger } from "dailies-logger";
 import { describe, expect, it } from "vitest";
-import { generateJson, resolveProviders } from "./index.js";
+import { allProviders, generateJson, resolveProviders } from "./index.js";
 import type { TextProvider } from "./types.js";
 
 const log = createLogger({ level: "silent" });
@@ -16,6 +16,7 @@ function fake(
   const p = {
     calls: 0,
     describe: () => `fake ${id}`,
+    model: `fake-${id}-model`,
     generateJson: () => {
       p.calls++;
       if (behavior.throws) {
@@ -53,13 +54,21 @@ function call(providers: TextProvider[]) {
 describe("generateJson", () => {
   it("returns the value and names the provider that produced it", async () => {
     const result = await call([fake("claude", { reply: '{"a":"ok"}' })]);
-    expect(result).toEqual({ provider: "claude", value: { a: "ok" } });
+    expect(result).toEqual({
+      model: "fake-claude-model",
+      provider: "claude",
+      value: { a: "ok" },
+    });
   });
 
   it("retries an unusable reply once within the same provider", async () => {
     const p = fake("claude", { replies: ["not json", '{"a":"ok"}'] });
     const result = await call([p]);
-    expect(result).toEqual({ provider: "claude", value: { a: "ok" } });
+    expect(result).toEqual({
+      model: "fake-claude-model",
+      provider: "claude",
+      value: { a: "ok" },
+    });
     expect(p.calls).toBe(2);
   });
 
@@ -76,7 +85,11 @@ describe("generateJson", () => {
     const dead = fake("claude", { throws: "claude: command not found" });
     const good = fake("apple", { reply: '{"a":"from apple"}' });
     const result = await call([dead, good]);
-    expect(result).toEqual({ provider: "apple", value: { a: "from apple" } });
+    expect(result).toEqual({
+      model: "fake-apple-model",
+      provider: "apple",
+      value: { a: "from apple" },
+    });
     // A transport failure must not be retried — one call, then move on.
     expect(dead.calls).toBe(1);
   });
@@ -139,5 +152,43 @@ describe("resolveProviders", () => {
     expect("error" in result && result.error).toContain(
       'no text provider named "gpt5"'
     );
+  });
+});
+
+describe("model reporting", () => {
+  it("returns the concrete model, not just the provider id", async () => {
+    const result = await call([fake("claude", { reply: '{"a":"ok"}' })]);
+    expect(result).toEqual({
+      model: "fake-claude-model",
+      provider: "claude",
+      value: { a: "ok" },
+    });
+  });
+
+  it("reports the model of the provider that actually succeeded", async () => {
+    const result = await call([
+      fake("claude", { throws: "not on PATH" }),
+      fake("apple", { reply: '{"a":"ok"}' }),
+    ]);
+    expect("model" in result && result.model).toBe("fake-apple-model");
+  });
+
+  it("names the real pinned model for the claude provider", () => {
+    expect(allProviders({}).find((p) => p.id === "claude")?.model).toBe(
+      "sonnet"
+    );
+    expect(
+      allProviders({ DAILIES_CLAUDE_MODEL: " opus " }).find(
+        (p) => p.id === "claude"
+      )?.model
+    ).toBe("opus");
+  });
+
+  it("names the configured model for an OpenAI-compatible endpoint", () => {
+    const providers = allProviders({
+      DAILIES_LLM_MODEL: "gpt-4o-mini",
+      DAILIES_LLM_URL: "http://localhost:1234",
+    });
+    expect(providers.find((p) => p.id === "openai")?.model).toBe("gpt-4o-mini");
   });
 });

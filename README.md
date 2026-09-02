@@ -292,6 +292,52 @@ watch.
 > point Dailies at a project config from a repo you don't control; the demo workflow deliberately
 > skips fork PRs for the same reason.
 
+### Proving which code the demo actually ran
+
+A demo shows a flow working. Coverage answers a different question: *did this session actually
+exercise the lines this PR changed?* Dailies has no coverage feature and shouldn't — coverage is
+language- and framework-specific, and a browser recorder has no business knowing about your
+instrumentation. What it has is the seam: `--attach` puts any external file into the session's
+report.
+
+The recipe is the same in every language:
+
+```bash
+# 1. Boot the app with coverage instrumentation, exposing a snapshot endpoint.
+# 2. Snapshot before — this is your baseline, boot-time coverage included.
+your-coverage-tool snapshot > before.json
+
+# 3. Record the session as usual.
+id=$(dailies session start --name "checkout" --url http://localhost:3000)
+dailies run ./open.js --session "$id" --step open
+# …more steps…
+
+# 4. Snapshot after. The DELTA is what this session exercised.
+your-coverage-tool snapshot > after.json
+
+# 5. Diff them, and scope the result to the PR's changed lines.
+your-coverage-tool report --before before.json --after after.json \
+  --base origin/main --out ./cov
+
+# 6. Attach it. This happens BEFORE the report is rendered, so it lands in it.
+dailies session end "$id" --pass --attach ./cov/coverage.md --attach ./cov/report.zip
+```
+
+The attached files show up in `results.json` and in `report.html` beside the trace and video, so
+the recording and the proof travel together.
+
+Step 1 and 5 are the only language-specific parts:
+
+| Stack | Instrument | Snapshot / report |
+| --- | --- | --- |
+| Ruby / Rails | Ruby's `Coverage` started before boot, behind an env flag | `Coverage.peek_result` from a dev-only endpoint; render the delta with SimpleCov |
+| Node | `c8` / `nyc`, or V8's inspector coverage | `v8.takeCoverage()` or the `c8` JSON output |
+| Python | `coverage.py` started in the app's entrypoint | `coverage json` before and after |
+
+Keep that orchestration in the app's own repo — a script plus an agent skill next to
+`.dailies/flows.md`, where the app-specific knowledge already lives. That way Dailies stays
+language-agnostic and your instrumentation stays where someone can maintain it.
+
 ### Nightly demos of your pull requests
 
 Copy [`.github/workflows/dailies-demo.yml`](.github/workflows/dailies-demo.yml) into your repo, add

@@ -125,6 +125,14 @@ Declare neither and the run falls back to "failed if any step exited non-zero".
   --pass              mark the run PASSED — the workflow met its criteria (recovered step failures ok)
   --fail "<reason>"   mark the run FAILED with a reason — the workflow did not meet its criteria
 
+ATTACHMENTS: --attach <file> copies a file into the session's attachments/ so it shows up in
+results.json and the report next to the trace and video — a coverage report, a Lighthouse score,
+an accessibility audit, anything Dailies didn't produce. Repeatable. It runs BEFORE the report is
+built, which is the whole point: a file copied into attachments/ after 'session end' never makes
+it in. A bad path warns and is skipped rather than failing the run.
+
+  dailies session end "$id" --attach tmp/coverage.md --attach tmp/coverage-report.zip
+
 CREDENTIALS: a recorded session is driven against a logged-in app, so Playwright captures live
 \`Cookie\` / \`Authorization\` headers. At \`session end\` those header VALUES are replaced in
 network.har (the names stay, so you can still see a request carried a cookie). This is NOT a

@@ -48,6 +48,9 @@ export interface TextProvider {
   // Whether this backend can actually run right now — binary on PATH, endpoint
   // configured, model downloaded. Must not throw.
   isAvailable(): Promise<boolean>;
+  // The concrete model this provider will use, for the log. "claude" alone
+  // doesn't tell you what actually ran; `sonnet` or `gpt-4o-mini` does.
+  model: string;
 }
 
 export const PROVIDER_IDS = ["claude", "openai", "apple"] as const;

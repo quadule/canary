@@ -126,6 +126,7 @@ interface RunOpts {
 }
 
 interface SessionEndOpts {
+  attach?: string[];
   captions?: boolean;
   cinematic?: boolean;
   condense?: boolean;
@@ -229,6 +230,11 @@ export function buildProgram(): CommandType {
       "Keep raw videos (skip trimming pre-load frames and long stills)"
     )
     .option(
+      "--attach <file>",
+      "Copy a file into the session's attachments/ so it appears in the report (repeatable) — e.g. a coverage report",
+      (value: string, previous: string[] = []) => [...previous, value]
+    )
+    .option(
       "--no-scrub-har",
       "Keep credential header values (Cookie/Authorization) in network.har instead of replacing them"
     )
@@ -261,6 +267,7 @@ export function buildProgram(): CommandType {
       }
       const code = await sessionEnd(id, isJson(program), {
         stopDaemon: opts.stopDaemon === true,
+        attach: opts.attach,
         condense: opts.condense,
         scrubHar: opts.scrubHar,
         cinematic: opts.cinematic === true || typeof opts.prompt === "string",

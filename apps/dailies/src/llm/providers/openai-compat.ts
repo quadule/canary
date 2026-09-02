@@ -148,6 +148,8 @@ export function createOpenAiCompatProvider(
 
     id: "openai",
 
+    model: config?.model ?? "(unconfigured)",
+
     async isAvailable(): Promise<boolean> {
       if (!config) {
         return false;

@@ -128,7 +128,9 @@ jobs:
               --body-file /tmp/dailies-pick/$N.body \
               --changed-file /tmp/dailies-pick/$N.changed \
               --comments-file "$COMMENTS")
-            echo "PR #$N: $(echo "$DECISION" | jq -r '.reason')"
+            # decidedBy names the provider/model that judged — the first thing
+            # you want when a verdict looks wrong.
+            echo "PR #$N: [$(echo "$DECISION" | jq -r '.decidedBy')] $(echo "$DECISION" | jq -r '.reason')"
 
             if [ "$(echo "$DECISION" | jq -r '.run')" = "true" ]; then
               MATRIX=$(jq -c --argjson d "$DECISION" --arg n "$N" --arg sha "$SHA" \

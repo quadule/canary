@@ -69,6 +69,22 @@ workflow rules — is single-sourced in `docs/snippets/` and stitched by `script
   (`.cursor-plugin/`), and Codex (`plugins/dailies/`, whose `skills` is a symlink here) — keep
   SKILL.md frontmatter (`name`, `description`) intact and marker-free.
 
+## Attachments are the extension point
+
+`session end --attach <file>` copies a file into the session's `attachments/`, which surfaces in
+`results.json` and the report next to the trace and video. Implemented in
+`apps/dailies/src/session/attach.ts`; the copy happens BEFORE the session-end RPC, deliberately —
+both the daemon (`session-manager.ts`) and the on-disk fallback (`session/artifacts.ts`) build
+their artifact list as the session ends, so a file copied afterwards is silently missing from the
+report. That was a documented hazard every external tool had to work around; it is the command's
+problem now.
+
+This is how anything Dailies doesn't produce gets into a report: a coverage report, a Lighthouse
+score, an accessibility audit, a database diff. **Resist adding features for those.** Coverage in
+particular is language- and framework-specific and belongs in the app's own repo (a script plus a
+skill beside `.dailies/flows.md`); the README documents the generic recipe. If you find yourself
+adding a `--coverage` flag here, that is the line.
+
 ## A project goal: the randomness is a feature
 
 Reviewing pull requests is repetitive, and a demo nobody chose to watch has to earn attention. So

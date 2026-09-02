@@ -356,7 +356,7 @@ export async function decideDemoWithAgent(args: {
   }
   return {
     ...base,
-    decidedBy: `agent (${result.provider})`,
+    decidedBy: `agent (${result.provider}/${result.model})`,
     flow: result.value.flow,
     reason: result.value.reason,
     run: result.value.worth,

@@ -11,6 +11,7 @@ import type { SessionEndRequest, SessionEndResult } from "dailies-protocol";
 import { logger } from "../logger.js";
 import { writeSessionReport } from "../report/load-and-render.js";
 import { endResultFromDisk } from "../session/artifacts.js";
+import { attachFiles } from "../session/attach.js";
 import {
   readSessionRecord,
   type SessionRecord,
@@ -33,6 +34,9 @@ import {
 import { stopDaemonIfIdle } from "./daemon-stop.js";
 
 interface SessionEndOpts {
+  // External files to copy into the session's attachments/ before the report is
+  // built — a coverage report, an audit, anything Dailies didn't produce.
+  attach?: string[];
   captions?: boolean;
   cinematic?: boolean;
   condense?: boolean;
@@ -341,7 +345,28 @@ export async function sessionEnd(
   json: boolean,
   opts: SessionEndOpts = {}
 ): Promise<number> {
-  await readSessionRecord(id); // friendly "No such session" if unknown
+  const record0 = await readSessionRecord(id); // friendly "No such session" if unknown
+
+  // Attach FIRST. Both the daemon and the on-disk fallback build their artifact
+  // list as the session ends, so a file copied after that point never reaches
+  // the report. Doing it here means a caller can't get the order wrong.
+  if (opts.attach && opts.attach.length > 0) {
+    const outcome = await attachFiles({
+      files: opts.attach,
+      log: logger,
+      sessionDir: record0.artifactsDir,
+    });
+    if (outcome.attached.length > 0) {
+      logger.info(
+        { attached: outcome.attached },
+        `attached ${outcome.attached.length} file(s): ${outcome.attached.join(", ")}`
+      );
+    }
+    for (const failure of outcome.failures) {
+      // Loudly, but never fatally: a bad path must not cost the whole report.
+      logger.warn({ failure }, `could not attach ${failure}`);
+    }
+  }
 
   const request: SessionEndRequest = {
     id: requestId("session-end"),
