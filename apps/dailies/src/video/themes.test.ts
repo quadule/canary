@@ -115,3 +115,54 @@ describe("selectStyle", () => {
     }
   });
 });
+
+describe("theme curation", () => {
+  // A theme is drawn unattended, in CI, and narrates someone else's pull
+  // request. These are the categories that were removed for landing badly there
+  // (see the catalog's doc comment) — this keeps them from creeping back in.
+  // Deliberately narrow: it is the REGISTER that lands badly, not the word.
+  // A Cold War spy thriller and a blackmail-conspiracy soap opera are ordinary
+  // fiction genres and stay; a conspiracy-theory documentary voice and a
+  // war-correspondent dispatch are what was removed.
+  const DISALLOWED: [RegExp, string][] = [
+    [/harassment/i, "sensitive workplace topics played for laughs"],
+    [
+      /diversity-and-inclusion|\bDEI\b/i,
+      "a DEI parody reads as mocking colleagues",
+    ],
+    [/conspiracy[- ]theor/i, "a voice whose shtick is asserting untrue things"],
+    [/emergency.broadcast/i, "imitates a real alert system"],
+    [
+      /war[- ]correspondent|frontline|\bcombat\b/i,
+      "real conflict as a comic frame",
+    ],
+    [/\bcult[- ]survivor|survivor[- ]testimon/i, "trauma as a comic frame"],
+  ];
+
+  it("has no theme from a category that lands badly on a colleague's PR", () => {
+    const offenders: string[] = [];
+    for (const theme of THEMES) {
+      for (const [pattern, why] of DISALLOWED) {
+        if (pattern.test(theme.label)) {
+          offenders.push(`${theme.label} — ${why}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("names a genre rather than a nationality or language", () => {
+    // "telenovela-style melodrama", not "Spanish-language telenovela".
+    const offenders = THEMES.filter((t) =>
+      /\b(Japanese|Spanish|Chinese|Mexican|Indian|Russian|Korean)[- ](style|language)\b/i.test(
+        t.label
+      )
+    ).map((t) => t.label);
+    expect(offenders).toEqual([]);
+  });
+
+  it("stays big enough that a repeat is rare", () => {
+    // The randomness is the point (see AGENTS.md) — a thin catalog defeats it.
+    expect(THEMES.length).toBeGreaterThan(250);
+  });
+});

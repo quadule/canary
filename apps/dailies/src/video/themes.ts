@@ -30,6 +30,25 @@ export interface Theme {
  * The curated theme catalog. Grouped by category for readability; order is not
  * significant since draws are randomized. Every label is unique (asserted in
  * tests) — keep it that way when adding entries.
+ *
+ * WHAT BELONGS HERE. A theme is drawn unattended, in CI, and narrates someone
+ * else's pull request. So the bar is not "is this funny" but "would this be fine
+ * on any colleague's PR, with nobody reviewing it first". Keep entries to
+ * recognizable GENRES and REGISTERS.
+ *
+ * Leave out:
+ *   - sensitive workplace topics played for laughs (harassment or DEI training)
+ *   - real trauma as a comic frame (survivor testimony, active conflict)
+ *   - voices whose whole shtick is asserting untrue things (conspiracy radio)
+ *   - imitations of real alert systems (an emergency-broadcast bulletin)
+ *   - a nationality or language as the punchline — name the genre instead
+ *     ("telenovela-style melodrama", not "Spanish-language telenovela")
+ *   - a trademark doing the joke's work; describe the format generically
+ *     ("briefcase-elimination game show", not the show's name)
+ *
+ * Specific and mundane beats edgy: "sheepdog-trial commentary" and
+ * "library-shelving-order training film" are funnier over a checkout flow than
+ * anything transgressive, and they cannot land badly.
  */
 export const THEMES: Theme[] = [
   // --- movie ---
@@ -62,7 +81,11 @@ export const THEMES: Theme[] = [
   { label: "haunted house gothic horror", category: "movie" },
   { label: "feel-good underdog sports movie", category: "movie" },
   { label: "1980s teen comedy", category: "movie" },
-
+  { label: "1950s atomic-age creature feature", category: "movie" },
+  { label: "road-trip buddy comedy", category: "movie" },
+  { label: "silent-era expressionist thriller", category: "movie" },
+  { label: "art-museum caper comedy", category: "movie" },
+  { label: "1960s beach-party musical", category: "movie" },
   // --- tv ---
   { label: "prestige cable crime drama", category: "tv" },
   { label: "multi-camera sitcom with a laugh track", category: "tv" },
@@ -92,7 +115,10 @@ export const THEMES: Theme[] = [
   { label: "antiques appraisal roadshow", category: "tv" },
   { label: "1980s primetime soap", category: "tv" },
   { label: "celebrity baking showcase", category: "tv" },
-
+  { label: "storage-unit auction reality show", category: "tv" },
+  { label: "pawn-shop haggling reality show", category: "tv" },
+  { label: "competitive-gardening reality show", category: "tv" },
+  { label: "airport-arrivals docusoap", category: "tv" },
   // --- documentary ---
   {
     label: "David-Attenborough-style nature documentary",
@@ -107,7 +133,6 @@ export const THEMES: Theme[] = [
     label: "music-festival behind-the-scenes documentary",
     category: "documentary",
   },
-  { label: "conspiracy-theory exposé documentary", category: "documentary" },
   { label: "tech-startup rise-and-fall documentary", category: "documentary" },
   {
     label: "volcano and natural-disaster documentary",
@@ -129,7 +154,6 @@ export const THEMES: Theme[] = [
   { label: "migratory-bird nature documentary", category: "documentary" },
   { label: "art-forgery heist documentary", category: "documentary" },
   { label: "deep-jungle insect documentary", category: "documentary" },
-  { label: "cult-survivor testimonial documentary", category: "documentary" },
   { label: "Arctic-expedition survival documentary", category: "documentary" },
   {
     label: "fast-food-industry investigative documentary",
@@ -151,7 +175,17 @@ export const THEMES: Theme[] = [
   { label: "vintage-arcade subculture documentary", category: "documentary" },
   { label: "shipwreck-salvage documentary", category: "documentary" },
   { label: "rare-mineral mining documentary", category: "documentary" },
-
+  { label: "volcanology field documentary", category: "documentary" },
+  {
+    label: "abandoned-mall urban-exploration documentary",
+    category: "documentary",
+  },
+  { label: "sourdough-microbiology documentary", category: "documentary" },
+  {
+    label: "lighthouse-keeper oral-history documentary",
+    category: "documentary",
+  },
+  { label: "typewriter-restoration documentary", category: "documentary" },
   // --- commercial ---
   { label: "80s pharmaceutical commercial", category: "commercial" },
   { label: "home shopping network segment", category: "commercial" },
@@ -164,7 +198,10 @@ export const THEMES: Theme[] = [
   { label: "used-car-dealership local TV spot", category: "commercial" },
   { label: "insurance-company mascot commercial", category: "commercial" },
   { label: "energy-drink extreme-sports commercial", category: "commercial" },
-  { label: "Super Bowl big-budget beer commercial", category: "commercial" },
+  {
+    label: "big-game big-budget soft-drink commercial",
+    category: "commercial",
+  },
   {
     label: "cleaning-product before-and-after commercial",
     category: "commercial",
@@ -195,10 +232,12 @@ export const THEMES: Theme[] = [
   { label: "investment-app fintech commercial", category: "commercial" },
   { label: "old-timey patent-medicine pitch", category: "commercial" },
   { label: "amusement-park summer commercial", category: "commercial" },
-
+  { label: "airline-safety-video musical number", category: "commercial" },
+  { label: "board-game family-night commercial", category: "commercial" },
+  { label: "regional-supermarket loyalty-card spot", category: "commercial" },
+  { label: "garden-centre spring-sale spot", category: "commercial" },
   // --- training ---
   { label: "corporate VHS safety training from 1993", category: "training" },
-  { label: "workplace harassment compliance video", category: "training" },
   { label: "fast-food employee onboarding video", category: "training" },
   { label: "fire-drill evacuation training video", category: "training" },
   { label: "forklift-operation safety training", category: "training" },
@@ -223,14 +262,16 @@ export const THEMES: Theme[] = [
     category: "training",
   },
   { label: "lab-coat chemical-safety training film", category: "training" },
-  { label: "diversity-and-inclusion workshop video", category: "training" },
   { label: "first-aid-and-CPR instructional video", category: "training" },
   { label: "expense-report-policy compliance video", category: "training" },
   { label: "grocery-store-bagging-technique training", category: "training" },
   { label: "remote-work-productivity webinar", category: "training" },
   { label: "construction-site hard-hat-safety briefing", category: "training" },
   { label: "cubicle-etiquette corporate training reel", category: "training" },
-
+  { label: "museum-docent tour-guide training", category: "training" },
+  { label: "zookeeper animal-handling training", category: "training" },
+  { label: "theme-park-mascot conduct training", category: "training" },
+  { label: "library-shelving-order training film", category: "training" },
   // --- radio ---
   { label: "noir detective radio drama", category: "radio" },
   { label: "1940s wartime radio newsreel", category: "radio" },
@@ -242,7 +283,6 @@ export const THEMES: Theme[] = [
   { label: "true-crime investigative podcast", category: "radio" },
   { label: "sports talk-radio hot-take segment", category: "radio" },
   { label: "public-radio pledge-drive break", category: "radio" },
-  { label: "AM-radio conspiracy late-night broadcast", category: "radio" },
   { label: "country-music request-line radio hour", category: "radio" },
   { label: "Western-frontier radio drama", category: "radio" },
   { label: "self-help motivational radio segment", category: "radio" },
@@ -251,7 +291,6 @@ export const THEMES: Theme[] = [
   { label: "horror anthology radio play", category: "radio" },
   { label: "financial-advice call-in radio show", category: "radio" },
   { label: "college-radio indie-music DJ set", category: "radio" },
-  { label: "emergency-broadcast-system bulletin", category: "radio" },
   { label: "gardening-tips weekend radio program", category: "radio" },
   { label: "swing-era big-band radio broadcast", category: "radio" },
   { label: "advice-column relationship radio show", category: "radio" },
@@ -259,7 +298,9 @@ export const THEMES: Theme[] = [
   { label: "shipping-forecast monotone radio reading", category: "radio" },
   { label: "pirate-radio late-night rebel broadcast", category: "radio" },
   { label: "polka-hour community radio program", category: "radio" },
-
+  { label: "vinyl-collector late-night radio show", category: "radio" },
+  { label: "cricket-match slow-afternoon radio commentary", category: "radio" },
+  { label: "lost-and-found community radio notices", category: "radio" },
   // --- sports ---
   {
     label: "play-by-play football championship commentary",
@@ -294,7 +335,10 @@ export const THEMES: Theme[] = [
   { label: "spelling-bee tension-filled commentary", category: "sports" },
   { label: "drone-racing first-person commentary", category: "sports" },
   { label: "competitive-yo-yo-freestyle commentary", category: "sports" },
-
+  { label: "competitive-jigsaw-puzzle commentary", category: "sports" },
+  { label: "sheepdog-trial commentary", category: "sports" },
+  { label: "bouldering-finals commentary", category: "sports" },
+  { label: "wood-chopping-championship commentary", category: "sports" },
   // --- game_show ---
   {
     label: "high-energy wheel-spinning game show intro",
@@ -312,10 +356,10 @@ export const THEMES: Theme[] = [
     label: "supermarket-sweep timed-shopping game show",
     category: "game_show",
   },
-  { label: "deal-or-no-deal briefcase game show", category: "game_show" },
+  { label: "briefcase-elimination game show", category: "game_show" },
   { label: "kids' messy-stunt game show", category: "game_show" },
   { label: "lightning-round speed-trivia game show", category: "game_show" },
-  { label: "Japanese-style endurance game show", category: "game_show" },
+  { label: "endurance obstacle-course game show", category: "game_show" },
   { label: "matchmaking blind-date game show", category: "game_show" },
   { label: "spin-the-wheel jackpot game show", category: "game_show" },
   { label: "musical-name-that-tune game show", category: "game_show" },
@@ -329,7 +373,9 @@ export const THEMES: Theme[] = [
   { label: "memory-recall matching game show", category: "game_show" },
   { label: "physical-challenge gladiator game show", category: "game_show" },
   { label: "puzzle-box escape-room game show", category: "game_show" },
-
+  { label: "grocery-price-guessing game show", category: "game_show" },
+  { label: "silhouette-guessing game show", category: "game_show" },
+  { label: "mystery-box tasting game show", category: "game_show" },
   // --- soap ---
   { label: "melodramatic daytime soap opera", category: "soap" },
   { label: "long-lost-twin reveal soap opera", category: "soap" },
@@ -344,7 +390,7 @@ export const THEMES: Theme[] = [
   { label: "back-from-the-dead soap opera", category: "soap" },
   { label: "boardroom-betrayal soap opera", category: "soap" },
   { label: "secret-baby paternity soap opera", category: "soap" },
-  { label: "Spanish-language telenovela", category: "soap" },
+  { label: "telenovela-style melodrama", category: "soap" },
   { label: "scheming-matriarch soap opera", category: "soap" },
   { label: "wedding-interrupted soap opera", category: "soap" },
   { label: "inheritance-dispute soap opera", category: "soap" },
@@ -358,7 +404,8 @@ export const THEMES: Theme[] = [
   { label: "mistaken-identity soap opera", category: "soap" },
   { label: "rags-to-riches soap opera", category: "soap" },
   { label: "rival-sisters soap opera", category: "soap" },
-
+  { label: "restaurant-empire rivalry soap opera", category: "soap" },
+  { label: "lighthouse-town mystery soap opera", category: "soap" },
   // --- news ---
   { label: "breaking-news special report", category: "news" },
   { label: "NASA mission control briefing", category: "news" },
@@ -369,7 +416,6 @@ export const THEMES: Theme[] = [
   { label: "investigative-journalism exposé segment", category: "news" },
   { label: "morning-show light-news segment", category: "news" },
   { label: "financial-markets closing-bell report", category: "news" },
-  { label: "war-correspondent frontline dispatch", category: "news" },
   { label: "press-conference podium briefing", category: "news" },
   { label: "human-interest feel-good news story", category: "news" },
   { label: "election-night results coverage", category: "news" },
@@ -387,7 +433,9 @@ export const THEMES: Theme[] = [
   { label: "anchor-to-correspondent live toss", category: "news" },
   { label: "satellite-delay foreign-bureau report", category: "news" },
   { label: "viral-video human-interest segment", category: "news" },
-
+  { label: "county-fair local-news live shot", category: "news" },
+  { label: "science-desk discovery report", category: "news" },
+  { label: "cat-stuck-in-a-tree local news segment", category: "news" },
   // --- kids ---
   { label: "cheerful preschool puppet show", category: "kids" },
   { label: "educational counting-and-shapes cartoon", category: "kids" },
@@ -397,7 +445,7 @@ export const THEMES: Theme[] = [
   { label: "claymation stop-motion adventure", category: "kids" },
   { label: "talking-animal forest cartoon", category: "kids" },
   { label: "interactive ask-the-audience kids' show", category: "kids" },
-  { label: "alphabet-learning muppet segment", category: "kids" },
+  { label: "alphabet-learning puppet segment", category: "kids" },
   { label: "magical-fairy-tale kids' cartoon", category: "kids" },
   { label: "science-experiment kids' edutainment show", category: "kids" },
   { label: "robot-and-dinosaur action cartoon", category: "kids" },
@@ -416,6 +464,10 @@ export const THEMES: Theme[] = [
   { label: "dinosaur-fact educational cartoon", category: "kids" },
   { label: "superhero-pet sidekick cartoon", category: "kids" },
   { label: "color-and-emotion learning show", category: "kids" },
+  { label: "recycling-and-compost learning show", category: "kids" },
+  { label: "library-storytime puppet segment", category: "kids" },
+  { label: "weather-explaining kids' science show", category: "kids" },
+  { label: "shape-sorting robot cartoon", category: "kids" },
 ];
 
 export type StyleId = "prose" | "poem" | "limerick" | "haiku" | "song_verse";
