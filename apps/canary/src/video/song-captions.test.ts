@@ -22,7 +22,8 @@ describe("selectSongCaptions", () => {
   it("prefers the model's LRC, onset-synced when word timings exist", () => {
     const plan = selectSongCaptions({
       orderedTexts: LINES,
-      lrcText: "[00:04.50]She opens the page\n[00:09.50]Green lights are shining",
+      lrcText:
+        "[00:04.50]She opens the page\n[00:09.50]Green lights are shining",
       segments: [
         { start: 5, end: 7, text: "she opens the page" },
         { start: 10, end: 12, text: "green lights are shining" },
@@ -43,8 +44,11 @@ describe("selectSongCaptions", () => {
   it("uses LRC alone (no onset-sync) when there are no word timings", () => {
     const plan = selectSongCaptions({
       orderedTexts: LINES,
-      lrcText: "[00:05.00]She opens the page\n[00:10.00]Green lights are shining",
-      segments: [{ start: 5, end: 12, text: "she opens the page green lights" }],
+      lrcText:
+        "[00:05.00]She opens the page\n[00:10.00]Green lights are shining",
+      segments: [
+        { start: 5, end: 12, text: "she opens the page green lights" },
+      ],
       words: [],
       leadSec: LEAD,
       maxCueSec: MAX_CUE,
@@ -68,7 +72,8 @@ describe("selectSongCaptions", () => {
   it("honors useLrc:false to force the transcribe path", () => {
     const plan = selectSongCaptions({
       orderedTexts: LINES,
-      lrcText: "[00:05.00]She opens the page\n[00:10.00]Green lights are shining",
+      lrcText:
+        "[00:05.00]She opens the page\n[00:10.00]Green lights are shining",
       useLrc: false,
       segments: [],
       words: sungWords(),

@@ -10,7 +10,6 @@ import {
   windowStarts,
 } from "./archive.js";
 
-// biome-ignore lint/suspicious/noExplicitAny: tiny logger stub for tests
 const stubLog = { debug() {}, info() {}, warn() {}, error() {} } as any;
 
 describe("resolveArchiveMusic gating", () => {

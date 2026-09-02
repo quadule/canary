@@ -67,7 +67,16 @@ export interface SongResult {
 export interface MusicProvider {
   // Write a themed instrumental bed of ~`seconds` to `outPath`. Throws on failure.
   bed(directionText: string, seconds: number, outPath: string): Promise<void>;
+  // Optional: a human credit line for the score (e.g. an archive.org track's
+  // title/artist/license, or a model name), resolved WITHOUT producing audio so
+  // it can go in the credits roll before generation. Implementations that select
+  // a specific asset should cache it so bed/song reuse the credited one.
+  credit?(directionText: string): Promise<string | undefined>;
   id: string;
+  // True when `song(..., lyrics)` actually sings the supplied lyrics (a generative
+  // model like ACE-Step or Lyria). Stock-track providers leave it unset, so song
+  // mode can pick a lyrics-capable provider rather than relying on chain order.
+  singsLyrics?: boolean;
   // Write a themed full song (may have vocals) of ~`seconds` to `outPath`. When
   // `lyrics` is given the provider must SING those exact words (song mode);
   // without it the provider writes its own themed vocals/instrumental. Throws on
@@ -84,16 +93,8 @@ export interface MusicProvider {
     seconds: number,
     outPath: string,
     lyrics?: string
+    // biome-ignore lint/suspicious/noConfusingVoidType: `void` (not `undefined`) is deliberate — it lets a provider with no lyric timestamps implement this as a plain async function with no return statement; `undefined` would force every such provider to `return undefined`, which noUselessUndefined then flags.
   ): Promise<SongResult | void>;
-  // True when `song(..., lyrics)` actually sings the supplied lyrics (a generative
-  // model like ACE-Step or Lyria). Stock-track providers leave it unset, so song
-  // mode can pick a lyrics-capable provider rather than relying on chain order.
-  singsLyrics?: boolean;
-  // Optional: a human credit line for the score (e.g. an archive.org track's
-  // title/artist/license, or a model name), resolved WITHOUT producing audio so
-  // it can go in the credits roll before generation. Implementations that select
-  // a specific asset should cache it so bed/song reuse the credited one.
-  credit?(directionText: string): Promise<string | undefined>;
 }
 
 export interface MediaProviders {

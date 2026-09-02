@@ -10,15 +10,15 @@
 
 // One transcript segment (a whisper cue): a time span and the words heard.
 export interface Segment {
-  start: number;
   end: number;
+  start: number;
   text: string;
 }
 
 // One caption: our CLEAN line text, timed to the vocals it matched.
 export interface TimedLine {
-  start: number;
   end: number;
+  start: number;
   text: string;
 }
 
@@ -26,10 +26,10 @@ export interface TimedLine {
 // and large-v3-turbo servers emit these). `prob` is the aligner/ASR confidence in
 // [0,1] when available — used to drop hallucinated words over instrumental music.
 export interface TimedWord {
-  start: number;
   end: number;
-  word: string;
   prob?: number;
+  start: number;
+  word: string;
 }
 
 // One lyric line placed against the vocals by word-level alignment. `start`/`end`
@@ -38,11 +38,11 @@ export interface TimedWord {
 // it. `support` is the fraction of the line's tokens that matched a sung word, the
 // signal for "was this line actually sung?".
 export interface AlignedLine {
+  end: number | null;
   index: number;
   start: number | null;
-  end: number | null;
-  text: string;
   support: number;
+  text: string;
 }
 
 // Parse a whisper-cli `.srt` into segments. Drops non-lyrical cues (music stings
@@ -64,9 +64,15 @@ export function parseWhisperSrt(srt: string): Segment[] {
       continue;
     }
     const start =
-      Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4]) / 1000;
+      Number(m[1]) * 3600 +
+      Number(m[2]) * 60 +
+      Number(m[3]) +
+      Number(m[4]) / 1000;
     const end =
-      Number(m[5]) * 3600 + Number(m[6]) * 60 + Number(m[7]) + Number(m[8]) / 1000;
+      Number(m[5]) * 3600 +
+      Number(m[6]) * 60 +
+      Number(m[7]) +
+      Number(m[8]) / 1000;
     const cleaned = cleanSegmentText(
       lines.slice(lines.indexOf(timeLine) + 1).join(" ")
     );
@@ -154,6 +160,7 @@ export function wordsFromOpenAI(body: unknown): TimedWord[] {
 // forced-alignment timings that are whisperx's whole point). Shape:
 // {segments:[{start,end,text,words:[{word,start,end,score}]}]}. A word whose
 // start/end whisperx couldn't align (numerals, some symbols) is skipped. Pure.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: a tolerant parser for whisperx's nested JSON — every guard is a real shape it has emitted in practice, and splitting it scatters one format's rules across helpers.
 export function parseWhisperxJson(json: unknown): {
   segments: Segment[];
   words: TimedWord[];
@@ -218,9 +225,7 @@ export function parseWhisperxJson(json: unknown): {
 export function parseLrc(lrcText: string, tailSec = 4): Segment[] {
   const timed: { start: number; text: string }[] = [];
   for (const rawLine of lrcText.split(/\r?\n/)) {
-    const tags = [
-      ...rawLine.matchAll(/\[(\d+):(\d+)(?:[.:](\d+))?\]/g),
-    ];
+    const tags = [...rawLine.matchAll(/\[(\d+):(\d+)(?:[.:](\d+))?\]/g)];
     if (tags.length === 0) {
       continue;
     }
@@ -246,7 +251,11 @@ export function parseLrc(lrcText: string, tailSec = 4): Segment[] {
       continue;
     }
     const end = timed[i + 1]?.start ?? cur.start + tailSec;
-    segments.push({ start: cur.start, end: Math.max(end, cur.start + 0.5), text: cur.text });
+    segments.push({
+      start: cur.start,
+      end: Math.max(end, cur.start + 0.5),
+      text: cur.text,
+    });
   }
   return segments;
 }
@@ -289,7 +298,13 @@ export function mergeLrcWithWordOnsets(
     const onset = wordStart.get(index);
     // Only ever push the start LATER (toward the heard onset), never earlier.
     const start = onset === undefined ? lrc.start : Math.max(lrc.start, onset);
-    return { index, text, start, end: Math.max(lrc.end, start + 0.1), support: 1 };
+    return {
+      index,
+      text,
+      start,
+      end: Math.max(lrc.end, start + 0.1),
+      support: 1,
+    };
   });
 }
 
@@ -302,6 +317,7 @@ export function mergeLrcWithWordOnsets(
 // stranded at the tail. Ends are set to the next cue's start (the caller caps them).
 // A no-op when the cues already sit inside the region with even-ish spacing (the
 // common, good-take case). Pure → unit-tested.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one decision — are these cues plausible, and if not re-space them evenly — expressed as guards over the same array.
 export function redistributeImplausibleCues(
   cues: TimedLine[],
   vocalEndSec: number,
@@ -352,7 +368,8 @@ export function redistributeImplausibleCues(
     if (!cur) {
       continue;
     }
-    cur.end = i < out.length - 1 ? (out[i + 1]?.start ?? cur.start) : cur.start + tail;
+    cur.end =
+      i < out.length - 1 ? (out[i + 1]?.start ?? cur.start) : cur.start + tail;
   }
   return out;
 }
@@ -366,6 +383,7 @@ export function redistributeImplausibleCues(
 // [start_g, start_{g+1}) is split equally among its steps so they play in sequence
 // while the line holds. Returns one onset per step index (in step order). Pure →
 // unit-tested.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: interpolate/force-monotonic/split passes over a single onset array, each consuming the previous pass's output.
 export function songStepOnsets(
   groups: number[][],
   groupSungStart: (number | null)[],
@@ -394,10 +412,10 @@ export function songStepOnsets(
       anchor[i] = a + ((b - a) * (i - prev)) / (next - prev);
     } else if (next !== undefined) {
       anchor[i] = 0; // leading unsung groups start at the top
-    } else if (prev !== undefined) {
-      anchor[i] = bodyEnd; // trailing unsung groups collapse at the end
-    } else {
+    } else if (prev === undefined) {
       anchor[i] = (bodyEnd * i) / Math.max(1, g); // nothing sung: even fallback
+    } else {
+      anchor[i] = bodyEnd; // trailing unsung groups collapse at the end
     }
   }
   // 2) Force non-decreasing (interpolation + collapses can't reorder).
@@ -414,7 +432,10 @@ export function songStepOnsets(
     const steps = groups[i] ?? [];
     const span = Math.max(0, end - start);
     steps.forEach((stepIdx, j) => {
-      onsets.push({ idx: stepIdx, t: start + (span * j) / Math.max(1, steps.length) });
+      onsets.push({
+        idx: stepIdx,
+        t: start + (span * j) / Math.max(1, steps.length),
+      });
     });
   }
   // 4) Return in step-index order.
@@ -429,10 +450,31 @@ function isFiller(text: string): boolean {
     return true;
   }
   const filler = new Set([
-    "oh", "ah", "ooh", "ooo", "yeah", "yea", "la", "na", "mmm", "hmm", "whoa",
-    "woah", "hey", "uh", "huh", "ohh", "ahh",
+    "oh",
+    "ah",
+    "ooh",
+    "ooo",
+    "yeah",
+    "yea",
+    "la",
+    "na",
+    "mmm",
+    "hmm",
+    "whoa",
+    "woah",
+    "hey",
+    "uh",
+    "huh",
+    "ohh",
+    "ahh",
     // ASR non-speech markers that can appear without brackets.
-    "music", "silence", "blank", "audio", "applause", "inaudible", "noise",
+    "music",
+    "silence",
+    "blank",
+    "audio",
+    "applause",
+    "inaudible",
+    "noise",
     "instrumental",
   ]);
   return words.every((w) => filler.has(w));
@@ -566,6 +608,7 @@ export function alignLyricsToSegments(
 // `lookahead` tokens, so a fully-unsung line or a garbled word is skipped without
 // backing up), and the word's time is folded into that token's line. Low-confidence
 // words (hallucinations over instrumental music) are dropped first. Pure → tested.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: one monotonic two-pointer scan — the branches ARE its skip/fold cases (unsung line, garbled word, low-confidence drop) and only make sense read straight through.
 export function alignLyricsToWords(
   lines: string[],
   words: TimedWord[],
@@ -651,9 +694,40 @@ export function alignLyricsToWords(
 // hijack the monotonic pointer (see alignLyricsToWords). Deliberately small: only
 // the highest-frequency, low-information words.
 const STOPWORDS = new Set([
-  "the", "a", "an", "and", "or", "but", "is", "are", "was", "were", "be", "to",
-  "of", "in", "on", "at", "it", "its", "so", "as", "we", "i", "you", "he",
-  "she", "they", "all", "by", "for", "with", "that", "this", "up", "out",
+  "the",
+  "a",
+  "an",
+  "and",
+  "or",
+  "but",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "to",
+  "of",
+  "in",
+  "on",
+  "at",
+  "it",
+  "its",
+  "so",
+  "as",
+  "we",
+  "i",
+  "you",
+  "he",
+  "she",
+  "they",
+  "all",
+  "by",
+  "for",
+  "with",
+  "that",
+  "this",
+  "up",
+  "out",
 ]);
 
 // Rough syllable count for a lyric line — how long it needs to be sung. Counts
@@ -679,6 +753,7 @@ export function estimateSyllables(text: string): number {
 //   • everything clamped to [regionStart, regionEnd], de-overlapped (a cue ends by
 //     the next cue's start), floored to `minDurSec`, capped at `maxCueSec`.
 // Cues come back sorted, ready to shift/burn. Pure → unit-tested.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: sequential clamp/de-overlap/floor/cap passes over one cue list — the pipeline documented above; splitting each into a helper hides the order they must run in.
 export function layoutAlignedCues(
   aligned: AlignedLine[],
   opts: {
@@ -759,7 +834,11 @@ export function layoutAlignedCues(
     if (start >= regionEnd) {
       break; // no room left on the timeline
     }
-    const end = Math.min(regionEnd, start + maxCue, Math.max(cue.end, start + minDur));
+    const end = Math.min(
+      regionEnd,
+      start + maxCue,
+      Math.max(cue.end, start + minDur)
+    );
     if (end <= start) {
       continue;
     }
@@ -845,7 +924,8 @@ export function vocalRegionExcludingTail(
   for (const seg of segments) {
     const text = (seg.text ?? "").trim();
     const isRepeat =
-      text !== "" && seen.some((prev) => similarity(prev, text) >= simThreshold);
+      text !== "" &&
+      seen.some((prev) => similarity(prev, text) >= simThreshold);
     if (!isRepeat) {
       lastNovelEnd = Math.max(lastNovelEnd, seg.end);
     }

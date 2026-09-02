@@ -185,14 +185,12 @@ async function condenseSessionVideos(
       // already-condensed: a later `session end` (especially --cinematic) reuses
       // it instead of condensing the already-condensed file again — which would
       // shrink it further and desync the stamped step times from the pixels.
-      await copyFile(
-        video.path,
-        precinematicVideoPath(video.path)
-      ).catch((err) =>
-        logger.warn(
-          { err, video: video.path },
-          "could not preserve condensed cut"
-        )
+      await copyFile(video.path, precinematicVideoPath(video.path)).catch(
+        (err) =>
+          logger.warn(
+            { err, video: video.path },
+            "could not preserve condensed cut"
+          )
       );
     } else if (outcome.reason === "nothing to trim") {
       logger.debug(
@@ -333,6 +331,7 @@ async function cinematizeSessionVideo(
   logger.info({ video: video.path }, "cinematic pass applied");
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the `session end` orchestrator — collect artifacts, resolve the verdict, condense, optionally run the cinematic pass, render the report; each stage is independently switchable by flag.
 export async function sessionEnd(
   id: string,
   json: boolean,

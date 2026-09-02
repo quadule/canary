@@ -26,11 +26,11 @@ import {
 } from "./align.js";
 
 export interface SongCaptionPlan {
+  // The timed lyric lines, in the RAW-song timebase (the caller rebases to the trim).
+  clipCues: TimedLine[];
   // The sung region [start, end] to trim the song/body to, or null when no source
   // produced usable timing (caller falls back to step-timed captions).
   region: { start: number; end: number } | null;
-  // The timed lyric lines, in the RAW-song timebase (the caller rebases to the trim).
-  clipCues: TimedLine[];
   // Human-readable source, for the render note (empty when region is null).
   sourceLabel: string;
 }

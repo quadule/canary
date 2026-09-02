@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   acestepBaseUrl,
-  isLocalUrl,
   audioFromResponse,
   buildMusicContent,
   buildMusicPayload,
   describeMusicCurl,
+  isLocalUrl,
   parseAudioDataUrl,
 } from "./acestep.js";
 
@@ -56,7 +56,11 @@ describe("buildMusicContent", () => {
 describe("buildMusicPayload", () => {
   it("nests duration under audio_config for an instrumental bed (no LM planning)", () => {
     expect(
-      buildMusicPayload({ directionText: "noir", seconds: 12.4, instrumental: true })
+      buildMusicPayload({
+        directionText: "noir",
+        seconds: 12.4,
+        instrumental: true,
+      })
     ).toEqual({
       messages: [
         {
@@ -106,8 +110,13 @@ describe("buildMusicPayload", () => {
 
   it("rounds duration up to >=1 and includes model only when set", () => {
     expect(
-      (buildMusicPayload({ directionText: "x", seconds: 0, instrumental: true })
-        .audio_config as { duration: number }).duration
+      (
+        buildMusicPayload({
+          directionText: "x",
+          seconds: 0,
+          instrumental: true,
+        }).audio_config as { duration: number }
+      ).duration
     ).toBe(1);
     expect(
       buildMusicPayload({
@@ -153,35 +162,39 @@ describe("audioFromResponse", () => {
     expect(audioFromResponse(body)?.toString()).toBe("song");
   });
   it("returns null when there's no audio", () => {
-    expect(audioFromResponse({ choices: [{ message: { content: "hi" } }] })).toBeNull();
+    expect(
+      audioFromResponse({ choices: [{ message: { content: "hi" } }] })
+    ).toBeNull();
     expect(audioFromResponse({})).toBeNull();
   });
 });
 
 // Live integration: exercise the real provider against a running ACE-Step server
 // (heavy + slow), gated behind CANARY_TEST_ACESTEP=1 so it never runs in CI.
-describe.skipIf(process.env.CANARY_TEST_ACESTEP !== "1")("ACE-Step live", () => {
-  it("generates an instrumental bed via the provider", async () => {
-    const { resolveAceStepMusic } = await import("./acestep.js");
-    const { music } = await resolveAceStepMusic({
-      env: process.env,
-      // biome-ignore lint/suspicious/noExplicitAny: tiny test logger stub
-      log: { debug() {}, info() {}, warn() {}, error() {} } as any,
-    });
-    expect(music, "ACE-Step server should be reachable").toBeDefined();
-    const { readFile, rm } = await import("node:fs/promises");
-    const os = await import("node:os");
-    const path = await import("node:path");
-    const out = path.join(os.tmpdir(), `canary-acestep-${process.pid}.wav`);
-    try {
-      await music?.bed("calm ambient piano, gentle and cinematic", 8, out);
-      const bytes = await readFile(out);
-      expect(bytes.length).toBeGreaterThan(1000);
-    } finally {
-      await rm(out, { force: true });
-    }
-  }, 300_000);
-});
+describe.skipIf(process.env.CANARY_TEST_ACESTEP !== "1")(
+  "ACE-Step live",
+  () => {
+    it("generates an instrumental bed via the provider", async () => {
+      const { resolveAceStepMusic } = await import("./acestep.js");
+      const { music } = await resolveAceStepMusic({
+        env: process.env,
+        log: { debug() {}, info() {}, warn() {}, error() {} } as any,
+      });
+      expect(music, "ACE-Step server should be reachable").toBeDefined();
+      const { readFile, rm } = await import("node:fs/promises");
+      const os = await import("node:os");
+      const path = await import("node:path");
+      const out = path.join(os.tmpdir(), `canary-acestep-${process.pid}.wav`);
+      try {
+        await music?.bed("calm ambient piano, gentle and cinematic", 8, out);
+        const bytes = await readFile(out);
+        expect(bytes.length).toBeGreaterThan(1000);
+      } finally {
+        await rm(out, { force: true });
+      }
+    }, 300_000);
+  }
+);
 
 describe("describeMusicCurl", () => {
   it("redacts the key and includes auth only when present", () => {

@@ -10,7 +10,6 @@ import {
   sanitizeImageQuery,
 } from "./wikimedia.js";
 
-// biome-ignore lint/suspicious/noExplicitAny: tiny logger stub for tests
 const stubLog = { debug() {}, info() {}, warn() {}, error() {} } as any;
 
 describe("resolveWikimediaImage gating", () => {

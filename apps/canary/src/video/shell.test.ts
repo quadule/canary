@@ -24,7 +24,15 @@ describe("shellQuote", () => {
 describe("formatCommand", () => {
   it("renders a copy-pasteable say line with a parenthesized voice", () => {
     expect(
-      formatCommand("say", ["-v", "Ava (Premium)", "-r", "170", "Hi", "-o", "out.aiff"])
+      formatCommand("say", [
+        "-v",
+        "Ava (Premium)",
+        "-r",
+        "170",
+        "Hi",
+        "-o",
+        "out.aiff",
+      ])
     ).toBe("say -v 'Ava (Premium)' -r 170 Hi -o out.aiff");
   });
 });

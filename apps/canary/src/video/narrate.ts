@@ -37,6 +37,20 @@ import {
   buildCreditsRoll,
   type CreditSection,
 } from "./credits.js";
+import {
+  audioDurationSec,
+  availableFilters,
+  concatSegments,
+  type Echo,
+  ENCODE_TIMEOUT_MS,
+  encodeSlice,
+  FFMPEG_BASE_ARGS,
+  isOnPath,
+  type ProbedVideo,
+  probeVideo,
+  run,
+  trimAudio,
+} from "./ffmpeg.js";
 import { createLocalTitleBackground } from "./local-background.js";
 import { resolveLocalImage } from "./local-image.js";
 import { resolveOmlxProviders } from "./omlx.js";
@@ -48,41 +62,23 @@ import {
   type TtsProvider,
 } from "./providers.js";
 import {
-  audioDurationSec,
-  availableFilters,
-  concatSegments,
-  type Echo,
-  ENCODE_TIMEOUT_MS,
-  encodeSlice,
-  FFMPEG_BASE_ARGS,
-  isOnPath,
-  probeVideo,
-  type ProbedVideo,
-  run,
-  trimAudio,
-} from "./ffmpeg.js";
-import {
   buildLyricsPrompt,
   buildNarrationPrompt,
   describeChange,
-  type Lyrics,
   LYRICS_SCHEMA,
-  type Narration,
+  type Lyrics,
   NARRATION_SCHEMA,
+  type Narration,
   parseLyricsJson,
   parseNarrationJson,
   resolveBase,
   resolveDirection,
   runClaudeJson,
 } from "./script-llm.js";
-import {
-  resolveSpeech,
-  type SpeechSynth,
-  speechText,
-} from "./speech.js";
-import { buildSrt, captionLineMax } from "./srt.js";
-import { type ThemeCategory } from "./themes.js";
 import { selectSongCaptions } from "./song-captions.js";
+import { resolveSpeech, type SpeechSynth, speechText } from "./speech.js";
+import { buildSrt, captionLineMax } from "./srt.js";
+import type { ThemeCategory } from "./themes.js";
 import { transcribeSong } from "./transcribe.js";
 import { resolveWikimediaImage } from "./wikimedia.js";
 
@@ -382,7 +378,6 @@ export function layoutSongCues(
 // (narration plays at 1.0; a music bed sits low, e.g. 0.18).
 export interface AudioTrack {
   delayMs: number;
-  volume?: number;
   // Optional linear fades on the GLOBAL timeline (seconds — the same clock as
   // delayMs, since adelay shifts the stream so its t matches video time). Used
   // to cross the single score track from its quiet narration level into the full
@@ -391,6 +386,7 @@ export interface AudioTrack {
   fadeInDurSec?: number;
   fadeOutAtSec?: number;
   fadeOutDurSec?: number;
+  volume?: number;
 }
 
 // Build the ffmpeg `filter_complex` that delays each audio input to its place on
@@ -1013,8 +1009,16 @@ async function generateRawSong(args: {
   notes: string[];
   log: Logger;
 }): Promise<{ path: string; lrcText?: string } | null> {
-  const { provider, directionText, lyrics, targetSec, outPath, temps, notes, log } =
-    args;
+  const {
+    provider,
+    directionText,
+    lyrics,
+    targetSec,
+    outPath,
+    temps,
+    notes,
+    log,
+  } = args;
   if (!provider) {
     return null;
   }
@@ -1024,7 +1028,12 @@ async function generateRawSong(args: {
     // the lyrics then repeats to fill, and the caller trims the tail. The provider
     // may also hand back its OWN per-line lyric timestamps (LRC) — the ideal caption
     // source; the caller uses them when present, else transcribes.
-    const result = await provider.song(directionText, targetSec, outPath, lyrics);
+    const result = await provider.song(
+      directionText,
+      targetSec,
+      outPath,
+      lyrics
+    );
     return { path: outPath, lrcText: result?.lrcText };
   } catch (err) {
     log.debug({ err }, "cinematic: song generation failed");
@@ -1185,13 +1194,13 @@ interface RenderedClip {
 // its (low) gain under the narration.
 interface MusicTrack {
   delaySec: number;
-  path: string;
-  volume: number;
   // Optional cross-fade envelope (see AudioTrack), on the global timeline.
   fadeInAtSec?: number;
   fadeInDurSec?: number;
   fadeOutAtSec?: number;
   fadeOutDurSec?: number;
+  path: string;
+  volume: number;
 }
 
 // Synthesize one narration clip with `synth`, transcode to AAC/m4a, and probe its
@@ -1422,6 +1431,7 @@ async function buildTitleCard(args: {
 // leaves that much slack — `clipDur − f + gapSec` goes ≤ 0, so the hold stays 0
 // and the natural gap already covers it). The last step gets no trailing gap.
 // Pure → unit-tested.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: per-step hold arithmetic with its documented edge cases (last step, slack already in the footage) kept inline, where the comment above explains them against the formula.
 export function planRetime(args: {
   stepTimes: number[];
   clipDurSec: number[];
@@ -1496,9 +1506,7 @@ const STEP_START_PAD_SEC = 0;
 // A freeze on the current step's last frame fills the gap. Override with
 // $CANARY_NARRATION_GAP_SEC (0 restores the old back-to-back pacing).
 const DEFAULT_NARRATION_GAP_SEC = 0.6;
-export function narrationGapSec(
-  env: NodeJS.ProcessEnv = process.env
-): number {
+export function narrationGapSec(env: NodeJS.ProcessEnv = process.env): number {
   const override = Number(env.CANARY_NARRATION_GAP_SEC);
   return Number.isFinite(override) && override >= 0
     ? override
@@ -1814,6 +1822,7 @@ function notApplied(reason: string): CinematicResult {
 // narration mixed in, captions optionally burned). Always writes a sibling
 // `.srt`. Never throws: any failure leaves the original video untouched and
 // returns { applied:false, titleOffsetSec:0, reason }.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the cinematic pipeline's entry point — every stage (title card, narration, music, captions) is independently optional and degrades instead of throwing, so the per-stage fallbacks land here. At a cognitive complexity of 85 this is the most complex function in the repo and the clearest refactor target.
 export async function cinematicProcess(
   videoPath: string,
   steps: CinematicStep[],
@@ -2017,9 +2026,7 @@ export async function cinematicProcess(
           text: byGroup.get(g),
         }))
         .filter(
-          (
-            x
-          ): x is { firstStep: number; stepIdxs: number[]; text: string } =>
+          (x): x is { firstStep: number; stepIdxs: number[]; text: string } =>
             Boolean(x.text)
         );
       const orderedTexts = ordered.map((x) => x.text);
@@ -2126,7 +2133,11 @@ export async function cinematicProcess(
             return { start, end, text: c.text };
           })
           .filter((c) => c.end > 0)
-          .map((c) => ({ start: Math.max(0, c.start), end: c.end, text: c.text }));
+          .map((c) => ({
+            start: Math.max(0, c.start),
+            end: c.end,
+            text: c.text,
+          }));
         const bodyLen = Math.max(6, region.end - region.start);
         holdDurSec = Array.from(
           { length: stepCount },

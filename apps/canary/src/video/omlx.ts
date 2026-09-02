@@ -61,7 +61,7 @@ export async function readOmlxApiKey(
       ?.api_key;
     return typeof key === "string" && key.trim() ? key.trim() : undefined;
   } catch {
-    return undefined;
+    return;
   }
 }
 

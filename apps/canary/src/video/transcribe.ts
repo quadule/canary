@@ -388,9 +388,9 @@ export async function resolveTranscriber(
 // (Whisper-Large-v3-Turbo) than a locally-installed whisper.cpp, which markedly
 // improves song-caption alignment.
 export interface OpenAiTranscriber {
-  url: string; // full /v1/audio/transcriptions endpoint
-  model: string;
   apiKey?: string;
+  model: string;
+  url: string; // full /v1/audio/transcriptions endpoint
 }
 
 // Resolve the OpenAI-compatible transcriber when $CANARY_TRANSCRIBE_URL is set

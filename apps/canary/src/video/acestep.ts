@@ -142,9 +142,8 @@ export function parseAudioDataUrl(url: unknown): Buffer | null {
 
 // Pull the first audio data URL out of a chat-completions response. Pure.
 export function audioFromResponse(body: unknown): Buffer | null {
-  const choice = (body as { choices?: Array<{ message?: unknown }> })
-    ?.choices?.[0];
-  const audio = (choice?.message as { audio?: Array<unknown> })?.audio?.[0];
+  const choice = (body as { choices?: { message?: unknown }[] })?.choices?.[0];
+  const audio = (choice?.message as { audio?: unknown[] })?.audio?.[0];
   const url = (audio as { audio_url?: { url?: unknown } })?.audio_url?.url;
   return parseAudioDataUrl(url);
 }
@@ -154,8 +153,7 @@ export function audioFromResponse(body: unknown): Buffer | null {
 // patched to run get_lyric_timestamp surfaces it at `choices[0].message.lrc`
 // (a string of "[mm:ss.xx]line" lines). Returns undefined when absent. Pure.
 export function lrcFromResponse(body: unknown): string | undefined {
-  const choice = (body as { choices?: Array<{ message?: unknown }> })
-    ?.choices?.[0];
+  const choice = (body as { choices?: { message?: unknown }[] })?.choices?.[0];
   const lrc = (choice?.message as { lrc?: unknown })?.lrc;
   return typeof lrc === "string" && lrc.trim() ? lrc : undefined;
 }
@@ -228,8 +226,15 @@ async function generate(args: {
   outPath: string;
   echo?: Echo;
 }): Promise<{ lrcText?: string }> {
-  const { config, directionText, seconds, instrumental, lyrics, outPath, echo } =
-    args;
+  const {
+    config,
+    directionText,
+    seconds,
+    instrumental,
+    lyrics,
+    outPath,
+    echo,
+  } = args;
   const payload = buildMusicPayload({
     directionText,
     seconds,
@@ -270,7 +275,10 @@ async function generate(args: {
   return { lrcText: lrcFromResponse(body) };
 }
 
-function createMusicProvider(config: AceStepConfig, echo?: Echo): MusicProvider {
+function createMusicProvider(
+  config: AceStepConfig,
+  echo?: Echo
+): MusicProvider {
   return {
     id: "acestep-music",
     singsLyrics: true,
@@ -339,6 +347,8 @@ export async function resolveAceStepMusic(opts: {
     : "generated on the configured server (lyrics/direction are sent there)";
   return {
     music: createMusicProvider(resolved, echo),
-    notes: [`ACE-Step music enabled (${model} @ ${config.baseUrl}) — ${where}.`],
+    notes: [
+      `ACE-Step music enabled (${model} @ ${config.baseUrl}) — ${where}.`,
+    ],
   };
 }

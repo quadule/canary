@@ -56,7 +56,10 @@ describe("segmentsFromOpenAI", () => {
   it("skips entries missing numeric times or text", () => {
     expect(
       segmentsFromOpenAI({
-        segments: [{ start: 0, text: "no end" }, { start: 1, end: 2, text: 5 }],
+        segments: [
+          { start: 0, text: "no end" },
+          { start: 1, end: 2, text: 5 },
+        ],
       })
     ).toEqual([]);
   });
@@ -137,10 +140,19 @@ describe("parseWhisperSrt", () => {
 
 describe("similarity", () => {
   it("scores exact/near matches high and unrelated low", () => {
-    expect(similarity("the text field cries", "the text field cries")).toBeGreaterThan(0.9);
+    expect(
+      similarity("the text field cries", "the text field cries")
+    ).toBeGreaterThan(0.9);
     // mondegreen still registers via bigrams
-    expect(similarity("the checkbook feels a sacred vow", "the checkbox seals our sacred vow")).toBeGreaterThan(0.4);
-    expect(similarity("the select bends the world", "totally unrelated banana")).toBeLessThan(0.15);
+    expect(
+      similarity(
+        "the checkbook feels a sacred vow",
+        "the checkbox seals our sacred vow"
+      )
+    ).toBeGreaterThan(0.4);
+    expect(
+      similarity("the select bends the world", "totally unrelated banana")
+    ).toBeLessThan(0.15);
   });
 });
 
@@ -161,7 +173,11 @@ describe("alignLyricsToSegments — real free_tagged transcript", () => {
   it("times our CLEAN lines to the vocals, merging split cues and dropping the unsung line", () => {
     const aligned = alignLyricsToSegments(lines, segments);
     expect(aligned).toEqual([
-      { start: 35.0, end: 39.76, text: "The text field cries, the saga begins" },
+      {
+        start: 35.0,
+        end: 39.76,
+        text: "The text field cries, the saga begins",
+      },
       { start: 39.76, end: 49.5, text: "The checkbox seals our sacred vow" },
     ]);
     // The unsung third line is omitted.
@@ -178,7 +194,10 @@ describe("alignLyricsToSegments — real free_tagged transcript", () => {
 describe("alignLyricsToSegments — edge cases", () => {
   it("returns [] when nothing matches", () => {
     expect(
-      alignLyricsToSegments(["alpha beta"], [{ start: 1, end: 2, text: "zulu yankee" }])
+      alignLyricsToSegments(
+        ["alpha beta"],
+        [{ start: 1, end: 2, text: "zulu yankee" }]
+      )
     ).toEqual([]);
   });
   it("returns [] for no segments", () => {
@@ -249,7 +268,12 @@ describe("vocalRegionExcludingTail", () => {
 
 describe("tokenize", () => {
   it("lowercases and strips punctuation", () => {
-    expect(tokenize("The Text-Field, cries!")).toEqual(["the", "text", "field", "cries"]);
+    expect(tokenize("The Text-Field, cries!")).toEqual([
+      "the",
+      "text",
+      "field",
+      "cries",
+    ]);
   });
 });
 
@@ -280,7 +304,11 @@ describe("alignLyricsToWords", () => {
   });
 
   it("marks an unsung line (no matching words) with support 0 and null timing", () => {
-    const lines = ["She opens the page", "The login waits alone", "Green lights shining"];
+    const lines = [
+      "She opens the page",
+      "The login waits alone",
+      "Green lights shining",
+    ];
     // The middle line is never sung.
     const w = words(
       "she@1-1.2 opens@1.3-1.8 page@2.1-2.6 green@5-5.4 lights@5.5-6 shining@6.3-6.9"
@@ -322,18 +350,33 @@ describe("layoutAlignedCues", () => {
   it("keeps matched lines and drops unsung ones whose gap is too short", () => {
     const aligned = [
       { index: 0, start: 1, end: 3, text: "line one here", support: 1 },
-      { index: 1, start: null, end: null, text: "skipped line two", support: 0 },
+      {
+        index: 1,
+        start: null,
+        end: null,
+        text: "skipped line two",
+        support: 0,
+      },
       { index: 2, start: 3.2, end: 5, text: "line three here", support: 1 },
     ];
     const cues = layoutAlignedCues(aligned, { regionStart: 0, regionEnd: 8 });
     // The skipped middle line (0.2s gap) is dropped, not interpolated.
-    expect(cues.map((c) => c.text)).toEqual(["line one here", "line three here"]);
+    expect(cues.map((c) => c.text)).toEqual([
+      "line one here",
+      "line three here",
+    ]);
   });
 
   it("interpolates an unsung line when the gap is long enough to hold it", () => {
     const aligned = [
       { index: 0, start: 1, end: 3, text: "line one", support: 1 },
-      { index: 1, start: null, end: null, text: "middle sung but garbled", support: 0 },
+      {
+        index: 1,
+        start: null,
+        end: null,
+        text: "middle sung but garbled",
+        support: 0,
+      },
       { index: 2, start: 12, end: 14, text: "line three", support: 1 },
     ];
     const cues = layoutAlignedCues(aligned, { regionStart: 0, regionEnd: 16 });

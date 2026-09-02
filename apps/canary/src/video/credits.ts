@@ -53,8 +53,8 @@ export interface Contributor {
 
 // A titled block in the credits roll (e.g. "Featuring", "Music", "Made with").
 export interface CreditSection {
-  title?: string;
   entries: string[];
+  title?: string;
 }
 
 // ---------------------------------------------------------------------------

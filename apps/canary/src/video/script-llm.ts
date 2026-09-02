@@ -8,9 +8,9 @@ import type { Logger } from "@usecanary/logger";
 import { type Echo, run, VERSION_PROBE_TIMEOUT_MS } from "./ffmpeg.js";
 import { stripOverrideTags } from "./srt.js";
 import {
+  type StyleId,
   selectStyle,
   selectThemes,
-  type StyleId,
   type ThemeCategory,
 } from "./themes.js";
 
@@ -214,7 +214,7 @@ export function buildLyricsPrompt(args: {
     "Rules:",
     `- Write exactly one line per section (${stepCount} total). Each line must be SHORT and singable — about 6–10 syllables, roughly ${wordsPerLine} words or fewer, sung comfortably in ONE breath. This matters: a long, wordy line comes out sparse or makes the singer stumble. Keep the lines' lengths similar so they share a rhythm.`,
     "- Do NOT make a line longer just because its section is long — a longer section simply lingers on screen; its line stays short.",
-    "- Use plain, singable words with open vowels. AVOID proper nouns, product/UI names, technical jargon, acronyms, and abbreviations — the singer garbles them. Rephrase the idea in everyday language (e.g. not \"the Super Admin approaches the file\" but \"she steps up to the case\").",
+    '- Use plain, singable words with open vowels. AVOID proper nouns, product/UI names, technical jargon, acronyms, and abbreviations — the singer garbles them. Rephrase the idea in everyday language (e.g. not "the Super Admin approaches the file" but "she steps up to the case").',
     "- Write the words as they should be SUNG: no em-dashes, colons, semicolons, slashes, parentheses, or ellipses inside a line. A comma or nothing is fine; keep punctuation minimal.",
     "- Each line is ABOUT its section (use its intent/what it does), but commit hard to the genre — be playful and vivid, never a dry play-by-play.",
     "- Together the lines should read as one coherent song with a through-line; rhyme or repetition across lines is welcome, but keep the one-line-per-section mapping.",
@@ -324,6 +324,7 @@ function stripCodeFences(raw: string): string {
 // firstOpen..lastClose: it survives a model preamble AND trailing prose that
 // itself contains braces (which would otherwise drag `lastIndexOf("}")` past the
 // real end). Pure → unit-tested.
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: a character-by-character scanner tracking string/escape/depth state — a state machine that reads worse when split.
 function extractBalancedJson(s: string): string | null {
   const start = s.indexOf("{");
   if (start < 0) {

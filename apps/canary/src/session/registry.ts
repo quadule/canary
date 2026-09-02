@@ -14,6 +14,11 @@ export interface SessionStep {
   exitCode: number;
   name: string;
   ok: boolean;
+  // The step's position in the PRE-cinematic (condensed) cut, preserved when the
+  // cinematic pass first runs so `session end --cinematic --prompt …` can be
+  // re-run with a different theme from the clean condensed source + its timings,
+  // without re-recording. Survives across cinematic re-runs (videoTime does not).
+  precinematicVideoTime?: number;
   // The script text this step ran — surfaced in the report/results.json so a
   // reviewer can see what the agent actually sent.
   script?: string;
@@ -23,11 +28,6 @@ export interface SessionStep {
   // the video to a step (and highlight the current step as it plays). The
   // cinematic pass overwrites this with the step's position in the cinematic cut.
   videoTime?: number;
-  // The step's position in the PRE-cinematic (condensed) cut, preserved when the
-  // cinematic pass first runs so `session end --cinematic --prompt …` can be
-  // re-run with a different theme from the clean condensed source + its timings,
-  // without re-recording. Survives across cinematic re-runs (videoTime does not).
-  precinematicVideoTime?: number;
 }
 
 export interface SessionRecord {
@@ -38,13 +38,13 @@ export interface SessionRecord {
   // `session end --cinematic` reads this to detect a mismatch — running the
   // cinematic pass on a non-cinematic recording risks double captions.
   cinematic?: boolean;
-  createdAt: string;
   // ISO time real content first appeared — the first non-about:blank page load
   // (or, with `session start --url`, that page's post-settle time). Same clock
   // basis as createdAt. session end trims the video head to
   // (contentStartedAt - createdAt), dropping the leading blank (about:blank + the
   // first navigation's white load screen).
   contentStartedAt?: string;
+  createdAt: string;
   endedAt?: string;
   headless: boolean;
   id: string;

@@ -480,14 +480,14 @@ export interface CondenseResult {
 
 export interface CondenseOptions {
   ffmpegPath?: string;
-  // Interaction-aware mode: keep exactly these windows (in original video
-  // seconds) and trim everything else — the leading load, the idle gaps between
-  // steps, and the trailing tail. When omitted, fall back to freezedetect.
-  keepWindows?: Segment[];
   // Hard floor (original video seconds) to trim off the HEAD regardless of the
   // keep/freeze branch — e.g. the pre-load blank up to a session start URL's
   // settle. Keeps entirely before it are dropped; one spanning it is clamped.
   headTrimSec?: number;
+  // Interaction-aware mode: keep exactly these windows (in original video
+  // seconds) and trim everything else — the leading load, the idle gaps between
+  // steps, and the trailing tail. When omitted, fall back to freezedetect.
+  keepWindows?: Segment[];
 }
 
 // Drop the part of `keeps` before `floorSec` (sorted, disjoint in → out).

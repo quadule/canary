@@ -2,23 +2,23 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parseFilterNames } from "./ffmpeg.js";
 import {
   buildAudioMix,
   buildModelCredits,
+  groupedLyricSteps,
+  groupStepsForLyrics,
   layoutSongCues,
   lyricsPathFor,
   planRetime,
   precinematicVideoPath,
-  groupStepsForLyrics,
-  groupedLyricSteps,
   songHoldSec,
-  stepFootageSec,
   songTargetSec,
+  stepFootageSec,
   titleStyle,
   voiceCredit,
   wrapTitle,
 } from "./narrate.js";
-import { parseFilterNames } from "./ffmpeg.js";
 import {
   buildLyricsPrompt,
   buildNarrationPrompt,
@@ -199,7 +199,10 @@ describe("parseNarrationJson", () => {
 
   it("recovers valid JSON despite a preamble or trailing prose (incl. braces)", () => {
     const body = '{"title":"T","steps":[{"index":0,"narration":"clean line"}]}';
-    const expected = { title: "T", steps: [{ index: 0, narration: "clean line" }] };
+    const expected = {
+      title: "T",
+      steps: [{ index: 0, narration: "clean line" }],
+    };
     expect(parseNarrationJson(`Sure! Here is the narration:\n${body}`)).toEqual(
       expected
     );
@@ -212,7 +215,9 @@ describe("parseNarrationJson", () => {
 
   it("returns null on a truncated (unbalanced) reply", () => {
     expect(
-      parseNarrationJson('{"title":"T","steps":[{"index":0,"narration":"cut off')
+      parseNarrationJson(
+        '{"title":"T","steps":[{"index":0,"narration":"cut off'
+      )
     ).toBeNull();
   });
 });

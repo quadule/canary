@@ -21,9 +21,15 @@ describe("omlxBaseUrl", () => {
 });
 
 describe("pickTtsModel", () => {
-  const ids = ["ACE-Step1.5-MLX-4bit", "Qwen3-TTS-12Hz-1.7B-Base", "Qwen3-0.6B"];
+  const ids = [
+    "ACE-Step1.5-MLX-4bit",
+    "Qwen3-TTS-12Hz-1.7B-Base",
+    "Qwen3-0.6B",
+  ];
   it("prefers an explicit override", () => {
-    expect(pickTtsModel(ids, { CANARY_OMLX_TTS_MODEL: "custom" })).toBe("custom");
+    expect(pickTtsModel(ids, { CANARY_OMLX_TTS_MODEL: "custom" })).toBe(
+      "custom"
+    );
   });
   it("auto-picks the first TTS-looking model", () => {
     expect(pickTtsModel(ids, {})).toBe("Qwen3-TTS-12Hz-1.7B-Base");
@@ -40,9 +46,9 @@ describe("buildSpeechBody", () => {
       input: "hi",
       response_format: "wav",
     });
-    expect(buildSpeechBody({ model: "m", text: "hi", voice: "v" })).toMatchObject(
-      { voice: "v" }
-    );
+    expect(
+      buildSpeechBody({ model: "m", text: "hi", voice: "v" })
+    ).toMatchObject({ voice: "v" });
   });
 });
 
@@ -81,7 +87,6 @@ describe.skipIf(!reachable)("oMLX live TTS", () => {
   it("synthesizes a real WAV via the provider", async () => {
     const { tts, notes } = await resolveOmlxProviders({
       env: process.env,
-      // biome-ignore lint/suspicious/noExplicitAny: tiny test logger stub
       log: { debug() {}, info() {}, warn() {}, error() {} } as any,
     });
     expect(tts, "a TTS model should be loaded in oMLX").toBeDefined();
