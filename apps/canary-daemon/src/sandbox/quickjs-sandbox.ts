@@ -966,7 +966,7 @@ export class QuickJSSandbox {
                         "z-index:2147483646;pointer-events:none;white-space:pre-wrap;" +
                         "text-align:center;box-shadow:0 4px 18px rgba(0,0,0,0.35);opacity:0;" +
                         "display:-webkit-box;-webkit-box-orient:vertical;" +
-                        "overflow:hidden;";
+                        "-webkit-line-clamp:2;overflow:hidden;";
                       host.appendChild(el);
                       const FADE = 250;
                       const hold = Math.max(0, arg.ms - FADE * 2);
