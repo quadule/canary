@@ -57,10 +57,24 @@ export function parseMetrics(raws: string[]): {
   return { invalid, metrics };
 }
 
-// Trim a number for display: integers stay bare, everything else keeps one
-// decimal. Pure → unit-tested.
+// How small a change counts as none. 1e-6 of a percentage point is below any
+// real measurement's resolution, and well below float noise from summing.
+const NEGLIGIBLE = 1e-6;
+
+// Display decimals. Four is not arbitrary: on an application with a few hundred
+// thousand executable lines, one line is ~0.0002% of the total, so four decimals
+// is the granularity at which a single line of movement is still visible. Fewer
+// (one decimal, as this first shipped) reports every run on a large codebase as
+// unchanged; more is noise.
+const DISPLAY_DECIMALS = 4;
+
+// Format a number for display. Trailing zeros are dropped, so an integer reads
+// as "42", 61.23 keeps both digits, and a hundredths-scale move survives.
+// Pure → unit-tested.
 export function formatValue(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+  // toFixed then back through Number strips trailing zeros and clamps the float
+  // tail (0.020000000000000018 -> 0.02) without inventing precision.
+  return String(Number(value.toFixed(DISPLAY_DECIMALS)));
 }
 
 // One metric rendered against its previous value, e.g. "coverage 42.5 (+3.2
@@ -72,19 +86,23 @@ export function formatMetric(current: Metric, previous?: Metric): string {
     return `${current.name} ${now} (first run)`;
   }
   const delta = current.value - previous.value;
-  if (Math.abs(delta) < 0.05) {
+  if (Math.abs(delta) < NEGLIGIBLE) {
     return `${current.name} ${now} (unchanged)`;
   }
   const sign = delta > 0 ? "+" : "−";
   return `${current.name} ${now} (${sign}${formatValue(Math.abs(delta))} since ${formatValue(previous.value)})`;
 }
 
-// Serialize into the workflow's PR-comment marker, e.g. "coverage=42.5".
-// Sorted so a marker is stable regardless of flag order. Pure → unit-tested.
+// Serialize into the workflow's PR-comment marker, e.g. "coverage=61.2345".
+// Sorted so a marker is stable regardless of flag order.
+//
+// Deliberately NOT formatValue: the marker is what the NEXT run subtracts from,
+// so rounding here would coarsen the stored value permanently and make every
+// later delta drift. Display precision is a display concern. Pure → unit-tested.
 export function serializeMetrics(metrics: Metric[]): string {
   return [...metrics]
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map((m) => `${m.name}=${formatValue(m.value)}`)
+    .map((m) => `${m.name}=${m.value}`)
     .join(" ");
 }
 

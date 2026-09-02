@@ -43,7 +43,9 @@
   list as the session ends, so a file copied afterwards was silently missing from the report. Metric
   records a named number, persisted in `results.json`, for comparing runs over time. Re-running
   `session end` on an already-ended session re-renders with the new attachments and keeps the
-  verdict. Neither knows anything about coverage — the README documents that recipe generically for
+  verdict. Metric values are stored at full precision and displayed to four decimals — on a large
+  codebase a single line is ~0.0002% of the total, so a coarser display would report every run as
+  unchanged. Neither knows anything about coverage — the README documents that recipe generically for
   Ruby, Node and Python, and the orchestration belongs in the app's own repo.
 - **Demo PR comments now carry the commit and the numbers.** The comment links the short sha it was
   recorded from and says later commits aren't in the recording (the PR may have moved since the run

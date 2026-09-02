@@ -67,19 +67,23 @@ describe("parseMetrics", () => {
 });
 
 describe("formatValue", () => {
-  it("keeps integers bare and rounds the rest to one decimal", () => {
+  it("keeps integers bare and preserves real precision", () => {
     expect(formatValue(42)).toBe("42");
-    expect(formatValue(42.567)).toBe("42.6");
-    expect(formatValue(42.51)).toBe("42.5");
     expect(formatValue(0)).toBe("0");
-    expect(formatValue(-3.25)).toBe("-3.3");
+    expect(formatValue(42.5)).toBe("42.5");
+    // A whole-application coverage percentage moves by hundredths. Rounding to
+    // one decimal would report every such run as unchanged.
+    expect(formatValue(61.2345)).toBe("61.2345");
+    // Capped at four decimals — one line of ~500k is ~0.0002%, so that is the
+    // granularity where single-line movement still shows.
+    expect(formatValue(61.234_567_89)).toBe("61.2346");
+    expect(formatValue(-3.25)).toBe("-3.25");
   });
 
-  it("does not promise a rounding direction at an exact .x5 boundary", () => {
-    // toFixed rounds the DOUBLE, and 42.55 is stored slightly below 42.55, so
-    // it yields "42.5". Asserting "42.6" here would be asserting a falsehood
-    // about floats. A display helper doesn't need to resolve that.
-    expect(["42.5", "42.6"]).toContain(formatValue(42.55));
+  it("clamps the float tail without inventing precision", () => {
+    // 0.1 + 0.02 style noise shouldn't leak into a PR comment.
+    expect(formatValue(0.020_000_000_000_000_018)).toBe("0.02");
+    expect(formatValue(61.230_000_000_000_01)).toBe("61.23");
   });
 });
 
@@ -105,13 +109,15 @@ describe("formatMetric", () => {
     ).toBe("coverage 30 (−31 since 61)");
   });
 
-  it("calls a negligible move unchanged rather than showing +0.0", () => {
+  it("reports an 0.02 move rather than calling it unchanged", () => {
+    // The old threshold swallowed anything under 0.05, which on a whole-app
+    // coverage number is most real movement.
     expect(
       formatMetric(
         { name: "coverage", value: 42.5 },
         { name: "coverage", value: 42.52 }
       )
-    ).toBe("coverage 42.5 (unchanged)");
+    ).toBe("coverage 42.5 (−0.02 since 42.52)");
   });
 });
 
