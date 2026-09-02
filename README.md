@@ -254,8 +254,12 @@ those go to the `dailies-scripting` skill.
 }
 ```
 
-`demo.paths` is what makes the nightly demo workflow selective — a PR whose diff touches none of
-those paths isn't worth a video. Omit it and every change qualifies.
+By default an **LLM decides** whether a change is worth demoing, reading the diff, the PR
+description and these hints together — because a path list can't tell that a data backfill or a
+background job changes what someone eventually sees on a screen. It also names the flow to record,
+which the recording agent uses as its starting point. Set `demo.decide` to `"paths"` for a
+deterministic glob match instead, or `"always"` to demo every change; under `"agent"`,
+`demo.paths` is a hint, and the fallback when no model provider is available.
 
 > This file becomes agent instructions, so it's only as trustworthy as the repo it came from. Don't
 > point Dailies at a project config from a repo you don't control; the demo workflow deliberately
@@ -269,6 +273,28 @@ it records a demo of every labeled PR whose head has moved since its last demo a
 files match `demo.paths`, then posts the video and the full report back to the PR. Labeling a PR
 demos it immediately; `dailies-url:` / `dailies-theme:` / "plain demo" in a PR body override the
 repo defaults for that PR.
+
+## Which model runs it
+
+Narration, song lyrics and the demo decision all ask for the same thing — an object matching a JSON
+schema — so any backend that can be talked into schema-shaped JSON qualifies. Three ship, tried in
+this order and skipping whatever isn't there:
+
+| Provider | Needs | Notes |
+| --- | --- | --- |
+| **`claude` CLI** | Claude Code installed | The default. No API key, no local model — if you have Claude Code, it already works. |
+| **OpenAI-compatible** | `$DAILIES_LLM_URL` | Any `/v1/chat/completions` endpoint: OpenAI, OpenRouter, LM Studio, Ollama, vLLM, llama.cpp. `$DAILIES_LLM_API_KEY`, `$DAILIES_LLM_MODEL`. |
+| **Apple Intelligence** | macOS 26+, Xcode CLT | Fully on-device — no key, no network, nothing leaves the machine. A small Swift helper compiles once into `~/.dailies/bin`. |
+
+Pin one with `$DAILIES_LLM=claude|openai|apple` (pinning disables fallthrough — a silent switch is
+worse than a clear failure). Otherwise a provider that fails is skipped and the next one tries; if
+they all decline, the run notes name each one and why, and the pass degrades instead of throwing.
+
+Apple Intelligence honors your JSON schema at runtime through `DynamicGenerationSchema`, so it needs
+no per-schema Swift. Measured on an M-series Mac: a 30-step narration in ~7s.
+
+The Anthropic Messages API isn't a fourth provider — the `claude` CLI already covers Claude, and
+this package deliberately ships no runtime dependencies. It would slot in behind the same interface.
 
 ## Three tools, one runtime
 

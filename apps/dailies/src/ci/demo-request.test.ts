@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { EMPTY_CONFIG, parseProjectConfig } from "../project/config.js";
 import {
+  buildDecisionPrompt,
   decideDemo,
+  decideDemoWithAgent,
   demoedShas,
   isAlreadyDemoed,
+  parseDecision,
   parseDemoRequest,
 } from "./demo-request.js";
 
@@ -245,5 +248,170 @@ describe("decideDemo freshness", () => {
       headSha: HEAD,
     });
     expect(d.reason).toContain("already demoed");
+  });
+});
+
+describe("buildDecisionPrompt", () => {
+  const base = {
+    body: "Adds a nightly backfill job.",
+    changedPaths: ["app/jobs/backfill.rb"],
+    hint: null,
+    paths: [],
+  };
+
+  it("tells the model a non-UI change can still be demo-worthy", () => {
+    const prompt = buildDecisionPrompt(base);
+    // The whole reason this isn't a glob match.
+    expect(prompt).toContain("no UI code at all");
+    expect(prompt).toContain("background job");
+  });
+
+  it("includes the PR body and the changed files", () => {
+    const prompt = buildDecisionPrompt(base);
+    expect(prompt).toContain("Adds a nightly backfill job.");
+    expect(prompt).toContain("app/jobs/backfill.rb");
+  });
+
+  it("passes demo.paths as a hint, explicitly not a rule", () => {
+    const prompt = buildDecisionPrompt({ ...base, paths: ["app/views/**"] });
+    expect(prompt).toContain("a hint, not a rule");
+    expect(prompt).toContain("app/views/**");
+  });
+
+  it("includes the project hint when set, and omits the section when not", () => {
+    expect(
+      buildDecisionPrompt({ ...base, hint: "we care about onboarding" })
+    ).toContain("we care about onboarding");
+    expect(buildDecisionPrompt(base)).not.toContain(
+      "What this project considers"
+    );
+  });
+
+  it("caps the file list and says how many were elided", () => {
+    const many = Array.from({ length: 90 }, (_, i) => `app/f${i}.rb`);
+    const prompt = buildDecisionPrompt({ ...base, changedPaths: many });
+    expect(prompt).toContain("Changed files (90)");
+    expect(prompt).toContain("and 30 more files");
+    expect(prompt).not.toContain("app/f89.rb");
+  });
+
+  it("handles an empty PR body", () => {
+    expect(buildDecisionPrompt({ ...base, body: "  " })).toContain(
+      "(no description)"
+    );
+  });
+});
+
+describe("parseDecision", () => {
+  it("reads a verdict with a flow", () => {
+    expect(
+      parseDecision(
+        '{"worth":true,"reason":"changes the payslip","flow":"Open a payslip"}'
+      )
+    ).toEqual({
+      flow: "Open a payslip",
+      reason: "changes the payslip",
+      worth: true,
+    });
+  });
+
+  it("tolerates a fenced or prose-wrapped reply", () => {
+    expect(
+      parseDecision('Sure!\n```json\n{"worth":false,"reason":"docs only"}\n```')
+    ).toEqual({
+      flow: null,
+      reason: "docs only",
+      worth: false,
+    });
+  });
+
+  it("rejects a reply with no boolean verdict, so the caller can fall back", () => {
+    expect(parseDecision("not json")).toBeNull();
+    expect(parseDecision('{"reason":"hmm"}')).toBeNull();
+    expect(parseDecision('{"worth":"yes"}')).toBeNull();
+  });
+
+  it("substitutes a placeholder rather than failing on a missing reason", () => {
+    expect(parseDecision('{"worth":true}')?.reason).toBe("no reason given");
+  });
+});
+
+describe("decideDemoWithAgent", () => {
+  const agentConfig = parseProjectConfig({
+    demo: { decide: "agent", paths: ["app/views/**"] },
+    url: "http://localhost:3000",
+  });
+  const HEAD = "e".repeat(40);
+
+  it("does not spend a model call on an already-demoed head", async () => {
+    const d = await decideDemoWithAgent({
+      body: "",
+      changedPaths: ["app/views/a.erb"],
+      comments: [`<!-- dailies-demo: ${HEAD} -->`],
+      config: agentConfig,
+      headSha: HEAD,
+    });
+    expect(d.run).toBe(false);
+    expect(d.decidedBy).toBe("freshness");
+  });
+
+  it("does not spend a model call when there is no target", async () => {
+    const d = await decideDemoWithAgent({
+      body: "",
+      changedPaths: ["app/views/a.erb"],
+      config: parseProjectConfig({ demo: { decide: "agent" } }),
+    });
+    expect(d.decidedBy).toBe("config");
+  });
+
+  it("skips the agent entirely in paths mode", async () => {
+    const d = await decideDemoWithAgent({
+      body: "",
+      changedPaths: ["docs/x.md"],
+      config: parseProjectConfig({
+        demo: { decide: "paths", paths: ["app/**"] },
+        url: "http://x",
+      }),
+    });
+    expect(d.decidedBy).toBe("paths");
+    expect(d.run).toBe(false);
+  });
+
+  it("runs on any change in always mode", async () => {
+    const d = await decideDemoWithAgent({
+      body: "",
+      changedPaths: ["docs/x.md"],
+      config: parseProjectConfig({
+        demo: { decide: "always" },
+        url: "http://x",
+      }),
+    });
+    expect(d.decidedBy).toBe("always");
+    expect(d.run).toBe(true);
+  });
+
+  it("falls back to path matching when no provider is available", async () => {
+    // No provider pinned to a real backend: DAILIES_LLM names a nonexistent one.
+    const prev = process.env.DAILIES_LLM;
+    process.env.DAILIES_LLM = "nonexistent-provider";
+    try {
+      const d = await decideDemoWithAgent({
+        body: "",
+        changedPaths: ["app/views/a.erb"],
+        config: agentConfig,
+        headSha: "f".repeat(40),
+      });
+      // The path verdict survives, and the reason says the agent was unavailable.
+      expect(d.run).toBe(true);
+      expect(d.decidedBy).toBe("paths (agent unavailable)");
+      expect(d.reason).toContain("agent decision was unavailable");
+    } finally {
+      if (prev === undefined) {
+        process.env.DAILIES_LLM = undefined;
+        Reflect.deleteProperty(process.env, "DAILIES_LLM");
+      } else {
+        process.env.DAILIES_LLM = prev;
+      }
+    }
   });
 });

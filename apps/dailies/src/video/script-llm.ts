@@ -5,6 +5,8 @@
 // what it needs from here.
 
 import type { Logger } from "dailies-logger";
+import { generateJson, LLM_TIMEOUT_MS } from "../llm/index.js";
+import { tryParseJson } from "../llm/json.js";
 import { type Echo, run, VERSION_PROBE_TIMEOUT_MS } from "./ffmpeg.js";
 import { stripOverrideTags } from "./srt.js";
 import {
@@ -15,30 +17,6 @@ import {
 } from "./themes.js";
 
 // The LLM call is generous.
-const LLM_TIMEOUT_MS = 120_000;
-
-// Flags that strip everything the narration/lyrics calls don't need from the
-// `claude -p` context: all MCP servers (their tool schemas can be huge), the
-// user's settings/CLAUDE.md/skills, every built-in tool schema, and the
-// coding-agent system prompt (replaced with a one-liner — our prompt already
-// specifies the full JSON contract). This keeps the logged-in auth token (we do
-// NOT use `--bare`, which skips the keychain read and would break auth). The
-// model is pinned because `--setting-sources ""` also drops the user's model
-// preference, and we don't want the CLI default to silently change output
-// quality between environments.
-const CLAUDE_MIN_CONTEXT_ARGS: string[] = [
-  "--strict-mcp-config",
-  "--mcp-config",
-  '{"mcpServers":{}}',
-  "--setting-sources",
-  "",
-  "--tools",
-  "",
-  "--system-prompt",
-  "You are a precise generator. Output only what the user's message asks for, with no preamble or commentary.",
-  "--model",
-  "sonnet",
-];
 
 // Max characters of a step's script we feed the LLM — enough for context
 // without bloating the prompt.
@@ -306,77 +284,6 @@ export function parseLyricsJson(raw: string): Lyrics | null {
   return { title: normalizeTitle(record.title), lines };
 }
 
-function stripCodeFences(raw: string): string {
-  const trimmed = raw.trim();
-  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-  if (fenced?.[1]) {
-    return fenced[1].trim();
-  }
-  return trimmed;
-}
-
-// Parse the model's reply leniently: try the fence-stripped text, then fall back
-// to the first `{`…last `}` slice so a chatty preamble ("Here's the narration:")
-// doesn't abort the whole pass. Returns the parsed value or null.
-// Slice the FIRST balanced JSON object out of a string, tracking string/escape
-// state so braces inside string values don't miscount. Returns null when there's
-// no `{` or the object never closes (a truncated reply). Beats a naive
-// firstOpen..lastClose: it survives a model preamble AND trailing prose that
-// itself contains braces (which would otherwise drag `lastIndexOf("}")` past the
-// real end). Pure → unit-tested.
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: a character-by-character scanner tracking string/escape/depth state — a state machine that reads worse when split.
-function extractBalancedJson(s: string): string | null {
-  const start = s.indexOf("{");
-  if (start < 0) {
-    return null;
-  }
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-  for (let i = start; i < s.length; i++) {
-    const c = s[i];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (c === "\\") {
-        escaped = true;
-      } else if (c === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (c === '"') {
-      inString = true;
-    } else if (c === "{") {
-      depth++;
-    } else if (c === "}") {
-      depth--;
-      if (depth === 0) {
-        return s.slice(start, i + 1);
-      }
-    }
-  }
-  return null;
-}
-
-function tryParseJson(raw: string): unknown {
-  const stripped = stripCodeFences(raw);
-  try {
-    return JSON.parse(stripped);
-  } catch {
-    // fall through to balanced-object extraction
-  }
-  const balanced = extractBalancedJson(stripped);
-  if (balanced) {
-    try {
-      return JSON.parse(balanced);
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
 // Resolve the creative direction: the user's verbatim --prompt wins; otherwise
 // draw ONE or TWO random themes (per the request — a focused draw the LLM can
 // commit to, then adapt to the change's scale) + a weighted style. Returns the
@@ -583,104 +490,23 @@ export const LYRICS_SCHEMA = {
 // (from the forced tool call) and whose `result` is the same as a JSON string —
 // prefer the former, fall back to parsing the latter, then to treating stdout as
 // the bare object (older CLI). Returns undefined on an errored/empty envelope.
-function extractStructuredOutput(stdout: string): unknown {
-  let envelope: unknown;
-  try {
-    envelope = JSON.parse(stdout);
-  } catch {
-    return tryParseJson(stdout) ?? undefined;
-  }
-  if (!envelope || typeof envelope !== "object") {
-    return;
-  }
-  const env = envelope as {
-    is_error?: boolean;
-    structured_output?: unknown;
-    result?: unknown;
-  };
-  if (env.is_error) {
-    return;
-  }
-  if (env.structured_output !== undefined && env.structured_output !== null) {
-    return env.structured_output;
-  }
-  if (typeof env.result === "string") {
-    return tryParseJson(env.result) ?? undefined;
-  }
-  return;
-}
 
-// Run a `claude -p` generation that MUST return an object matching `schema`.
-// Passing --json-schema forces the model through a structured-output tool call,
-// so it can't emit prose, fences, or a truncated blob — the CLI hands back the
-// validated object. We still run `parse` on it for our exact shape + narration
-// sanitizing. Returns the value, or a human-readable REASON the caller surfaces
-// instead of a bare "generation failed": the claude call's own error, or a
-// head+tail description of an unexpected envelope. Retries once (the model is
-// stochastic); a CLI error (bad auth/binary/timeout) fails fast. The prompt is
-// multi-KB, so echo an elided form.
-export async function runClaudeJson<T>(args: {
+// Generate an object matching `schema` through whichever text provider is
+// configured — the `claude` CLI by default, an OpenAI-compatible endpoint, or
+// Apple Intelligence on-device (see ../llm). Returns the value, or a
+// human-readable REASON the caller surfaces instead of a bare "generation
+// failed": every provider that declined and why.
+//
+// Named for its callers rather than its backend now; the CLI is one provider
+// among three.
+export async function runLlmJson<T>(args: {
+  echo?: Echo;
   label: string;
+  log: Logger;
+  parse: (raw: string) => T | null;
   prompt: string;
   schema: unknown;
-  parse: (raw: string) => T | null;
-  log: Logger;
-  echo?: Echo;
 }): Promise<{ value: T } | { error: string }> {
-  const { label, prompt, schema, parse, log, echo } = args;
-  const cliArgs = [
-    "-p",
-    ...CLAUDE_MIN_CONTEXT_ARGS,
-    "--output-format",
-    "json",
-    "--json-schema",
-    JSON.stringify(schema),
-    prompt,
-  ];
-  const MAX_ATTEMPTS = 2; // the model is stochastic — one retry recovers most
-  let lastError = `the model returned no usable ${label}`;
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    let stdout: string;
-    try {
-      const retry = attempt > 1 ? `, retry ${attempt}/${MAX_ATTEMPTS}` : "";
-      echo?.(
-        `$ claude -p --json-schema … <${label} prompt, ${prompt.length} chars${retry}>`
-      );
-      ({ stdout } = await run("claude", cliArgs, LLM_TIMEOUT_MS));
-    } catch (err) {
-      // A CLI error (bad auth, missing binary, timeout) is unlikely to fix
-      // itself on a retry — fail fast with the tool's own message.
-      log.debug({ err }, `cinematic: claude ${label} call failed`);
-      const detail = err instanceof Error ? err.message : String(err);
-      return { error: `the claude CLI call failed — ${detail}` };
-    }
-    const output = extractStructuredOutput(stdout);
-    if (output !== undefined) {
-      const value = parse(JSON.stringify(output));
-      if (value) {
-        return { value };
-      }
-    }
-    // Schema forcing should make this rare; if it still happens, describe the
-    // envelope head+tail so it's diagnosable, then regenerate once.
-    log.debug({ stdout, attempt }, `cinematic: could not read ${label} output`);
-    lastError = `the model's reply wasn't usable ${label} JSON (${describeReply(stdout)})`;
-  }
-  return { error: lastError };
-}
-
-// A compact description of a reply that failed to parse: its length plus the
-// head and (for a long reply) the tail — where truncation or trailing prose
-// shows. Pure → unit-tested.
-function describeReply(raw: string): string {
-  const s = raw.trim();
-  if (!s) {
-    return "empty output";
-  }
-  const head = s.slice(0, 140).replace(/\s+/g, " ");
-  if (s.length <= 280) {
-    return `${s.length} chars — ${head}`;
-  }
-  const tail = s.slice(-100).replace(/\s+/g, " ");
-  return `${s.length} chars — starts: ${head}… ends: …${tail}`;
+  const result = await generateJson<T>({ ...args, timeoutMs: LLM_TIMEOUT_MS });
+  return "value" in result ? { value: result.value } : { error: result.error };
 }

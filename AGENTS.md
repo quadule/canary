@@ -75,6 +75,24 @@ Both are optional and both fail open: a missing or malformed file yields default
 failing a run. `flows.md` becomes agent instructions, so treat it as untrusted when it comes from a
 repo you don't control.
 
+## Text generation (`apps/dailies/src/llm/`)
+
+Every LLM call in the project goes through `generateJson` — narration, lyrics, and the nightly demo
+decision. One contract: return an object matching a JSON schema.
+
+- Providers live in `llm/providers/`: `claude-cli` (default, no key), `openai-compat` (any
+  `/v1/chat/completions`), `apple` (on-device Foundation Models via a Swift helper shipped as
+  source in `apple-source.ts` and compiled into `~/.dailies/bin`, keyed by source hash).
+- `$DAILIES_LLM` pins one provider and disables fallthrough. Otherwise availability is probed and
+  failures fall through to the next.
+- **`generateJson` never throws.** It returns `{provider, value}` or `{error}`, where the error
+  names every provider that declined and why — the cinematic pass surfaces that string in its run
+  notes, so a swallowed reason is a regression.
+- Tolerant JSON reading (`llm/json.ts`) is shared, not per-provider: the CLI can wrap its reply in
+  prose, an OpenAI endpoint returns clean JSON, Apple returns a serialized `GeneratedContent`.
+- Tests inject fake providers via `generateJson`'s `providers` argument — the suite must never make
+  a real model call.
+
 ## Artifact sensitivity
 
 A recorded session runs against a logged-in app, so its artifacts are not uniformly shareable:

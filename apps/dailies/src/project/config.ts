@@ -32,10 +32,24 @@ export const CONFIG_FILE = "config.json";
 // `session start` says so rather than letting it grow unbounded.
 export const FLOWS_LINE_BUDGET = 250;
 
+// How to decide whether a change is worth demoing.
+//   agent   an LLM reads the diff, the PR, and the hints below and decides.
+//           The default, because a path list can't see that a background job
+//           changes what a user eventually sees in the app.
+//   paths   match `paths` only — deterministic, no model call.
+//   always  demo every change.
+export type DecideMode = "agent" | "always" | "paths";
+
 export interface DemoConfig {
   // Produce the cinematic cut by default.
   cinematic: boolean;
-  // Glob patterns marking changes worth demoing. Empty = demo any change.
+  decide: DecideMode;
+  // Free-text steer for the agent decision: what this app considers
+  // demo-worthy, which flows matter, what to ignore.
+  hint: string | null;
+  // Glob patterns marking changes worth demoing. Under `agent` these are a
+  // HINT, not a gate — and the fallback when no LLM provider is available.
+  // Empty = every change qualifies.
   paths: string[];
   // Default cinematic direction (theme/tone/style).
   prompt: string | null;
@@ -48,12 +62,24 @@ export interface ProjectConfig {
 }
 
 export const EMPTY_CONFIG: ProjectConfig = {
-  demo: { cinematic: true, paths: [], prompt: null },
+  demo: {
+    cinematic: true,
+    decide: "agent",
+    hint: null,
+    paths: [],
+    prompt: null,
+  },
   url: null,
 };
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function parseDecideMode(value: unknown): DecideMode {
+  return value === "paths" || value === "always" || value === "agent"
+    ? value
+    : "agent";
 }
 
 function stringArray(value: unknown): string[] {
@@ -71,6 +97,8 @@ export function parseProjectConfig(raw: unknown): ProjectConfig {
   return {
     demo: {
       cinematic: demo.cinematic === undefined ? true : demo.cinematic !== false,
+      decide: parseDecideMode(demo.decide),
+      hint: stringOrNull(demo.hint),
       paths: stringArray(demo.paths),
       prompt: stringOrNull(demo.prompt),
     },

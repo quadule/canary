@@ -29,9 +29,12 @@
 #                        macOS `say`: without this key a cinematic run has no
 #                        voice-over. Effectively required for narration.
 #
-# NOTE: GitHub has no public API to embed an inline/autoplaying video in a PR
-# comment (that path is a browser-only user-attachments upload), so the video is
-# attached as a run artifact and linked from the comment.
+# The video is attached to the PR comment with `gh pr comment --attach`, so it
+# plays inline. That flag shipped in gh 2.99.0 (2026-09-01) and runners' preinstalled
+# gh will lag it for a while, and GitHub caps comment video at 10 MB (free) /
+# 100 MB (paid) — so the step probes for the flag, checks the size, and falls back
+# to linking the run artifact. The full report bundle is always a run artifact:
+# it is a directory, not a video.
 
 name: Dailies demo
 
@@ -365,16 +368,50 @@ jobs:
       - name: Comment the demo on the PR
         env:
           GH_TOKEN: ${{ github.token }}
+          PR: ${{ matrix.pr }}
+          SHA: ${{ matrix.sha }}
         run: |
+          set -euo pipefail
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          # The trailing marker is how the next run knows this commit was demoed
-          # (see isAlreadyDemoed in apps/dailies/src/ci/demo-request.ts). Keep it.
-          gh pr comment "${{ matrix.pr }}" --body \
-            "🎬 **Dailies** recorded a demo of \`${{ matrix.sha }}\`.
+          VIDEO="$GITHUB_WORKSPACE/dailies-demo.webm"
 
-          The cinematic video and the full HTML report are attached to [this run]($RUN_URL#artifacts) — **dailies-demo-video-pr${{ matrix.pr }}** for the .webm, **dailies-report-pr${{ matrix.pr }}** for the trace/video/HAR/report bundle. (GitHub has no API to embed video inline; drag the .webm into a comment to play it here.)
+          # Built as a FILE, not an inline --body string: a multi-line body
+          # written inside YAML carries the block's indentation into the posted
+          # markdown. The trailing marker is how the next run knows this commit
+          # was demoed (see isAlreadyDemoed in apps/dailies/src/ci/demo-request.ts).
+          BODY=$(mktemp)
+          {
+            printf '🎬 **Dailies** recorded a demo of `%s`.\n\n' "$SHA"
+            printf 'The full report — trace, video, HAR, console — is attached to '
+            printf '[this run](%s#artifacts) as **dailies-report-pr%s**.\n\n' "$RUN_URL" "$PR"
+            printf '<!-- dailies-demo: %s -->\n' "$SHA"
+          } > "$BODY"
 
-          <!-- dailies-demo: ${{ matrix.sha }} -->"
+          # `--attach` posts the video inline. It is newer than some runners'
+          # preinstalled gh, and GitHub rejects comment video over 100 MB, so
+          # only attempt it when both hold.
+          ATTACH=()
+          if [ -f "$VIDEO" ] && gh pr comment --help 2>&1 | grep -q -- '--attach'; then
+            SIZE=$(stat -c%s "$VIDEO" 2>/dev/null || stat -f%z "$VIDEO")
+            if [ "$SIZE" -le 104857600 ]; then
+              # `<file>#<alt text>` captions the attachment.
+              ATTACH=(--attach "$VIDEO#Dailies demo of $SHA")
+              echo "Attaching the video inline ($((SIZE / 1048576)) MiB)"
+            else
+              echo "Video is $((SIZE / 1048576)) MiB — over GitHub's comment limit; linking the artifact instead"
+            fi
+          else
+            echo "This gh predates --attach (2.99.0), or no video was produced; linking the artifact instead"
+          fi
+
+          # Fall back to a plain comment if the upload is refused — a rejected
+          # attachment must not cost the PR its demo comment. Nothing is posted
+          # on the failed attempt, so this posts exactly once either way.
+          if ! gh pr comment "$PR" --body-file "$BODY" "${ATTACH[@]+"${ATTACH[@]}"}"; then
+            echo "::warning::attaching the video failed; posting the comment without it"
+            printf 'The video is attached to [this run](%s#artifacts) as **dailies-demo-video-pr%s**.\n' "$RUN_URL" "$PR" >> "$BODY"
+            gh pr comment "$PR" --body-file "$BODY"
+          fi
 
       # Fail the job when the QA session's verdict was a failure — but only after
       # the report + video are uploaded and the comment is posted, so the evidence

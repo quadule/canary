@@ -36,6 +36,25 @@
 
 ### Added
 
+- **Pluggable text generation — `claude` is no longer the only option.** Narration, lyrics and the
+  demo decision all go through one `generateJson` seam with three backends: the **`claude` CLI**
+  (still the default — no API key, no local model), any **OpenAI-compatible** `/v1/chat/completions`
+  endpoint (`$DAILIES_LLM_URL` — OpenAI, OpenRouter, LM Studio, Ollama, vLLM), and **Apple
+  Intelligence** on-device via a small Swift helper (macOS 26+, no key, no network — it honors the
+  JSON schema at runtime through `DynamicGenerationSchema`, so it needs no per-schema Swift; a
+  30-step narration measured ~7s). `$DAILIES_LLM` pins one; otherwise an unavailable or failing
+  provider falls through to the next, and if all decline the run notes name each one and why.
+- **The nightly demo decision is made by a model, not a glob.** `demo.decide` defaults to `"agent"`:
+  an LLM reads the diff, the PR description and the repo's `demo.hint` together and decides — so a
+  data backfill or a background job that changes what a user eventually sees gets demoed, which a
+  path list could never tell. It also names the flow to record, which the recording agent starts
+  from. `"paths"` keeps the deterministic match and `"always"` demos everything; under `"agent"`,
+  `demo.paths` becomes a hint and the fallback when no provider is available. Freshness and a
+  missing target are still settled without a model call, so an already-demoed PR costs nothing.
+- **Demo videos are attached to the PR comment** with `gh pr comment --attach`, so they play inline
+  instead of only being a downloadable run artifact. The step probes for the flag (it is newer than
+  some runners' preinstalled `gh`) and checks GitHub's size cap, falling back to linking the
+  artifact.
 - **A `.dailies/` project convention.** A repo Dailies drives can commit what Dailies needs to know
   about it: `.dailies/flows.md` (app-specific knowledge — how to sign in, which routes matter, the
   selectors that break naive Playwright) and `.dailies/config.json` (defaults: `url`, `demo.paths`,

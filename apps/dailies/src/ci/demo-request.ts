@@ -18,6 +18,9 @@
 // YAML `run:` block is where this kind of logic rots.
 
 import { readFile } from "node:fs/promises";
+import { createLogger } from "dailies-logger";
+import { generateJson } from "../llm/index.js";
+import { tryParseJson } from "../llm/json.js";
 import {
   type DemoVerdict,
   isWorthDemoing,
@@ -52,6 +55,93 @@ export function isAlreadyDemoed(headSha: string, comments: string[]): boolean {
   });
 }
 
+export const DECISION_SCHEMA = {
+  additionalProperties: false,
+  properties: {
+    flow: {
+      description:
+        "The single user-facing flow to demo, in one sentence an operator could follow. Empty when not worth demoing.",
+      type: "string",
+    },
+    reason: {
+      description: "One short sentence explaining the verdict.",
+      type: "string",
+    },
+    worth: {
+      description: "true when this change is worth recording a demo of",
+      type: "boolean",
+    },
+  },
+  required: ["worth", "reason"],
+  type: "object",
+} as const;
+
+export interface DemoDecisionFromAgent {
+  flow: string | null;
+  reason: string;
+  worth: boolean;
+}
+
+// Ask the model to judge demo-worthiness from the change itself, not a path
+// list. Deliberately tells it that a non-UI change CAN be worth demoing by its
+// visible effect — that case (a data migration, a background job) is the whole
+// reason this isn't a glob match. Pure → unit-tested.
+export function buildDecisionPrompt(args: {
+  body: string;
+  changedPaths: string[];
+  hint: string | null;
+  paths: string[];
+}): string {
+  const { body, changedPaths, hint, paths } = args;
+  const shown = changedPaths.slice(0, 60);
+  const more =
+    changedPaths.length > shown.length
+      ? `\n…and ${changedPaths.length - shown.length} more files`
+      : "";
+  return [
+    "You decide whether a pull request is worth recording a short browser demo of.",
+    "",
+    "A change is worth demoing when a person could SEE the difference by using the app.",
+    "That includes changes with no UI code at all: a data migration, a background job, or a",
+    "calculation change is worth demoing when its effect shows up on a screen someone visits.",
+    "It is NOT worth demoing when nothing observable changes — refactors with no behavior",
+    "change, tests, CI config, docs, dependency bumps, internal tooling.",
+    "",
+    "When it is worth demoing, name the ONE most important flow to record, as a single",
+    "sentence an operator could follow.",
+    hint ? `\nWhat this project considers demo-worthy:\n${hint}` : "",
+    paths.length > 0
+      ? `\nPaths this project treats as user-facing (a hint, not a rule):\n${paths.join(", ")}`
+      : "",
+    "",
+    "Pull request:",
+    body.trim() || "(no description)",
+    "",
+    `Changed files (${changedPaths.length}):`,
+    shown.join("\n") + more,
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
+// Read the model's verdict. Returns null when the reply isn't usable, which
+// makes the caller fall back to path matching. Pure → unit-tested.
+export function parseDecision(raw: string): DemoDecisionFromAgent | null {
+  const parsed = tryParseJson(raw) as Record<string, unknown> | null;
+  if (!parsed || typeof parsed.worth !== "boolean") {
+    return null;
+  }
+  const reason =
+    typeof parsed.reason === "string" && parsed.reason.trim()
+      ? parsed.reason.trim()
+      : "no reason given";
+  const flow =
+    typeof parsed.flow === "string" && parsed.flow.trim()
+      ? parsed.flow.trim()
+      : null;
+  return { flow, reason, worth: parsed.worth };
+}
+
 export interface DemoRequest {
   // Produce the cinematic cut (narration/title/captions) vs a plain recording.
   cinematic: boolean;
@@ -63,6 +153,12 @@ export interface DemoRequest {
 }
 
 export interface DemoDecision extends DemoRequest {
+  // How the verdict was reached, for the log: "agent", "paths", "always", or
+  // "paths (agent unavailable)".
+  decidedBy: string;
+  // The flow the model suggests recording, when it named one. Handed to the
+  // recording agent so it doesn't have to re-derive it from the diff.
+  flow: string | null;
   // One line explaining the decision, for the workflow log and the PR comment.
   reason: string;
   // Whether to actually record.
@@ -141,7 +237,13 @@ export function decideDemo(args: {
   const cinematic =
     override.cinematic === false ? false : config.demo.cinematic;
   const prompt = override.prompt ?? config.demo.prompt;
-  const worth: DemoVerdict = isWorthDemoing(changedPaths, config.demo.paths);
+  const worth: DemoVerdict =
+    config.demo.decide === "always"
+      ? {
+          reason: `${changedPaths.filter((c) => c.trim()).length} file(s) changed and demo.decide is "always"`,
+          worth: changedPaths.some((c) => c.trim() !== ""),
+        }
+      : isWorthDemoing(changedPaths, config.demo.paths);
 
   // Nothing new to show: this exact commit already has a demo. Checked before
   // the target, so a re-run of an already-demoed PR is quiet rather than
@@ -149,6 +251,8 @@ export function decideDemo(args: {
   if (isAlreadyDemoed(headSha, comments)) {
     return {
       cinematic,
+      decidedBy: "freshness",
+      flow: null,
       prompt,
       reason: `already demoed at ${headSha.slice(0, 7)}`,
       run: false,
@@ -159,6 +263,8 @@ export function decideDemo(args: {
   if (!target) {
     return {
       cinematic,
+      decidedBy: "config",
+      flow: null,
       prompt,
       reason:
         "no demo target — set `url` in .dailies/config.json or add `dailies-url: <url>` to the PR body",
@@ -166,7 +272,63 @@ export function decideDemo(args: {
       target: null,
     };
   }
-  return { cinematic, prompt, reason: worth.reason, run: worth.worth, target };
+  return {
+    cinematic,
+    decidedBy: config.demo.decide === "always" ? "always" : "paths",
+    flow: null,
+    prompt,
+    reason: worth.reason,
+    run: worth.worth,
+    target,
+  };
+}
+
+// The full decision, including the agent path. Everything deterministic
+// (freshness, target, "always") is settled by `decideDemo` first — an
+// already-demoed or target-less PR must not cost a model call. Only then does
+// the agent judge worthiness, and if no provider is available it falls back to
+// path matching rather than demoing everything or nothing.
+export async function decideDemoWithAgent(args: {
+  body: string;
+  changedPaths: string[];
+  comments?: string[];
+  config: ProjectConfig;
+  headSha?: string;
+}): Promise<DemoDecision> {
+  const base = decideDemo(args);
+  if (args.config.demo.decide !== "agent") {
+    return base;
+  }
+  // Not run: no target, or already demoed. Neither is the agent's call.
+  if (base.decidedBy === "freshness" || base.decidedBy === "config") {
+    return base;
+  }
+  const result = await generateJson<DemoDecisionFromAgent>({
+    label: "demo decision",
+    log: createLogger({ name: "dailies-demo" }),
+    parse: parseDecision,
+    prompt: buildDecisionPrompt({
+      body: args.body,
+      changedPaths: args.changedPaths.filter((c) => c.trim() !== ""),
+      hint: args.config.demo.hint,
+      paths: args.config.demo.paths,
+    }),
+    schema: DECISION_SCHEMA,
+  });
+  if ("error" in result) {
+    return {
+      ...base,
+      decidedBy: "paths (agent unavailable)",
+      reason: `${base.reason} — the agent decision was unavailable (${result.error})`,
+    };
+  }
+  return {
+    ...base,
+    decidedBy: "agent",
+    flow: result.value.flow,
+    reason: result.value.reason,
+    run: result.value.worth,
+  };
 }
 
 // CLI: `tsx demo-request.ts --head-sha <sha> [--body-file <p>]
@@ -227,7 +389,7 @@ async function main(): Promise<void> {
     readOrEmpty(args["comments-file"]),
   ]);
   const { config } = await loadProject(args.cwd ?? process.cwd());
-  const decision = decideDemo({
+  const decision = await decideDemoWithAgent({
     body,
     changedPaths: changed.split(/\r?\n/),
     comments: parseComments(comments),

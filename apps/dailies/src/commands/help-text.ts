@@ -171,6 +171,14 @@ or a Gemini key (Lyria). Combine with --prompt to steer the genre.
                       Re-run --cinematic with a new --prompt anytime: the pre-cinematic cut is
                       preserved beside the video, so a re-theme is fast and needs no re-recording.
   --no-captions       skip burning subtitles into the video (the .srt is still written)
+  $DAILIES_LLM        pin the text provider: claude (default, needs the claude CLI),
+                      openai (needs $DAILIES_LLM_URL), or apple (Apple Intelligence,
+                      on-device, macOS 26+). Unset tries each in that order and skips
+                      whatever isn't available.
+  $DAILIES_LLM_URL / $DAILIES_LLM_API_KEY / $DAILIES_LLM_MODEL   an OpenAI-compatible
+                      /v1/chat/completions endpoint for narration/lyrics — OpenAI,
+                      OpenRouter, LM Studio, Ollama, vLLM
+  $DAILIES_CLAUDE_MODEL   override the model the claude CLI provider pins
   $DAILIES_SAY_VOICE / $DAILIES_SAY_RATE   pin the voice / words-per-minute
   $DAILIES_SAY_COMMAND   replace 'say' with your own TTS command (run via the shell, so it may
                         include args). It receives the text to speak as its only argument and must

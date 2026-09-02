@@ -76,7 +76,7 @@ import {
   parseNarrationJson,
   resolveBase,
   resolveDirection,
-  runClaudeJson,
+  runLlmJson,
 } from "./script-llm.js";
 import { selectSongCaptions } from "./song-captions.js";
 import { resolveSpeech, type SpeechSynth, speechText } from "./speech.js";
@@ -479,7 +479,7 @@ async function planNarration(args: {
       script: step.script,
     })),
   });
-  const result = await runClaudeJson({
+  const result = await runLlmJson({
     label: "narration",
     prompt,
     schema: NARRATION_SCHEMA,
@@ -524,7 +524,7 @@ async function planSong(args: {
     videoSeconds,
     steps: groupedLyricSteps(narratableSteps, groups),
   });
-  const result = await runClaudeJson({
+  const result = await runLlmJson({
     label: "lyrics",
     prompt,
     schema: LYRICS_SCHEMA,
