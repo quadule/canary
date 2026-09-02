@@ -104,7 +104,7 @@ jobs:
           mkdir -p /tmp/dailies-pick
           MATRIX='[]'
           for N in $NUMBERS; do
-            META=/tmp/dailies-pick/$N.json
+            META="/tmp/dailies-pick/$N.json"
             gh pr view "$N" --json headRefOid,body,comments,isCrossRepository > "$META"
 
             if [ "$(jq -r '.isCrossRepository' "$META")" = "true" ]; then
@@ -113,23 +113,23 @@ jobs:
             fi
 
             SHA=$(jq -r '.headRefOid' "$META")
-            jq -r '.body // ""' "$META" > /tmp/dailies-pick/$N.body
+            jq -r '.body // ""' "$META" > /tmp/dailies-pick/"$N".body
             # A JSON array of comment bodies — what --comments-file expects.
-            jq '[.comments[].body]' "$META" > /tmp/dailies-pick/$N.comments
-            gh pr diff "$N" --name-only > /tmp/dailies-pick/$N.changed || true
+            jq '[.comments[].body]' "$META" > /tmp/dailies-pick/"$N".comments
+            gh pr diff "$N" --name-only > /tmp/dailies-pick/"$N".changed || true
 
             # --force re-demos the same commit: hide the comment history from the
             # freshness check rather than adding a second code path for it.
-            COMMENTS=/tmp/dailies-pick/$N.comments
-            COMMENTS_ALL=/tmp/dailies-pick/$N.comments
+            COMMENTS="/tmp/dailies-pick/$N.comments"
+            COMMENTS_ALL="/tmp/dailies-pick/$N.comments"
             # --force hides the history from the FRESHNESS check only; the
             # metric comparison still wants the real previous numbers.
             if [ "${FORCE:-false}" = "true" ]; then COMMENTS=/dev/null; fi
 
             DECISION=$(pnpm --filter dailies-cli exec tsx src/ci/demo-request.ts \
               --head-sha "$SHA" \
-              --body-file /tmp/dailies-pick/$N.body \
-              --changed-file /tmp/dailies-pick/$N.changed \
+              --body-file /tmp/dailies-pick/"$N".body \
+              --changed-file /tmp/dailies-pick/"$N".changed \
               --comments-file "$COMMENTS")
             # decidedBy names the provider/model that judged — the first thing
             # you want when a verdict looks wrong.

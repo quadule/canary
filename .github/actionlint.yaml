@@ -1,0 +1,19 @@
+# actionlint configuration.
+#
+# Two shellcheck codes are ignored across our workflows because in GitHub
+# Actions they flag the correct idiom rather than a defect:
+#
+#   SC2016  "expressions don't expand in single quotes" — fires on `printf`
+#           format strings and on prompt text passed to an LLM, both of which
+#           MUST be literal. Double-quoting them would be the bug.
+#   SC2129  "consider { cmd1; cmd2; } >> file" — fires on the conventional
+#           `echo "k=v" >> "$GITHUB_OUTPUT"` sequence, which reads better one
+#           key per line and is what every Actions example does.
+#
+# Everything else stays on; SC2086 (unquoted expansion) has already caught real
+# bugs here.
+paths:
+  .github/workflows/**:
+    ignore:
+      - 'SC2016:'
+      - 'SC2129:'
