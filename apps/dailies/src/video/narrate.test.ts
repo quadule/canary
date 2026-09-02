@@ -10,7 +10,9 @@ import {
   groupStepsForLyrics,
   layoutSongCues,
   lyricsPathFor,
+  orderGroupLyrics,
   planRetime,
+  planSongTiming,
   precinematicVideoPath,
   songHoldSec,
   songTargetSec,
@@ -1033,5 +1035,190 @@ describe("planRetime — onset-anchored (song step-sync)", () => {
     expect(plan.footage).toEqual([3]); // 20s of footage clipped to the 3s window
     expect(plan.holds).toEqual([0]);
     expect(plan.starts).toEqual([2]);
+  });
+});
+
+describe("orderGroupLyrics", () => {
+  const groups = [[0, 1], [2], [3, 4, 5]];
+
+  it("maps each lyric line back onto its group's steps", () => {
+    const { lineByGroup, ordered } = orderGroupLyrics(groups, [
+      { index: 0, text: "the login screen waits" },
+      { index: 1, text: "a password typed in haste" },
+      { index: 2, text: "and the dashboard blooms" },
+    ]);
+    expect(ordered).toEqual([
+      { firstStep: 0, stepIdxs: [0, 1], text: "the login screen waits" },
+      { firstStep: 2, stepIdxs: [2], text: "a password typed in haste" },
+      { firstStep: 3, stepIdxs: [3, 4, 5], text: "and the dashboard blooms" },
+    ]);
+    expect(lineByGroup.get(1)).toBe("a password typed in haste");
+  });
+
+  it("drops groups the model left without a line, keeping the rest in group order", () => {
+    const { ordered } = orderGroupLyrics(groups, [
+      { index: 2, text: "only the last verse" },
+      { index: 0, text: "and the first" },
+    ]);
+    // Ordered by GROUP ordinal, not by the model's reply order.
+    expect(ordered.map((o) => o.text)).toEqual([
+      "and the first",
+      "only the last verse",
+    ]);
+    expect(ordered.map((o) => o.firstStep)).toEqual([0, 3]);
+  });
+
+  it("returns nothing for no lines", () => {
+    expect(orderGroupLyrics(groups, []).ordered).toEqual([]);
+  });
+});
+
+describe("planSongTiming — no vocal region (untranscribed)", () => {
+  const groups = [[0, 1], [2]];
+  const lineByGroup = new Map([
+    [0, "a short line"],
+    [1, "another short line"],
+  ]);
+
+  it("holds each group long enough to sing its line, split across its steps", () => {
+    const timing = planSongTiming({
+      clipCues: [],
+      groups,
+      lineByGroup,
+      lineCount: 2,
+      maxCueSec: 8,
+      region: null,
+      sourceLabel: "",
+      stepCount: 3,
+    });
+    expect(timing.alignedCues).toEqual([]);
+    expect(timing.trimStartSec).toBe(0);
+    expect(timing.onsets).toBeUndefined();
+    expect(timing.bodyEnd).toBeUndefined();
+    // songHoldSec("a short line") floors at 3.5, so the group minimum (7) wins
+    // and is split across that group's two steps; the one-step group gets 7.
+    expect(timing.holdDurSec).toEqual([3.5, 3.5, 7]);
+    expect(timing.note).toContain("vocal timing not detected");
+  });
+
+  it("leaves a step whose group got no line at the small default", () => {
+    const timing = planSongTiming({
+      clipCues: [],
+      groups: [[0], [1]],
+      lineByGroup: new Map([[1, "only the second group sings"]]),
+      lineCount: 1,
+      maxCueSec: 8,
+      region: null,
+      sourceLabel: "",
+      stepCount: 2,
+    });
+    expect(timing.holdDurSec[0]).toBe(3.5);
+    expect(timing.holdDurSec[1]).toBe(7);
+  });
+});
+
+describe("planSongTiming — vocal region", () => {
+  const groups = [[0], [1]];
+  const lineByGroup = new Map([
+    [0, "first line"],
+    [1, "second line"],
+  ]);
+
+  it("rebases cues to the trim, splits the body evenly, and onset-anchors", () => {
+    const timing = planSongTiming({
+      clipCues: [
+        { start: 10, end: 14, text: "first line" },
+        { start: 14, end: 18, text: "second line" },
+      ],
+      groups,
+      lineByGroup,
+      lineCount: 2,
+      maxCueSec: 8,
+      region: { start: 8, end: 20 },
+      sourceLabel: "the detected vocals",
+      stepCount: 2,
+    });
+    expect(timing.trimStartSec).toBe(8);
+    expect(timing.alignedCues).toEqual([
+      { start: 2, end: 6, text: "first line" },
+      { start: 6, end: 10, text: "second line" },
+    ]);
+    // bodyLen = 20 - 8 = 12, split across 2 steps.
+    expect(timing.holdDurSec).toEqual([6, 6]);
+    expect(timing.bodyEnd).toBe(12); // last cue end + 2
+    expect(timing.onsets).toEqual([2, 6]); // each step starts when its line is sung
+    expect(timing.note).toBe(
+      "captions aligned to the detected vocals (2/2 lines sung)"
+    );
+  });
+
+  it("caps a cue whose end runs past maxCueSec (a long instrumental gap)", () => {
+    const timing = planSongTiming({
+      clipCues: [{ start: 0, end: 25, text: "first line" }],
+      groups: [[0]],
+      lineByGroup: new Map([[0, "first line"]]),
+      lineCount: 1,
+      maxCueSec: 8,
+      region: { start: 0, end: 30 },
+      sourceLabel: "the model's own lyric timestamps",
+      stepCount: 1,
+    });
+    expect(timing.alignedCues).toEqual([
+      { start: 0, end: 8, text: "first line" },
+    ]);
+  });
+
+  it("floors a cue straddling the trim point and drops one entirely before it", () => {
+    const timing = planSongTiming({
+      clipCues: [
+        { start: 1, end: 3, text: "dropped" },
+        { start: 4, end: 9, text: "clamped" },
+      ],
+      groups: [[0]],
+      lineByGroup: new Map([[0, "clamped"]]),
+      lineCount: 2,
+      maxCueSec: 8,
+      region: { start: 5, end: 20 },
+      sourceLabel: "the detected vocals",
+      stepCount: 1,
+    });
+    // "dropped" ends before the trim (3 - 5 < 0); "clamped" starts at 4 - 5 = -1
+    // and is floored to 0.
+    expect(timing.alignedCues).toEqual([{ start: 0, end: 4, text: "clamped" }]);
+    expect(timing.note).toBe(
+      "captions aligned to the detected vocals (1/2 lines sung)"
+    );
+  });
+
+  it("skips the onset anchor when no cue survives the rebase", () => {
+    const timing = planSongTiming({
+      clipCues: [{ start: 1, end: 2, text: "first line" }],
+      groups,
+      lineByGroup,
+      lineCount: 2,
+      maxCueSec: 8,
+      region: { start: 10, end: 22 },
+      sourceLabel: "the detected vocals",
+      stepCount: 2,
+    });
+    expect(timing.alignedCues).toEqual([]);
+    expect(timing.onsets).toBeUndefined();
+    expect(timing.bodyEnd).toBeUndefined();
+    // The even split still stands, so the body stays long enough for the song.
+    expect(timing.holdDurSec).toEqual([6, 6]);
+  });
+
+  it("floors a tiny region so the body still clears the song intro", () => {
+    const timing = planSongTiming({
+      clipCues: [],
+      groups: [[0]],
+      lineByGroup,
+      lineCount: 1,
+      maxCueSec: 8,
+      region: { start: 0, end: 1 },
+      sourceLabel: "the detected vocals",
+      stepCount: 1,
+    });
+    expect(timing.holdDurSec).toEqual([6]); // Math.max(6, 1 - 0)
   });
 });
