@@ -8,6 +8,7 @@ import {
   isAlreadyDemoed,
   parseDecision,
   parseDemoRequest,
+  previousMetrics,
 } from "./demo-request.js";
 
 describe("parseDemoRequest", () => {
@@ -458,5 +459,43 @@ describe("parseDecision flow hygiene", () => {
         '{"worth":true,"reason":"changes net pay","flow":"Open the pay screen"}'
       )?.flow
     ).toBe("Open the pay screen");
+  });
+});
+
+describe("previousMetrics", () => {
+  const marker = (sha: string, extra = "") =>
+    `🎬 demo\n<!-- dailies-demo: ${sha}${extra} -->`;
+
+  it("reads the metrics out of the newest demo comment", () => {
+    expect(
+      previousMetrics([
+        marker("aaaaaaa", " coverage=30"),
+        marker("bbbbbbb", " coverage=42.5 steps=4"),
+      ])
+    ).toEqual([
+      { name: "coverage", value: 42.5 },
+      { name: "steps", value: 4 },
+    ]);
+  });
+
+  it("returns none for the original sha-only marker", () => {
+    // A PR whose demo history predates metrics must still parse.
+    expect(previousMetrics([marker("aaaaaaa")])).toEqual([]);
+  });
+
+  it("skips past a metric-less newer comment to find the last real numbers", () => {
+    expect(
+      previousMetrics([marker("aaaaaaa", " coverage=30"), marker("bbbbbbb")])
+    ).toEqual([{ name: "coverage", value: 30 }]);
+  });
+
+  it("ignores comments with no marker at all", () => {
+    expect(previousMetrics(["lgtm", "please rebase"])).toEqual([]);
+  });
+
+  it("still recognizes a metric-carrying marker as a demo of that commit", () => {
+    // The freshness check and the metric read share one regex.
+    const HEAD = "c".repeat(40);
+    expect(isAlreadyDemoed(HEAD, [marker(HEAD, " coverage=42.5")])).toBe(true);
   });
 });

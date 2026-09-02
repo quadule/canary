@@ -92,6 +92,9 @@ export interface SessionManifest {
   id: string;
   kind: "dailies-session-result";
   manifestVersion: number;
+  // Named numbers this run recorded (session end --metric). Persisted here so a
+  // later run — or a reviewer — can compare them over time.
+  metrics?: { name: string; value: number }[];
   name?: string;
   report?: ArtifactRef;
   status: "passed" | "failed" | "aborted";
@@ -273,6 +276,7 @@ export function buildManifest(input: BuildManifestInput): SessionManifest {
     id: record.id,
     kind: "dailies-session-result",
     manifestVersion: MANIFEST_VERSION,
+    metrics: record.metrics,
     name: record.name,
     status,
     steps,

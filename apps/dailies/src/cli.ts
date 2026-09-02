@@ -131,6 +131,7 @@ interface SessionEndOpts {
   cinematic?: boolean;
   condense?: boolean;
   fail?: boolean | string;
+  metric?: string[];
   open?: boolean;
   pass?: boolean;
   prompt?: string;
@@ -235,6 +236,11 @@ export function buildProgram(): CommandType {
       (value: string, previous: string[] = []) => [...previous, value]
     )
     .option(
+      "--metric <name=value>",
+      "Record a named number for this run, e.g. coverage=42.5 (repeatable) — persisted in results.json and echoed by --json, for comparing runs over time",
+      (value: string, previous: string[] = []) => [...previous, value]
+    )
+    .option(
       "--no-scrub-har",
       "Keep credential header values (Cookie/Authorization) in network.har instead of replacing them"
     )
@@ -269,6 +275,7 @@ export function buildProgram(): CommandType {
         stopDaemon: opts.stopDaemon === true,
         attach: opts.attach,
         condense: opts.condense,
+        metric: opts.metric,
         scrubHar: opts.scrubHar,
         cinematic: opts.cinematic === true || typeof opts.prompt === "string",
         song: opts.song === true,

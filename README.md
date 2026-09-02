@@ -319,12 +319,22 @@ your-coverage-tool snapshot > after.json
 your-coverage-tool report --before before.json --after after.json \
   --base origin/main --out ./cov
 
-# 6. Attach it. This happens BEFORE the report is rendered, so it lands in it.
-dailies session end "$id" --pass --attach ./cov/coverage.md --attach ./cov/report.zip
+# 6. Attach it, and record the headline number so runs can be compared.
+dailies session end "$id" --pass \
+  --attach ./cov/coverage.md --attach ./cov/report.zip \
+  --metric coverage=42.5
 ```
 
 The attached files show up in `results.json` and in `report.html` beside the trace and video, so
-the recording and the proof travel together.
+the recording and the proof travel together. `--metric name=value` records any number you want to
+watch over time — Dailies never interprets it. The nightly workflow prints each metric in the PR
+comment **with the change since the last run**, which is where the signal is: one coverage number
+is weak, the same number dropping from 61 to 3 usually means the recording broke rather than the
+code getting worse.
+
+Re-running `session end` on an already-ended session is safe — it re-renders with the new
+attachments and keeps the verdict — so the recording and the coverage pass don't have to be
+interleaved.
 
 Step 1 and 5 are the only language-specific parts:
 

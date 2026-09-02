@@ -36,6 +36,20 @@
 
 ### Added
 
+- **`session end --attach <file>` and `--metric name=value`.** Attach copies any external file into
+  the session's `attachments/`, which surfaces in `results.json` and the report next to the trace
+  and video — a coverage report, a Lighthouse score, an accessibility audit. It copies *before* the
+  session-end RPC, which is the point: both the daemon and the on-disk fallback build their artifact
+  list as the session ends, so a file copied afterwards was silently missing from the report. Metric
+  records a named number, persisted in `results.json`, for comparing runs over time. Re-running
+  `session end` on an already-ended session re-renders with the new attachments and keeps the
+  verdict. Neither knows anything about coverage — the README documents that recipe generically for
+  Ruby, Node and Python, and the orchestration belongs in the app's own repo.
+- **Demo PR comments now carry the commit and the numbers.** The comment links the short sha it was
+  recorded from and says later commits aren't in the recording (the PR may have moved since the run
+  started), and prints each `--metric` with its change since the previous demo — "coverage 42.5
+  (+3.2 since 39.3)". The previous values ride in the comment's own hidden marker, so the comparison
+  needs no state outside the PR; the marker's older sha-only form still parses.
 - **Pluggable text generation — `claude` is no longer the only option.** Narration, lyrics and the
   demo decision all go through one `generateJson` seam with three backends: the **`claude` CLI**
   (still the default — no API key, no local model), any **OpenAI-compatible** `/v1/chat/completions`

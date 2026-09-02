@@ -27,6 +27,7 @@ import {
   loadProject,
   type ProjectConfig,
 } from "../project/config.js";
+import { deserializeMetrics, type Metric } from "../session/metrics.js";
 
 // The commit each existing demo comment was recorded at, newest last.
 //
@@ -34,11 +35,30 @@ import {
 // later run can tell whether the PR has moved since its last demo. An HTML
 // comment keeps it invisible in the rendered comment, and reading it back needs
 // no state outside the PR itself.
+// Matches both marker forms: the original sha-only one and the current
+// `<sha> name=value …`, so a PR whose history predates metrics still parses.
+const MARKER_RE = /<!--\s*dailies-demo:\s*([0-9a-f]{7,40})([^>]*?)-->/i;
+
 export function demoedShas(comments: string[]): string[] {
-  const re = /<!--\s*dailies-demo:\s*([0-9a-f]{7,40})\s*-->/i;
   return comments
-    .map((c) => c.match(re)?.[1])
+    .map((c) => c.match(MARKER_RE)?.[1])
     .filter((sha): sha is string => Boolean(sha));
+}
+
+// The metrics recorded by the most recent demo comment, for comparison against
+// this run. Newest wins: comments arrive oldest-first from `gh`. Pure →
+// unit-tested.
+export function previousMetrics(comments: string[]): Metric[] {
+  for (const comment of [...comments].reverse()) {
+    const match = comment.match(MARKER_RE);
+    if (match?.[2]) {
+      const metrics = deserializeMetrics(match[2]);
+      if (metrics.length > 0) {
+        return metrics;
+      }
+    }
+  }
+  return [];
 }
 
 // Whether this PR head has already been demoed. Compared by prefix so a short

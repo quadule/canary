@@ -121,6 +121,9 @@ jobs:
             # --force re-demos the same commit: hide the comment history from the
             # freshness check rather than adding a second code path for it.
             COMMENTS=/tmp/dailies-pick/$N.comments
+            COMMENTS_ALL=/tmp/dailies-pick/$N.comments
+            # --force hides the history from the FRESHNESS check only; the
+            # metric comparison still wants the real previous numbers.
             if [ "${FORCE:-false}" = "true" ]; then COMMENTS=/dev/null; fi
 
             DECISION=$(pnpm --filter dailies-cli exec tsx src/ci/demo-request.ts \
@@ -133,9 +136,20 @@ jobs:
             echo "PR #$N: [$(echo "$DECISION" | jq -r '.decidedBy')] $(echo "$DECISION" | jq -r '.reason')"
 
             if [ "$(echo "$DECISION" | jq -r '.run')" = "true" ]; then
+              # `prevMetrics` is the previous demo comment's marker payload —
+              # the comment step diffs this run's numbers against it.
+              PREV=$(pnpm --filter dailies-cli exec tsx -e "
+                import { previousMetrics } from './src/ci/demo-request.ts';
+                import { serializeMetrics } from './src/session/metrics.ts';
+                import { readFileSync } from 'node:fs';
+                const c = JSON.parse(readFileSync('$COMMENTS_ALL', 'utf8'));
+                process.stdout.write(serializeMetrics(previousMetrics(c)));
+              " 2>/dev/null || true)
               MATRIX=$(jq -c --argjson d "$DECISION" --arg n "$N" --arg sha "$SHA" \
+                        --arg prev "$PREV" \
                 '. + [{pr: ($n|tonumber), sha: $sha, target: $d.target,
-                       cinematic: $d.cinematic, prompt: ($d.prompt // "")}]' <<<"$MATRIX")
+                       cinematic: $d.cinematic, prompt: ($d.prompt // ""),
+                       prevMetrics: $prev}]' <<<"$MATRIX")
             fi
           done
 
@@ -341,6 +355,14 @@ jobs:
             FLAGS+=(--cinematic)
             if [ -n "${PROMPT:-}" ]; then FLAGS+=(--prompt "$PROMPT"); fi
           fi
+          # A repo's own tooling may have written metrics for this run (e.g. a
+          # coverage percentage) into $DAILIES_METRICS as `name=value` lines —
+          # see the coverage recipe in the README. Dailies just records them.
+          if [ -s "${DAILIES_METRICS:-/dev/null}" ]; then
+            while IFS= read -r m; do
+              [ -n "$m" ] && FLAGS+=(--metric "$m")
+            done < "$DAILIES_METRICS"
+          fi
           OUT=$(dailies session end "$SID" "${FLAGS[@]}" --json)
           echo "$OUT"
           ARTIFACT_DIR=$(echo "$OUT" | jq -r '.artifactsDir')
@@ -349,6 +371,8 @@ jobs:
           # AFTER the report/video have been uploaded.
           echo "artifact_dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
           echo "status=$(echo "$OUT" | jq -r '.status // "unknown"')" >> "$GITHUB_OUTPUT"
+          # Compact `name=value …` for the comment and the next run's marker.
+          echo "metrics=$(echo "$OUT" | jq -r '[.metrics[]? | "\(.name)=\(.value)"] | join(" ")')" >> "$GITHUB_OUTPUT"
           VIDEO=$(find "$ARTIFACT_DIR" -name '*.webm' | head -1)
           ( cd "$(dirname "$ARTIFACT_DIR")" && zip -r "$GITHUB_WORKSPACE/dailies-report.zip" "$(basename "$ARTIFACT_DIR")" >/dev/null )
           cp "$VIDEO" "$GITHUB_WORKSPACE/dailies-demo.webm" || true
@@ -370,7 +394,9 @@ jobs:
       - name: Comment the demo on the PR
         env:
           GH_TOKEN: ${{ github.token }}
+          METRICS: ${{ steps.finalize.outputs.metrics }}
           PR: ${{ matrix.pr }}
+          PREV_METRICS: ${{ matrix.prevMetrics }}
           SHA: ${{ matrix.sha }}
         run: |
           set -euo pipefail
@@ -381,12 +407,30 @@ jobs:
           # written inside YAML carries the block's indentation into the posted
           # markdown. The trailing marker is how the next run knows this commit
           # was demoed (see isAlreadyDemoed in apps/dailies/src/ci/demo-request.ts).
+          # Metric lines with a delta against the previous demo comment, e.g.
+          # "coverage 42.5 (+3.2 since 39.3)". Rendered by the same tested code
+          # that wrote the marker being compared against.
+          METRIC_LINES=$(pnpm --filter dailies-cli exec tsx -e "
+            import { deserializeMetrics, formatMetricLines } from './src/session/metrics.ts';
+            const cur = deserializeMetrics(process.env.METRICS ?? '');
+            const prev = deserializeMetrics(process.env.PREV_METRICS ?? '');
+            process.stdout.write(formatMetricLines(cur, prev).map((l) => '- ' + l).join('\n'));
+          " 2>/dev/null || true)
+
           BODY=$(mktemp)
           {
-            printf '🎬 **Dailies** recorded a demo of `%s`.\n\n' "$SHA"
+            # The SHORT sha, linked, and stated as what was recorded rather than
+            # as the PR's current head — more may have landed since this ran.
+            printf '🎬 **Dailies** recorded a demo from [`%s`](%s/%s/commit/%s).\n' \
+              "${SHA:0:7}" "${{ github.server_url }}" "${{ github.repository }}" "$SHA"
+            printf 'Later commits, if any, are not in this recording.\n\n'
+            if [ -n "$METRIC_LINES" ]; then
+              printf '%s\n\n' "$METRIC_LINES"
+            fi
             printf 'The full report — trace, video, HAR, console — is attached to '
             printf '[this run](%s#artifacts) as **dailies-report-pr%s**.\n\n' "$RUN_URL" "$PR"
-            printf '<!-- dailies-demo: %s -->\n' "$SHA"
+            # Carries this run's numbers forward for the next run to diff against.
+            printf '<!-- dailies-demo: %s %s -->\n' "$SHA" "$METRICS"
           } > "$BODY"
 
           # `--attach` posts the video inline. It is newer than some runners'

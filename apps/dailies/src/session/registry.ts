@@ -48,6 +48,9 @@ export interface SessionRecord {
   endedAt?: string;
   headless: boolean;
   id: string;
+  // Named numbers recorded at `session end --metric name=value`. Dailies never
+  // interprets them; they are persisted so runs can be compared over time.
+  metrics?: { name: string; value: number }[];
   name?: string;
   schemaVersion: number;
   status: "active" | "ended" | "aborted";

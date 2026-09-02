@@ -12,6 +12,7 @@ import { logger } from "../logger.js";
 import { writeSessionReport } from "../report/load-and-render.js";
 import { endResultFromDisk } from "../session/artifacts.js";
 import { attachFiles } from "../session/attach.js";
+import { type Metric, parseMetrics } from "../session/metrics.js";
 import {
   readSessionRecord,
   type SessionRecord,
@@ -40,6 +41,9 @@ interface SessionEndOpts {
   captions?: boolean;
   cinematic?: boolean;
   condense?: boolean;
+  // `name=value` measurements this run produced, recorded verbatim. Dailies
+  // never interprets them — see session/metrics.ts.
+  metric?: string[];
   open?: boolean;
   prompt?: string;
   // Replace credential header values in network.har (default on). --no-scrub-har
@@ -368,6 +372,20 @@ export async function sessionEnd(
     }
   }
 
+  // Parsed early so a typo is reported before the session is torn down, when
+  // the caller can still fix and re-run.
+  let metrics: Metric[] = [];
+  if (opts.metric && opts.metric.length > 0) {
+    const parsed = parseMetrics(opts.metric);
+    metrics = parsed.metrics;
+    for (const bad of parsed.invalid) {
+      logger.warn(
+        { metric: bad },
+        `ignoring --metric ${bad}: expected name=<number>, e.g. coverage=42.5`
+      );
+    }
+  }
+
   const request: SessionEndRequest = {
     id: requestId("session-end"),
     type: "session-end",
@@ -392,6 +410,9 @@ export async function sessionEnd(
   // Reconcile the on-disk record regardless of the daemon outcome: if the daemon
   // restarted / lost the session, never leave a zombie "active" record behind.
   const record = await updateSessionRecord(id, (r) => {
+    if (metrics.length > 0) {
+      r.metrics = metrics;
+    }
     if (r.status === "active") {
       r.status = "ended";
     }
@@ -537,6 +558,9 @@ export async function sessionEnd(
           resultsPath: sessionResultsPath(id),
           // The run verdict (agent-declared or the fallback tally) + any reason,
           // so a CI job can fail the build on a failed session.
+          // Named numbers this run produced (--metric), for a caller that
+          // wants to report or compare them.
+          metrics,
           status: runStatus,
           verdictReason,
         },
