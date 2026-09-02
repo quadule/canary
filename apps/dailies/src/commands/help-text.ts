@@ -178,6 +178,9 @@ or a Gemini key (Lyria). Combine with --prompt to steer the genre.
                         environment. Use it for a non-macOS tool, or a wrapper that voices a macOS
                         Personal Voice (e.g. DYLD_INSERT_LIBRARIES=…/mysay.dylib say -v
                         "$DAILIES_SAY_VOICE" -o "$DAILIES_SAY_OUTPUT" "$1")
+  $DAILIES_TTS_CONCURRENCY   how many narration lines to voice at once (default 4, capped by your
+                        core count). Set 1 to voice them one at a time, or raise it if your TTS
+                        server is happy being pushed harder
   $DAILIES_OMLX_URL / $DAILIES_OMLX_API_KEY / $DAILIES_OMLX_TTS_MODEL   use a local oMLX server for
                         TTS (narration stays on your machine); key also read from ~/.omlx
   $DAILIES_ARCHIVE_MUSIC   free Creative-Commons music from archive.org (attribution added to the
