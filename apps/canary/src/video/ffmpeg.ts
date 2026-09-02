@@ -4,13 +4,94 @@
 // building blocks. `run` is also used by the speech and LLM/git helpers, so it
 // (and the shared consts/types) are exported.
 
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import { formatCommand } from "./shell.js";
 
-const execFileAsync = promisify(execFile);
+// `execFile`/`promisify(execFile)` always leaves the child's stdin open as an
+// unconnected pipe — there's no option to close it. That's harmless for ffmpeg,
+// but `claude -p` probes stdin for piped input, stalls for 3s waiting on that
+// dangling pipe, emits a "no stdin data received" warning, and then fails the
+// whole invocation. Spawning directly lets us set stdin to "ignore" so the
+// child sees EOF immediately, matching how these commands are meant to be run
+// (never fed via stdin here).
+function execFileWithClosedStdin(
+  cmd: string,
+  args: string[],
+  opts: { timeout: number; maxBuffer: number }
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let settled = false;
+
+    const finish = (fn: () => void) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    const timer = setTimeout(() => {
+      finish(() => {
+        child.kill("SIGKILL");
+        reject(
+          Object.assign(new Error(`${cmd} timed out after ${opts.timeout}ms`), {
+            stderr,
+          })
+        );
+      });
+    }, opts.timeout);
+
+    const onOverflow = () =>
+      finish(() => {
+        child.kill("SIGKILL");
+        reject(
+          Object.assign(new Error(`${cmd} output exceeded maxBuffer`), {
+            stderr,
+          })
+        );
+      });
+
+    child.stdout.on("data", (d: Buffer) => {
+      stdoutBytes += d.length;
+      if (stdoutBytes > opts.maxBuffer) {
+        return onOverflow();
+      }
+      stdout += d;
+    });
+    child.stderr.on("data", (d: Buffer) => {
+      stderrBytes += d.length;
+      if (stderrBytes > opts.maxBuffer) {
+        return onOverflow();
+      }
+      stderr += d;
+    });
+    child.on("error", (err) => {
+      finish(() => reject(Object.assign(err, { stderr, stdout })));
+    });
+    child.on("close", (code) => {
+      finish(() => {
+        if (code === 0) {
+          resolve({ stdout, stderr });
+        } else {
+          reject(
+            Object.assign(new Error(`Command failed: ${cmd}`), {
+              stderr,
+              stdout,
+            })
+          );
+        }
+      });
+    });
+  });
+}
 
 // Timeouts (ms). The version/filter probes are quick; file probes get a little
 // longer; encodes/muxes are bounded like condense's encode pass.
@@ -45,7 +126,7 @@ export async function run(
 ): Promise<{ stdout: string; stderr: string }> {
   echo?.(`$ ${formatCommand(cmd, args)}`);
   try {
-    const { stdout, stderr } = await execFileAsync(cmd, args, {
+    const { stdout, stderr } = await execFileWithClosedStdin(cmd, args, {
       timeout: timeoutMs,
       maxBuffer: 64 * 1024 * 1024,
     });
@@ -53,9 +134,13 @@ export async function run(
   } catch (err) {
     // execFile's error message is just "Command failed: <cmd>"; append the tail of
     // the tool's own stderr so failures (esp. ffmpeg filtergraph errors) are
-    // diagnosable instead of opaque.
-    const e = err as { stderr?: string; message?: string };
-    const tail = (e.stderr ?? "").trim().split("\n").slice(-4).join("\n");
+    // diagnosable instead of opaque. `claude -p` reports its errors as JSON on
+    // stdout even on non-zero exit (e.g. "Not logged in"), leaving stderr
+    // empty — fall back to stdout's tail in that case rather than the bare
+    // "Command failed" message.
+    const e = err as { stderr?: string; stdout?: string; message?: string };
+    const source = (e.stderr ?? "").trim() || (e.stdout ?? "").trim();
+    const tail = source.split("\n").slice(-4).join("\n");
     throw new Error(
       `${cmd} failed${tail ? `:\n${tail}` : `: ${e.message ?? String(err)}`}`
     );
