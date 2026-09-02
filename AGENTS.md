@@ -58,6 +58,23 @@ workflow rules — is single-sourced in `docs/snippets/` and stitched by `script
   (`.cursor-plugin/`), and Codex (`plugins/dailies/`, whose `skills` is a symlink here) — keep
   SKILL.md frontmatter (`name`, `description`) intact and marker-free.
 
+## The `.dailies/` project convention
+
+A repo that Dailies drives can commit what Dailies needs to know about it. Implemented in
+`apps/dailies/src/project/config.ts`:
+
+- `.dailies/flows.md` — app-specific knowledge for driving that app. Dailies never parses it; the
+  **agent** reads it, because the `dailies-session` / `dailies-scripting` skills tell it to (see
+  `docs/snippets/rule-project-flows.md`). That instruction is why this is a plain file rather than
+  a per-app skill: skill loading depends on the model matching a `description`, and it only works
+  in one harness. `session start` reports the file and warns past `FLOWS_LINE_BUDGET`.
+- `.dailies/config.json` — machine-readable defaults (`url`, `demo.paths`, `demo.prompt`) consumed
+  by `apps/dailies/src/ci/demo-request.ts`, which merges them with per-PR overrides from the PR body.
+
+Both are optional and both fail open: a missing or malformed file yields defaults rather than
+failing a run. `flows.md` becomes agent instructions, so treat it as untrusted when it comes from a
+repo you don't control.
+
 ## Artifact sensitivity
 
 A recorded session runs against a logged-in app, so its artifacts are not uniformly shareable:

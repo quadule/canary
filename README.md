@@ -222,6 +222,54 @@ each paired with a subagent and a slash command: `/dailies:verify`, `/dailies:ru
 which records a session collaboratively in the main conversation — no subagent — so the agent can
 pause to ask you, or hand you the live browser mid-flow (its actions captured as a step).
 
+## Teach it your app
+
+The slowest part of any agent-driven browser run is rediscovering the app: where the login form is,
+which routes matter, which selector the framework quietly breaks. Commit that knowledge once, in the
+repo the app lives in, and every run starts with it:
+
+```
+your-app/
+└── .dailies/
+    ├── flows.md      how to drive THIS app — read by the agent before it writes a step
+    └── config.json   defaults for Dailies itself (optional)
+```
+
+`flows.md` is plain markdown with no required structure — sign-in, the routes worth testing, the
+selectors that break naive Playwright. Dailies never parses it; the agent reads it. When it turns
+out to be wrong, the agent corrects it in place and **tells you what it changed**, so the file gets
+better as you use it. Keep it app-specific and short: it's read in full every session, and Dailies
+warns when it outgrows a 250-line budget. Generic Playwright or Dailies lessons don't belong there —
+those go to the `dailies-scripting` skill.
+
+`config.json` sets defaults so a PR doesn't have to:
+
+```json
+{
+  "url": "http://localhost:3000",
+  "demo": {
+    "paths": ["app/views/**", "app/components/**", "app/javascript/**"],
+    "prompt": "workshop documentary, dry and factual"
+  }
+}
+```
+
+`demo.paths` is what makes the nightly demo workflow selective — a PR whose diff touches none of
+those paths isn't worth a video. Omit it and every change qualifies.
+
+> This file becomes agent instructions, so it's only as trustworthy as the repo it came from. Don't
+> point Dailies at a project config from a repo you don't control; the demo workflow deliberately
+> skips fork PRs for the same reason.
+
+### Nightly demos of your pull requests
+
+Copy [`.github/workflows/dailies-demo.yml`](.github/workflows/dailies-demo.yml) into your repo, add
+`ANTHROPIC_API_KEY` and `GEMINI_API_KEY` as repo secrets, and label a PR **`dailies`**. Each night
+it records a demo of every labeled PR whose head has moved since its last demo and whose changed
+files match `demo.paths`, then posts the video and the full report back to the PR. Labeling a PR
+demos it immediately; `dailies-url:` / `dailies-theme:` / "plain demo" in a PR body override the
+repo defaults for that PR.
+
 ## Three tools, one runtime
 
 | Tool                            | Command                            | Use it to                                                                          |

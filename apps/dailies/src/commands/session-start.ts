@@ -8,6 +8,7 @@ import type {
   Viewport,
 } from "dailies-protocol";
 import { logger } from "../logger.js";
+import { FLOWS_LINE_BUDGET, loadProject } from "../project/config.js";
 import {
   createSessionRecord,
   SESSION_SCHEMA_VERSION,
@@ -119,6 +120,24 @@ export async function sessionStart(args: SessionStartArgs): Promise<number> {
     { sessionId: id, artifactsDir: session.artifactsDir },
     "session started"
   );
+
+  // Say when the repo carries app knowledge, so it's obvious whether the agent
+  // has it — and complain when it has outgrown being read every session. The
+  // agent reads the file itself (see the `dailies-session` skill); this is just
+  // the visible signal that it's there.
+  const project = await loadProject(process.cwd());
+  if (project.flowsPath) {
+    logger.info(
+      { flows: project.flowsPath, lines: project.flowsLines },
+      `app knowledge: ${project.flowsPath} (${project.flowsLines} lines)`
+    );
+    if (project.flowsLines > FLOWS_LINE_BUDGET) {
+      logger.warn(
+        { budget: FLOWS_LINE_BUDGET, lines: project.flowsLines },
+        `${project.flowsPath} is ${project.flowsLines} lines, over the ${FLOWS_LINE_BUDGET}-line budget — it is read in full every session. Prune stale notes, and move generic Dailies/Playwright lessons out of it.`
+      );
+    }
+  }
 
   if (args.json) {
     process.stdout.write(`${JSON.stringify(session, null, 2)}\n`);

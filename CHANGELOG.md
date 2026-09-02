@@ -36,6 +36,22 @@
 
 ### Added
 
+- **A `.dailies/` project convention.** A repo Dailies drives can commit what Dailies needs to know
+  about it: `.dailies/flows.md` (app-specific knowledge — how to sign in, which routes matter, the
+  selectors that break naive Playwright) and `.dailies/config.json` (defaults: `url`, `demo.paths`,
+  `demo.prompt`). The agent is told to read `flows.md` before writing a step script, to correct it
+  in place when it's wrong, and to **say what it changed** — so app knowledge accumulates instead of
+  being rediscovered every run. `session start` reports the file and warns when it outgrows a
+  250-line budget, since it's read in full every session. Plain files rather than a per-app agent
+  skill: skill loading depends on a model matching a `description` and only works in one harness,
+  while a committed file loads deterministically and works for Claude Code, Codex and Cursor alike.
+- **Nightly PR demos.** `.github/workflows/dailies-demo.yml` (was `autodemo.yml`) now runs on a
+  nightly schedule over every open PR labeled **`dailies`**, and demos one only when its head has
+  moved since its last demo (tracked by a marker in the workflow's own PR comment) and its changed
+  files match `demo.paths`. Labeling a PR still demos it immediately; `workflow_dispatch` takes a PR
+  number and a `force` flag. PR-body keys are `dailies-url:` / `dailies-theme:` and now override
+  repo config rather than being the only way to configure anything. Fork PRs are skipped — they get
+  no secrets, and their `.dailies/` would be untrusted input that becomes agent instructions.
 - **HAR credential scrubbing, on by default.** A session is driven against a logged-in app, so
   Playwright recorded live `Cookie` / `set-cookie` / `Authorization` headers into `network.har` —
   a file inside a directory people are encouraged to share. `session end` now replaces those

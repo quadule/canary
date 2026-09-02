@@ -14,7 +14,15 @@
     // `examples/` holds sandbox demo scripts that run against injected globals
     // (`browser`, `saveScreenshot`) and intentionally `console.log`; they're dev
     // fixtures, not app code, so skip them too.
-    "includes": ["!!**/sandbox/forked-client", "!!examples"]
+    // `.claude/worktrees/` holds agent worktrees — full checkouts of this repo,
+    // each with its own biome.jsonc. Biome treats a nested config as a second
+    // root and refuses to run at all, so an agent working in a worktree breaks
+    // `pnpm check` in the main checkout until it is cleaned up.
+    "includes": [
+      "!!**/sandbox/forked-client",
+      "!!examples",
+      "!!.claude/worktrees"
+    ]
   },
   "linter": {
     "rules": {
