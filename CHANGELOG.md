@@ -21,7 +21,16 @@
     `.dailies-ui.json`.
 
   This is a **breaking rename with no compatibility path**: old package names, binaries, env vars
-  and paths are simply gone. Carry an existing install over with `mv ~/.canary ~/.dailies`.
+  and paths are simply gone. To carry an existing install over, move the sessions across rather
+  than the whole directory — `dailies install` (and any `dailies` command) creates `~/.dailies`, so
+  a plain `mv ~/.canary ~/.dailies` would nest the old tree *inside* the new one instead of
+  replacing it:
+
+  ```bash
+  mkdir -p ~/.dailies/sessions && mv ~/.canary/sessions/* ~/.dailies/sessions/
+  mv ~/.canary/browsers/* ~/.dailies/browsers/ 2>/dev/null || true
+  rm -rf ~/.canary   # the daemon runtime is rebuilt by `dailies install`
+  ```
 
   Historical entries below predate the rename and are left as they were written.
 
