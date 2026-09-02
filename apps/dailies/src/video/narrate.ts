@@ -26,6 +26,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { Logger } from "dailies-logger";
 import { resolveAceStepMusic } from "./acestep.js";
@@ -35,6 +36,7 @@ import {
   branchContributors,
   buildCreditSections,
   buildCreditsRoll,
+  type Contributor,
   type CreditSection,
 } from "./credits.js";
 import {
@@ -46,6 +48,7 @@ import {
   encodeSlice,
   FFMPEG_BASE_ARGS,
   isOnPath,
+  mapLimit,
   type ProbedVideo,
   probeVideo,
   run,
@@ -624,29 +627,28 @@ export function titleArtToolName(id: string | undefined): string | undefined {
   }
 }
 
-// Append a scrolling end-credits roll after the body. The caller assembles the
-// sections (contributors + music + tools), so this just renders and concatenates.
-// Best-effort: returns the body unchanged when there's nothing to credit or on
-// any failure. Credits sit at the very end, so they don't shift any step's
-// videoTime.
-async function appendCredits(args: {
+// Render the scrolling end-credits roll as its OWN segment, for the caller to
+// concatenate after the body. The caller assembles the sections (contributors +
+// music + tools), so this just renders. Best-effort: returns undefined when
+// there's nothing to credit or the render fails, and the caller then simply
+// leaves it out of the concat. Credits sit at the very end, so they never shift
+// a step's videoTime.
+async function renderCreditsSegment(args: {
   ffmpeg: string;
-  body: string;
   videoPath: string;
   heading: string;
   sections: CreditSection[];
   geometry: ProbedVideo;
   temps: string[];
   log: Logger;
-}): Promise<string> {
-  const { ffmpeg, body, videoPath, heading, sections, geometry, temps, log } =
-    args;
+}): Promise<string | undefined> {
+  const { ffmpeg, videoPath, heading, sections, geometry, temps, log } = args;
   if (!sections.some((s) => s.entries.length > 0)) {
-    return body;
+    return;
   }
+  const creditsPath = `${videoPath}.credits.webm`;
+  temps.push(creditsPath);
   try {
-    const creditsPath = `${videoPath}.credits.webm`;
-    temps.push(creditsPath);
     await buildCreditsRoll({
       ffmpeg,
       sections,
@@ -654,14 +656,10 @@ async function appendCredits(args: {
       geometry,
       outPath: creditsPath,
     });
-    const outPath = `${videoPath}.withcredits.webm`;
-    const listPath = `${videoPath}.credits-list.txt`;
-    temps.push(outPath, listPath);
-    await concatSegments(ffmpeg, [body, creditsPath], outPath, listPath);
-    return outPath;
+    return creditsPath;
   } catch (err) {
     log.debug({ err }, "cinematic: credits roll failed; skipping it");
-    return body;
+    return;
   }
 }
 
@@ -724,7 +722,12 @@ async function generateMusic(args: {
   ffmpeg: string;
   provider: MusicProvider | undefined;
   directionText: string;
-  bodyPath: string;
+  // The credits-roll segment sitting at the END of finalBodyPath, or undefined
+  // when there's no roll. Its own measured length gives the credits region — the
+  // single flat concat no longer produces a title+body intermediate to subtract
+  // from the total, and summing the re-time plan instead would trade a measured
+  // value for a computed one.
+  creditsPath: string | undefined;
   finalBodyPath: string;
   videoPath: string;
   temps: string[];
@@ -736,7 +739,7 @@ async function generateMusic(args: {
     ffmpeg,
     provider,
     directionText,
-    bodyPath,
+    creditsPath,
     finalBodyPath,
     videoPath,
     temps,
@@ -762,13 +765,15 @@ async function generateMusic(args: {
     notes.push("instrumental score unavailable");
     return [];
   }
-  const creditsStart = await audioDurationSec(ffmpeg, bodyPath);
-  const hasCredits = Boolean(creditsStart && total - creditsStart > 1);
-  if (!hasCredits) {
+  const creditsLen = creditsPath
+    ? ((await audioDurationSec(ffmpeg, creditsPath)) ?? 0)
+    : 0;
+  if (creditsLen <= 1) {
     // No credits region — just the quiet bed under the whole thing.
     return [{ path: bedPath, delaySec: 0, volume: NARRATION_MUSIC_GAIN }];
   }
-  const cs = creditsStart as number;
+  // Where the credits open: the roll is the tail of the final body.
+  const cs = Math.max(0, total - creditsLen);
   const ramp = MUSIC_SWELL_RAMP_SEC;
   // Narration bed: quiet, faded out just before the credits so it doesn't stack
   // with the swell below it.
@@ -785,7 +790,6 @@ async function generateMusic(args: {
   // window so the credits open on a strong section, at full volume, fading in at
   // the credits start. One download → quiet bed + a full-energy credits swell.
   try {
-    const creditsLen = total - cs;
     const loudOff = await pickLoudestOffset(ffmpeg, bedPath, creditsLen);
     const creditsClip = `${videoPath}.credits.wav`;
     temps.push(creditsClip);
@@ -812,11 +816,29 @@ async function generateMusic(args: {
   return tracks;
 }
 
+// The credits roll's non-footage inputs: the branch contributors (a `git log`)
+// and the score's credit line, resolved WITHOUT generating audio (the provider
+// caches its pick, so generateMusic later reuses the credited track). Fetched
+// together, and started before the re-time so both overlap its ffmpeg encodes —
+// neither is CPU-bound, so they don't contend with libvpx.
+async function resolveCreditInputs(args: {
+  repoDir: string;
+  base: string;
+  provider: MusicProvider | undefined;
+  directionText: string;
+}): Promise<{ contributors: Contributor[]; musicCredit: string | undefined }> {
+  const [contributors, musicCredit] = await Promise.all([
+    branchContributors(args.repoDir, args.base),
+    args.provider?.credit?.(args.directionText).catch(() => undefined),
+  ]);
+  return { contributors, musicCredit };
+}
+
 // Turn the condensed body + narration clips into the final cinematic video:
-// re-time so each step holds for its line, prepend the title card (optionally
-// over a generated background), append the credits, and generate any music.
-// Returns the final body, where each step/clip lands, and the music tracks — or
-// null if the source duration can't be probed for re-timing.
+// re-time so each step holds for its line, render the title card (optionally over
+// a generated background) and the credits roll, join all three in one concat, and
+// generate any music. Returns the final body, where each step/clip lands, and the
+// music tracks — or null if the source duration can't be probed for re-timing.
 async function assembleVideo(args: {
   ffmpeg: string;
   videoPath: string;
@@ -836,6 +858,9 @@ async function assembleVideo(args: {
   progress: (message: string) => void;
 }): Promise<{
   finalBody: string;
+  // The probed source geometry, handed back so the caller can size its captions
+  // to the real frame width without probing the same file a second time.
+  geometry: ProbedVideo | undefined;
   stepTimes: number[];
   clipOffsetsSec: number[];
   titleOffsetSec: number;
@@ -866,12 +891,41 @@ async function assembleVideo(args: {
   // guessing geometry corrupts the concat.
   const geometry = await probeVideo(ffmpeg, videoPath);
   const frameRate = geometry?.frameRate ?? 30;
+  // The title card and the credits roll both need the exact source geometry, so
+  // a failed probe (no ffprobe) skips them rather than guessing — narrowing them
+  // behind one binding keeps that gate in a single place.
+  const extrasGeometry = hasDrawtext ? geometry : undefined;
+
+  // Start the non-footage work — the title-background provider (network/GPU) and
+  // the credit lookups (`git log` + a track search) — BEFORE the re-time, so it
+  // overlaps the per-step encodes instead of queueing behind them. Gated exactly
+  // as before: without drawtext/geometry there's no card or roll to feed.
+  const backgroundJob = extrasGeometry
+    ? renderTitleBackground({
+        provider: providers.titleBackground,
+        directionText,
+        geometry: extrasGeometry,
+        videoPath,
+        temps,
+        notes,
+        log,
+        progress,
+      })
+    : Promise.resolve(undefined);
+  const creditInputsJob = extrasGeometry
+    ? resolveCreditInputs({
+        repoDir,
+        base,
+        provider: providers.music,
+        directionText,
+      })
+    : Promise.resolve({ contributors: [], musicCredit: undefined });
 
   progress("re-timing the video to fit the narration…");
   const clipDurSec = narratableSteps.map(
     (step) => clips.find((c) => c.step === step)?.durationSec ?? 0
   );
-  const retimed = await retimeForNarration({
+  const retimed = await retimeSegments({
     ffmpeg,
     videoPath,
     steps: narratableSteps,
@@ -881,27 +935,17 @@ async function assembleVideo(args: {
     gapSec: narrationGapSec(process.env),
   });
   if (!retimed) {
+    // Drain the in-flight jobs before bailing so neither can settle after we've
+    // returned (and so their temps are on the cleanup list).
+    await Promise.allSettled([backgroundJob, creditInputsJob]);
     return null;
   }
-
-  const background =
-    hasDrawtext && geometry
-      ? await renderTitleBackground({
-          provider: providers.titleBackground,
-          directionText,
-          geometry,
-          videoPath,
-          temps,
-          notes,
-          log,
-          progress,
-        })
-      : undefined;
+  const background = await backgroundJob;
 
   progress("painting the title card…");
-  const { body, titleOffsetSec } = await applyTitleCard({
+  const titleCard = await renderTitleSegment({
     ffmpeg,
-    retimedPath: retimed.path,
+    videoPath,
     title,
     style: titleStyle(category),
     background,
@@ -913,6 +957,7 @@ async function assembleVideo(args: {
     notes,
     log,
   });
+  const { titleOffsetSec } = titleCard;
 
   const stepTimes = retimed.starts.map((s) => s + titleOffsetSec);
   const clipOffsetsSec = clips.map((clip) => {
@@ -920,43 +965,44 @@ async function assembleVideo(args: {
     return (idx >= 0 ? (retimed.starts[idx] ?? 0) : 0) + titleOffsetSec;
   });
 
-  let finalBody = body;
-  if (hasDrawtext && geometry) {
+  let creditsPath: string | undefined;
+  if (extrasGeometry) {
     progress("rolling the credits…");
-    // Resolve the music credit WITHOUT generating audio (the provider caches its
-    // pick so generateMusic below reuses the credited track), then assemble the
-    // sections: people, music, and the tools actually used this run.
-    const musicCredit = await providers.music
-      ?.credit?.(directionText)
-      .catch(() => undefined);
-    const sections = buildCreditSections({
-      contributors: await branchContributors(repoDir, base),
-      music: musicCredit,
-      models: buildModelCredits({
-        voiceLabel,
-        ttsId: providers.tts?.id,
-        musicId: providers.music?.id,
-        titleArtId: background ? providers.titleBackground?.id : undefined,
-        hasMusicCredit: Boolean(musicCredit),
-      }),
-    });
-    finalBody = await appendCredits({
+    const { contributors, musicCredit } = await creditInputsJob;
+    creditsPath = await renderCreditsSegment({
       ffmpeg,
-      body,
       videoPath,
       heading: title,
-      sections,
-      geometry,
+      // People, music, and the tools actually used this run.
+      sections: buildCreditSections({
+        contributors,
+        music: musicCredit,
+        models: buildModelCredits({
+          voiceLabel,
+          ttsId: providers.tts?.id,
+          musicId: providers.music?.id,
+          titleArtId: background ? providers.titleBackground?.id : undefined,
+          hasMusicCredit: Boolean(musicCredit),
+        }),
+      }),
+      geometry: extrasGeometry,
       temps,
       log,
     });
   }
 
+  const finalBody = await assembleBody({
+    ffmpeg,
+    videoPath,
+    pieces: [titleCard.path, ...retimed.segs, creditsPath],
+    temps,
+  });
+
   const music = await generateMusic({
     ffmpeg,
     provider: providers.music,
     directionText,
-    bodyPath: body,
+    creditsPath,
     finalBodyPath: finalBody,
     videoPath,
     temps,
@@ -965,7 +1011,14 @@ async function assembleVideo(args: {
     progress,
   });
 
-  return { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec, music };
+  return {
+    finalBody,
+    geometry,
+    stepTimes,
+    clipOffsetsSec,
+    titleOffsetSec,
+    music,
+  };
 }
 
 // The minimum a generated song should run — 1:30. A short session still gets a
@@ -1072,6 +1125,9 @@ async function assembleSongVideo(args: {
   progress: (message: string) => void;
 }): Promise<{
   finalBody: string;
+  // The probed source geometry, handed back so the caller can size its captions
+  // to the real frame width without probing the same file a second time.
+  geometry: ProbedVideo | undefined;
   stepTimes: number[];
   titleOffsetSec: number;
 } | null> {
@@ -1097,6 +1153,33 @@ async function assembleSongVideo(args: {
 
   const geometry = await probeVideo(ffmpeg, videoPath);
   const frameRate = geometry?.frameRate ?? 30;
+  // The title card and the credits roll both need the exact source geometry, so
+  // a failed probe (no ffprobe) skips them rather than guessing — narrowing them
+  // behind one binding keeps that gate in a single place.
+  const extrasGeometry = hasDrawtext ? geometry : undefined;
+
+  // Same overlap as the narration path: the title-background provider and the
+  // credit lookups start before the re-time's encodes rather than behind them.
+  const backgroundJob = extrasGeometry
+    ? renderTitleBackground({
+        provider: providers.titleBackground,
+        directionText,
+        geometry: extrasGeometry,
+        videoPath,
+        temps,
+        notes,
+        log,
+        progress,
+      })
+    : Promise.resolve(undefined);
+  const creditInputsJob = extrasGeometry
+    ? resolveCreditInputs({
+        repoDir,
+        base,
+        provider: providers.music,
+        directionText,
+      })
+    : Promise.resolve({ contributors: [], musicCredit: undefined });
 
   // Re-time the body: each step plays at natural speed then freezes its last frame to
   // fill its budget (preserving motion + quality). When `onsets` are given (the
@@ -1104,7 +1187,7 @@ async function assembleSongVideo(args: {
   // the on-screen step tracks what's being sung — the song-mode analog of narration's
   // per-step hold; otherwise it falls back to the even `holdDurSec` split.
   progress("re-timing the video to the song…");
-  const retimed = await retimeForNarration({
+  const retimed = await retimeSegments({
     ffmpeg,
     videoPath,
     steps: narratableSteps,
@@ -1115,27 +1198,15 @@ async function assembleSongVideo(args: {
     bodyEnd,
   });
   if (!retimed) {
+    await Promise.allSettled([backgroundJob, creditInputsJob]);
     return null;
   }
-
-  const background =
-    hasDrawtext && geometry
-      ? await renderTitleBackground({
-          provider: providers.titleBackground,
-          directionText,
-          geometry,
-          videoPath,
-          temps,
-          notes,
-          log,
-          progress,
-        })
-      : undefined;
+  const background = await backgroundJob;
 
   progress("painting the title card…");
-  const { body, titleOffsetSec } = await applyTitleCard({
+  const titleCard = await renderTitleSegment({
     ffmpeg,
-    retimedPath: retimed.path,
+    videoPath,
     title,
     style: titleStyle(category),
     background,
@@ -1147,40 +1218,43 @@ async function assembleSongVideo(args: {
     notes,
     log,
   });
-
+  const { titleOffsetSec } = titleCard;
   const stepTimes = retimed.starts.map((s) => s + titleOffsetSec);
 
-  let finalBody = body;
-  if (hasDrawtext && geometry) {
+  let creditsPath: string | undefined;
+  if (extrasGeometry) {
     progress("rolling the credits…");
-    const musicCredit = await providers.music
-      ?.credit?.(directionText)
-      .catch(() => undefined);
-    const sections = buildCreditSections({
-      contributors: await branchContributors(repoDir, base),
-      music: musicCredit,
-      models: buildModelCredits({
-        voiceLabel: "",
-        ttsId: undefined,
-        musicId: providers.music?.id,
-        titleArtId: background ? providers.titleBackground?.id : undefined,
-        song: true,
-        hasMusicCredit: Boolean(musicCredit),
-      }),
-    });
-    finalBody = await appendCredits({
+    const { contributors, musicCredit } = await creditInputsJob;
+    creditsPath = await renderCreditsSegment({
       ffmpeg,
-      body,
       videoPath,
       heading: title,
-      sections,
-      geometry,
+      sections: buildCreditSections({
+        contributors,
+        music: musicCredit,
+        models: buildModelCredits({
+          voiceLabel: "",
+          ttsId: undefined,
+          musicId: providers.music?.id,
+          titleArtId: background ? providers.titleBackground?.id : undefined,
+          song: true,
+          hasMusicCredit: Boolean(musicCredit),
+        }),
+      }),
+      geometry: extrasGeometry,
       temps,
       log,
     });
   }
 
-  return { finalBody, stepTimes, titleOffsetSec };
+  const finalBody = await assembleBody({
+    ffmpeg,
+    videoPath,
+    pieces: [titleCard.path, ...retimed.segs, creditsPath],
+    temps,
+  });
+
+  return { finalBody, geometry, stepTimes, titleOffsetSec };
 }
 
 interface RenderedClip {
@@ -1249,10 +1323,49 @@ async function renderClip(args: {
   return { step, narration, m4aPath, durationSec };
 }
 
-// Synthesize a clip for every step that the LLM gave narration text. Prefers the
-// TTS provider (when present); on its FIRST failure, notes it once and falls back
-// to `say` for the rest (a consistent voice beats a half-provider mix). The step's
-// enumerated index keys the narration map (same indexing the prompt used).
+// How many narration clips to synthesize at once. Each clip is one independent
+// TTS call (a local `say`, or one HTTP request) plus a short ffmpeg transcode, so
+// overlapping them is pure wall-clock savings: 8 concurrent macOS `say -o`
+// renders were measured producing BYTE-IDENTICAL audio to the same lines rendered
+// serially, in 4s instead of 11s. Kept modest — a hosted TTS shouldn't be hit
+// with a whole session at once — and bounded by the machine's own parallelism.
+// Override with $DAILIES_TTS_CONCURRENCY (1 restores the old serial pass).
+const DEFAULT_TTS_CONCURRENCY = 4;
+export function ttsConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const override = Number(env.DAILIES_TTS_CONCURRENCY);
+  if (Number.isFinite(override) && override >= 1) {
+    return Math.trunc(override);
+  }
+  return Math.max(
+    1,
+    Math.min(DEFAULT_TTS_CONCURRENCY, os.availableParallelism())
+  );
+}
+
+// The steps the LLM actually wrote narration for, each carrying its ENUMERATED
+// step index — that's the key the narration map uses (the same indexing the prompt
+// used) and the suffix each clip's temp files get. Pure → unit-tested.
+export function narrationJobs(
+  steps: CinematicStep[],
+  byIndex: Map<number, string>
+): { index: number; step: CinematicStep; text: string }[] {
+  const jobs: { index: number; step: CinematicStep; text: string }[] = [];
+  for (const [index, step] of steps.entries()) {
+    const text = byIndex.get(index)?.trim();
+    if (text) {
+      jobs.push({ index, step, text });
+    }
+  }
+  return jobs;
+}
+
+// Synthesize a clip for every step that the LLM gave narration text, several in
+// flight (see ttsConcurrency). Prefers the TTS provider when present; its FIRST
+// failure latches the provider off, so the lines still queued go straight to
+// `say` instead of each paying another failing call/timeout — then a second pass
+// voices everything the provider didn't with `say`. A `say` failure is NOT caught
+// (as before): it throws through to cinematicProcess, which skips the pass.
+// Returns clips in step order, so the caller's cue/offset arrays stay in lockstep.
 async function synthesizeClips(args: {
   ffmpeg: string;
   say?: SpeechSynth;
@@ -1277,44 +1390,66 @@ async function synthesizeClips(args: {
     log,
     echo,
   } = args;
-  let provider: SpeechSynth | undefined = tts
-    ? { ext: "wav", run: (t, o) => tts.synthesize(t, o) }
-    : undefined;
-  const clips: RenderedClip[] = [];
-  for (const [i, step] of steps.entries()) {
-    const text = byIndex.get(i)?.trim();
-    if (!text) {
-      continue;
-    }
-    const base = {
-      ffmpeg,
-      step,
-      narration: text,
-      videoPath,
-      index: i,
-      temps,
-      echo,
+  const jobs = narrationJobs(steps, byIndex);
+  const limit = ttsConcurrency();
+  const clipArgs = (job: {
+    index: number;
+    step: CinematicStep;
+    text: string;
+  }) => ({
+    ffmpeg,
+    step: job.step,
+    narration: job.text,
+    videoPath,
+    index: job.index,
+    temps,
+    echo,
+  });
+
+  // Pass 1: the TTS provider. `down` latches on the first failure so queued lines
+  // skip the provider entirely rather than each paying its own failing call.
+  const rendered: (RenderedClip | null)[] = jobs.map(() => null);
+  if (tts) {
+    const synth: SpeechSynth = {
+      ext: "wav",
+      run: (t, o) => tts.synthesize(t, o),
     };
-    let clip: RenderedClip | null = null;
-    if (provider) {
-      try {
-        clip = await renderClip({ ...base, synth: provider });
-      } catch (err) {
-        log.debug({ err }, "cinematic: TTS provider failed; using `say`");
-        notes.push(
-          `narration voiced by macOS \`say\` — the TTS provider (${tts?.id}) failed`
-        );
-        provider = undefined;
+    let down = false;
+    const voiced = await mapLimit(jobs, limit, async (job) => {
+      if (down) {
+        return null;
       }
-    }
-    if (clip === null && provider === undefined && say) {
-      clip = await renderClip({ ...base, synth: say });
-    }
-    if (clip) {
-      clips.push(clip);
+      try {
+        return await renderClip({ ...clipArgs(job), synth });
+      } catch (err) {
+        down = true;
+        log.debug({ err }, "cinematic: TTS provider failed; using `say`");
+        return null;
+      }
+    });
+    voiced.forEach((clip, slot) => {
+      rendered[slot] = clip;
+    });
+    if (down) {
+      notes.push(
+        `narration voiced by macOS \`say\` — the TTS provider (${tts.id}) failed`
+      );
     }
   }
-  return clips;
+
+  // Pass 2: everything the provider didn't voice falls back to `say`.
+  if (say) {
+    const pending = jobs
+      .map((job, slot) => ({ job, slot }))
+      .filter((p) => rendered[p.slot] === null);
+    const spoken = await mapLimit(pending, limit, (p) =>
+      renderClip({ ...clipArgs(p.job), synth: say })
+    );
+    pending.forEach((p, k) => {
+      rendered[p.slot] = spoken[k] ?? null;
+    });
+  }
+  return rendered.filter((clip): clip is RenderedClip => clip !== null);
 }
 
 // Render a 2.5s title card matching the source geometry, encoded to webm
@@ -1514,9 +1649,14 @@ export function narrationGapSec(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 // Re-time the video so each step holds its frame long enough for its narration.
-// Returns the new video path and each step's new start (pre-title-card). Null if
-// the source duration can't be probed.
-async function retimeForNarration(args: {
+// Returns the per-step SEGMENTS (in order, ready to concatenate) and each step's
+// new start (pre-title-card). Null if the source duration can't be probed.
+//
+// The segments are deliberately NOT concatenated here: the title card and the
+// credits roll are separate segments too, and assembleBody joins all of them in
+// ONE concat-copy pass. Concatenating here as well would rewrite the whole body
+// an extra time (it used to be rewritten three times: retime, title, credits).
+async function retimeSegments(args: {
   ffmpeg: string;
   videoPath: string;
   steps: CinematicStep[];
@@ -1530,7 +1670,7 @@ async function retimeForNarration(args: {
   // the body end. When given, planRetime hard-cuts each step to its onset window.
   onsets?: number[];
   bodyEnd?: number;
-}): Promise<{ path: string; starts: number[] } | null> {
+}): Promise<{ segs: string[]; starts: number[] } | null> {
   const { ffmpeg, videoPath, steps, clipDurSec, frameRate, temps } = args;
   const totalSec = await audioDurationSec(ffmpeg, videoPath);
   if (totalSec === undefined || totalSec <= 0) {
@@ -1575,64 +1715,41 @@ async function retimeForNarration(args: {
     });
     segs.push(segPath);
   }
-  const outPath = `${videoPath}.retimed.webm`;
-  const listPath = `${videoPath}.retime.txt`;
-  temps.push(outPath, listPath);
-  await concatSegments(ffmpeg, segs, outPath, listPath);
-  return { path: outPath, starts: plan.starts };
+  return { segs, starts: plan.starts };
 }
 
-// Build the title card matched to the source geometry and concat it ahead of the
-// body, returning the new (title-prefixed) video path. Pushes its temps for
-// cleanup. Only called when drawtext is available AND geometry is known — the
-// title MUST match the body's exact geometry or the concat-copy silently locks
-// the body into the title's resolution and corrupts the picture.
-async function prependTitleCard(args: {
+// Join the title card, the re-timed body segments and the credits roll into the
+// final body in ONE concat-copy pass. Every piece is already libvpx/webm at the
+// source geometry and CFR-pinned, so the demuxer stream-copies them — but each
+// pass still rewrites the whole file, which is why there is exactly one.
+async function assembleBody(args: {
   ffmpeg: string;
   videoPath: string;
-  title: string;
-  style: { font: string; color: string };
-  background?: string;
-  dimBackground?: boolean;
-  geometry: ProbedVideo;
+  pieces: (string | undefined)[];
   temps: string[];
 }): Promise<string> {
-  const {
+  const { ffmpeg, videoPath, pieces, temps } = args;
+  const outPath = `${videoPath}.body.webm`;
+  const listPath = `${videoPath}.body.txt`;
+  temps.push(outPath, listPath);
+  await concatSegments(
     ffmpeg,
-    videoPath,
-    title,
-    style,
-    background,
-    dimBackground,
-    geometry,
-    temps,
-  } = args;
-  const titlePath = `${videoPath}.title.webm`;
-  temps.push(titlePath);
-  await buildTitleCard({
-    ffmpeg,
-    title,
-    style,
-    background,
-    dimBackground,
-    geometry,
-    temps,
-    outPath: titlePath,
-  });
-  const concatPath = `${videoPath}.concat.webm`;
-  const listPath = `${videoPath}.concat.txt`;
-  temps.push(concatPath, listPath);
-  await concatSegments(ffmpeg, [titlePath, videoPath], concatPath, listPath);
-  return concatPath;
+    pieces.filter((p): p is string => Boolean(p)),
+    outPath,
+    listPath
+  );
+  return outPath;
 }
 
-// Decide whether to prepend the title card, returning the body path to mix onto
-// and the timeline offset it introduced. Skips (and records a note) when drawtext
-// is unavailable or geometry couldn't be probed — guessing geometry would corrupt
-// the concat.
-async function applyTitleCard(args: {
+// Render the opening title card as its own segment (for assembleBody to put in
+// front of the body), plus the timeline offset it introduces. Skips it — path
+// undefined, offset 0, and a note — when drawtext is unavailable, no font is
+// installed, or the geometry couldn't be probed: the title MUST match the body's
+// exact geometry or the concat-copy silently locks the body into the title's
+// resolution and corrupts the picture, so guessing is not an option.
+async function renderTitleSegment(args: {
   ffmpeg: string;
-  retimedPath: string;
+  videoPath: string;
   title: string;
   style: { font: string | undefined; color: string };
   background?: string;
@@ -1642,10 +1759,10 @@ async function applyTitleCard(args: {
   temps: string[];
   notes: string[];
   log: Logger;
-}): Promise<{ body: string; titleOffsetSec: number }> {
+}): Promise<{ path: string | undefined; titleOffsetSec: number }> {
   const {
     ffmpeg,
-    retimedPath,
+    videoPath,
     title,
     style,
     background,
@@ -1657,17 +1774,19 @@ async function applyTitleCard(args: {
     log,
   } = args;
   if (hasDrawtext && geometry && style.font) {
-    const body = await prependTitleCard({
+    const titlePath = `${videoPath}.title.webm`;
+    temps.push(titlePath);
+    await buildTitleCard({
       ffmpeg,
-      videoPath: retimedPath,
       title,
       style: { font: style.font, color: style.color },
       background,
       dimBackground,
       geometry,
       temps,
+      outPath: titlePath,
     });
-    return { body, titleOffsetSec: TITLE_SEC };
+    return { path: titlePath, titleOffsetSec: TITLE_SEC };
   }
   let note = "title card skipped — this ffmpeg has no `drawtext` filter";
   if (hasDrawtext && !geometry) {
@@ -1678,7 +1797,7 @@ async function applyTitleCard(args: {
   }
   notes.push(note);
   log.warn({ ffmpeg }, `cinematic: ${note}`);
-  return { body: retimedPath, titleOffsetSec: 0 };
+  return { path: undefined, titleOffsetSec: 0 };
 }
 
 // Final pass: mix the delayed narration clips onto the concatenated video and
@@ -1814,649 +1933,981 @@ function notApplied(reason: string): CinematicResult {
   return { applied: false, titleOffsetSec: 0, reason };
 }
 
+// A stage declining to proceed. Every stage in this pipeline degrades instead of
+// throwing, so a stage that can't do its job hands the orchestrator the reason
+// and the orchestrator turns it into notApplied() verbatim — the `reason` strings
+// ARE the user-facing degrade contract.
+interface Skip {
+  skip: string;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 1: preconditions + media providers.
+// ---------------------------------------------------------------------------
+
+// Everything both passes (narration and song) need, resolved once: the source to
+// read from, what this ffmpeg build can do, the providers, and the shared
+// notes/temps/progress channels. Built by prepareCinematic.
+interface CinematicContext {
+  echo: Echo;
+  ffmpeg: string;
+  hasDrawtext: boolean;
+  hasSubtitles: boolean;
+  // The clean source to READ from: the .precinematic sidecar on a re-run, else
+  // the (condensed) videoPath itself. Output always overwrites videoPath.
+  input: string;
+  log: Logger;
+  narratableSteps: CinematicStep[];
+  // Degradation notes, appended to by reference all the way down (providers push
+  // per-track attribution into it at fetch time).
+  notes: string[];
+  options: CinematicOptions;
+  progress: (message: string) => void;
+  providers: MediaProviders;
+  // A music model that actually SINGS supplied lyrics (ACE-Step / Lyria) — song
+  // mode's requirement. Undefined when none is configured; stock music
+  // (archive.org) is never eligible even when it won the normal chain.
+  singingMusic: MusicProvider | undefined;
+  // Sibling temp files, removed by cinematicProcess's finally even on a partial
+  // failure. Every stage appends to this SAME array by reference.
+  temps: string[];
+  videoPath: string;
+}
+
+// Preserve the pre-cinematic (condensed) cut so this pass can be re-run with a
+// different prompt/theme without re-recording, and return the path to read FROM.
+// First run: copy the condensed videoPath to the sidecar and read the original.
+// Re-run: the sidecar already exists, so read it — never stacking a title card /
+// captions on a prior cinematic cut. The sidecar stays pristine either way.
+async function resolvePrecinematicSource(videoPath: string): Promise<string> {
+  const preserved = precinematicVideoPath(videoPath);
+  try {
+    await access(preserved);
+    return preserved;
+  } catch {
+    await copyFile(videoPath, preserved);
+    return videoPath;
+  }
+}
+
+// Resolve the media providers, preferred local-first: oMLX (on-machine MLX
+// models) wins per capability, then Gemini (if a key is set), then the local
+// say/drawtext fallbacks. Each is best-effort — a failure degrades to the next.
+// oMLX is probed (it lists its loaded models) only when it's configured.
+async function resolveMedia(args: {
+  ffmpeg: string;
+  log: Logger;
+  echo: Echo;
+  notes: string[];
+}): Promise<{
+  providers: MediaProviders;
+  singingMusic: MusicProvider | undefined;
+}> {
+  const { ffmpeg, log, echo, notes } = args;
+  const omlx = await resolveOmlxProviders({ env: process.env, log, echo });
+  const acestep = await resolveAceStepMusic({ env: process.env, log, echo });
+  const gemini = resolveMediaProviders({ env: process.env, log });
+  // Title-background sources: a configured local image server ($DAILIES_IMAGE_URL)
+  // wins (explicit user config), then Gemini (Nano Banana), then Wikimedia
+  // Commons real imagery; the always-available local gradient is added later
+  // (once the theme is known) as the final fallback.
+  const localImage = resolveLocalImage({ env: process.env, log, echo });
+  // Stock/free fallbacks: archive.org music and Wikimedia images turn ON
+  // automatically when no corresponding AI MODEL is configured, so a plain
+  // `--cinematic` run still gets a score + real title imagery with no key/GPU.
+  // An explicit $DAILIES_ARCHIVE_MUSIC/$DAILIES_WIKIMEDIA_IMAGES=1 forces them on
+  // (and, for music, takes precedence over the models); =0 forces them off.
+  // Both push per-track attribution into `notes` at fetch time by reference.
+  const archive = resolveArchiveMusic({
+    env: process.env,
+    ffmpeg,
+    log,
+    notes,
+    echo,
+    allowFallback: !(acestep.music || gemini.music),
+  });
+  const wikimedia = resolveWikimediaImage({
+    env: process.env,
+    notes,
+    log,
+    echo,
+    allowFallback: !(localImage.titleBackground || gemini.titleBackground),
+  });
+  const providers: MediaProviders = {
+    tts: omlx.tts ?? gemini.tts,
+    // Prefer stock (archive.org) when opted in, then generated (ACE-Step),
+    // then Gemini Lyria.
+    music: archive.music ?? acestep.music ?? gemini.music,
+    titleBackground:
+      localImage.titleBackground ??
+      gemini.titleBackground ??
+      wikimedia.titleBackground,
+    notes: [],
+  };
+  notes.push(...omlx.notes, ...acestep.notes);
+  // Surface Gemini's notes only when Gemini is actually active, or when there's
+  // genuinely no local alternative — otherwise its "no key → using say … and no
+  // music" note contradicts the oMLX/ACE-Step/archive providers above.
+  if (gemini.tts || !(omlx.tts || providers.music)) {
+    notes.push(...gemini.notes);
+  }
+  return {
+    providers,
+    // Song mode needs a model that sings OUR words; stock music can't, so it's
+    // excluded here even though it may have won `providers.music` above.
+    singingMusic: [acestep.music, gemini.music].find((m) => m?.singsLyrics),
+  };
+}
+
+// Check every precondition and resolve the shared context, or hand back the
+// reason this run can't proceed. Preconditions in cost order: cheap step/file
+// checks, then the `claude` probe, then the ffmpeg filter probe.
+async function prepareCinematic(args: {
+  videoPath: string;
+  steps: CinematicStep[];
+  options: CinematicOptions;
+  temps: string[];
+}): Promise<CinematicContext | Skip> {
+  const { videoPath, steps, options, temps } = args;
+  const { ffmpegPath, log } = options;
+  const narratableSteps = steps.filter((step) =>
+    Number.isFinite(step.videoTime)
+  );
+  if (narratableSteps.length === 0) {
+    return { skip: "no steps with a known video position" };
+  }
+  await access(videoPath);
+  const input = await resolvePrecinematicSource(videoPath);
+  if (!(await isOnPath("claude", ["--version"]))) {
+    return { skip: "`claude` CLI not found on PATH" };
+  }
+  // Narration mixing is the irreducible core; the title card and burned captions
+  // degrade gracefully when this build lacks their filters.
+  const filters = await availableFilters(ffmpegPath);
+  if (!(filters.has("adelay") && filters.has("amix"))) {
+    return { skip: "ffmpeg lacks the adelay/amix filters for narration" };
+  }
+  const notes: string[] = [];
+  const progress = options.onProgress ?? (() => undefined);
+  // Echo each generation command (say/ffmpeg/claude, and a redacted curl for
+  // HTTP providers) so a run is easy to reproduce and tweak — the user can copy
+  // a line, change the voice/model, and re-run it by hand. `progress` already
+  // matches the Echo shape, so commands ride the same stderr channel.
+  const echo: Echo = progress;
+  const media = await resolveMedia({ ffmpeg: ffmpegPath, log, echo, notes });
+  return {
+    echo,
+    ffmpeg: ffmpegPath,
+    hasDrawtext: filters.has("drawtext"),
+    hasSubtitles: filters.has("subtitles"),
+    input,
+    log,
+    narratableSteps,
+    notes,
+    options,
+    progress,
+    providers: media.providers,
+    singingMusic: media.singingMusic,
+    temps,
+    videoPath,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared final stages: captions on disk, then the mix + in-place swap.
+// ---------------------------------------------------------------------------
+
+// Write the sibling .srt. It's needed on disk before the burn pass reads it, and
+// it's tracked as a temp so a later failure cleans it up — a stale .srt with
+// cinematic timings beside an un-processed video would mis-caption every soft-sub
+// player. finalizeCinematic promotes it to a deliverable after the rename.
+async function writeCaptionSrt(args: {
+  videoPath: string;
+  cues: { start: number; end: number; text: string }[];
+  geometry: ProbedVideo | undefined;
+  temps: string[];
+}): Promise<string> {
+  const srtPath = srtPathFor(args.videoPath);
+  args.temps.push(srtPath);
+  // Size each caption line to the actual video width so it holds to two lines on
+  // a narrow custom --viewport, not just the 1280px default.
+  await writeFile(
+    srtPath,
+    buildSrt(args.cues, captionLineMax(args.geometry?.width))
+  );
+  return srtPath;
+}
+
+// Burn captions only when asked AND supported; otherwise the .srt sidecar is the
+// caption track (soft subs) and the degradation is noted so the user isn't left
+// wondering where the burned captions went.
+function resolveBurnCaptions(args: {
+  want: boolean;
+  hasSubtitles: boolean;
+  ffmpeg: string;
+  notes: string[];
+  log: Logger;
+}): boolean {
+  const { want, hasSubtitles, ffmpeg, notes, log } = args;
+  if (!want) {
+    return false;
+  }
+  if (hasSubtitles) {
+    return true;
+  }
+  const note =
+    "captions not burned — this ffmpeg has no `subtitles` filter; wrote a soft-sub .srt instead";
+  notes.push(note);
+  log.warn({ ffmpeg }, `cinematic: ${note}`);
+  return false;
+}
+
+// Mix the audio onto the assembled body (burning captions when asked), verify the
+// encoder produced something, and atomically replace the original video (like
+// condense). Returns a skip reason on an empty encode, else undefined — and on
+// success drops the output plus every `deliverables` sidecar from the cleanup
+// list, since those survive the run.
+async function finalizeCinematic(args: {
+  ffmpeg: string;
+  videoPath: string;
+  finalBody: string;
+  clips: RenderedClip[];
+  offsetsSec: number[];
+  music: MusicTrack[];
+  srtPath: string;
+  burnCaptions: boolean;
+  deliverables: string[];
+  temps: string[];
+  echo?: Echo;
+}): Promise<string | undefined> {
+  const {
+    ffmpeg,
+    videoPath,
+    finalBody,
+    clips,
+    offsetsSec,
+    music,
+    srtPath,
+    burnCaptions,
+    deliverables,
+    temps,
+    echo,
+  } = args;
+  const finalPath = `${videoPath}.cinematic.webm`;
+  temps.push(finalPath);
+  await mixAudioAndCaptions({
+    ffmpeg,
+    videoPath: finalBody,
+    clips,
+    offsetsSec,
+    music,
+    srtPath: burnCaptions ? srtPath : "",
+    burnCaptions,
+    outPath: finalPath,
+    echo,
+  });
+  const produced = await stat(finalPath);
+  if (produced.size === 0) {
+    return "encoder produced an empty file";
+  }
+  await rename(finalPath, videoPath);
+  // The final video is the original path now, and each deliverable beside it (the
+  // .srt, the lyrics sidecar) is kept — drop them from the cleanup list. Guarded
+  // by indexOf so a deliverable that was never tracked (e.g. no .srt was written)
+  // can't splice the last temp off the end.
+  for (const keep of [finalPath, ...deliverables]) {
+    const at = temps.indexOf(keep);
+    if (at >= 0) {
+      temps.splice(at, 1);
+    }
+  }
+  return;
+}
+
+// ---------------------------------------------------------------------------
+// Narration pass.
+// ---------------------------------------------------------------------------
+
+// The default cinematic pass: the LLM writes a line per step, TTS (or macOS
+// `say`) voices each one, the body is re-timed so every step holds long enough
+// for its line, and the narration is mixed in over an optional score.
+async function runNarrationPass(
+  ctx: CinematicContext
+): Promise<CinematicResult> {
+  const {
+    echo,
+    ffmpeg,
+    input,
+    log,
+    narratableSteps,
+    notes,
+    options,
+    progress,
+    providers,
+    temps,
+    videoPath,
+  } = ctx;
+  // Voicing: a TTS provider, or macOS `say`. With a provider this runs on any
+  // platform; without one it needs macOS.
+  const speech = await resolveSpeech(providers, notes, echo);
+  if (!speech) {
+    return notApplied(
+      "cinematic narration needs macOS `say` or a TTS provider (set GEMINI_API_KEY)"
+    );
+  }
+
+  // Resolve the creative direction (+ change scale) and get the narration.
+  progress("writing narration…");
+  const planned = await planNarration({ options, narratableSteps, log, echo });
+  if ("error" in planned) {
+    return notApplied(`narration generation failed: ${planned.error}`);
+  }
+  const { direction, narration, repoDir, base } = planned;
+
+  // Default the title-card background to a local themed gradient when no
+  // generated-image provider (Gemini) is configured — network-free and always
+  // available, so a plain install still gets an intentional card. The palette
+  // follows the resolved theme, so this waits until `direction` is known.
+  providers.titleBackground ??= createLocalTitleBackground(
+    ffmpeg,
+    direction.category
+  );
+
+  // Voice + TTS: one clip per step that got narration text. The provider voices
+  // it when available (else macOS `say`). Surface the chosen direction/voice/rate
+  // so a delightful run can be reproduced (pin via --prompt and
+  // $DAILIES_SAY_VOICE / $DAILIES_SAY_RATE).
+  const meta: CinematicMeta = {
+    direction: direction.label,
+    voice: speech.label,
+    rate: speech.rate,
+  };
+  log.info(meta, "cinematic: narration parameters");
+  progress(`voicing ${narration.steps.length} lines (${meta.voice})…`);
+  const clips = await synthesizeClips({
+    ffmpeg,
+    say: speech.say,
+    tts: providers.tts,
+    steps: narratableSteps,
+    byIndex: new Map(narration.steps.map((s) => [s.index, s.narration])),
+    videoPath,
+    temps,
+    notes,
+    log,
+    echo,
+  });
+  if (clips.length === 0) {
+    return notApplied("no narration audio could be synthesized");
+  }
+
+  // Re-time the video, prepend the title card (optionally over a generated
+  // background), append the credits, and generate any music bed — producing the
+  // final body, each step's/clip's position, and the music tracks for the mix.
+  const assembled = await assembleVideo({
+    ffmpeg,
+    videoPath: input,
+    narratableSteps,
+    clips,
+    title: narration.title,
+    category: direction.category,
+    // Theme only — the narration style ("…as natural prose narration") must not
+    // reach the music/title-art providers (it made the score spoken-word).
+    directionText: direction.theme,
+    providers,
+    voiceLabel: speech.label,
+    hasDrawtext: ctx.hasDrawtext,
+    repoDir,
+    base,
+    temps,
+    notes,
+    log,
+    progress,
+  });
+  if (!assembled) {
+    return notApplied("could not probe the video to re-time it");
+  }
+  const {
+    finalBody,
+    geometry,
+    stepTimes,
+    clipOffsetsSec,
+    titleOffsetSec,
+    music,
+  } = assembled;
+
+  const cues = clips.map((clip, k) => {
+    const start = clipOffsetsSec[k] ?? 0;
+    return { start, end: start + clip.durationSec, text: clip.narration };
+  });
+  const srtPath = await writeCaptionSrt({ videoPath, cues, geometry, temps });
+  const burnCaptions = resolveBurnCaptions({
+    want: options.captions,
+    hasSubtitles: ctx.hasSubtitles,
+    ffmpeg,
+    notes,
+    log,
+  });
+
+  progress(
+    burnCaptions ? "mixing audio and burning captions…" : "mixing audio…"
+  );
+  const failed = await finalizeCinematic({
+    ffmpeg,
+    videoPath,
+    finalBody,
+    clips,
+    offsetsSec: clipOffsetsSec,
+    // The music is timed against the body; shift it past the title card so the
+    // score doesn't play over the opening title (clips/captions are already
+    // offset by titleOffsetSec).
+    music: shiftMusic(music, titleOffsetSec),
+    srtPath,
+    burnCaptions,
+    deliverables: [srtPath],
+    temps,
+    echo,
+  });
+  if (failed) {
+    return notApplied(failed);
+  }
+  return { applied: true, titleOffsetSec, stepTimes, notes, meta };
+}
+
+// ---------------------------------------------------------------------------
+// Song pass.
+// ---------------------------------------------------------------------------
+
+// One group's sung line: the steps it spans and the step its caption anchors on.
+export interface GroupedLyricLine {
+  firstStep: number;
+  stepIdxs: number[];
+  text: string;
+}
+
+// Match the model's lyric lines back onto the step groups that prompted them —
+// the lyric `index` IS the group ordinal. Returns the by-group lookup plus the
+// ordered lines the model actually wrote (groups it left blank are dropped).
+// Pure → unit-tested.
+export function orderGroupLyrics(
+  groups: number[][],
+  lines: { index: number; text: string }[]
+): { lineByGroup: Map<number, string>; ordered: GroupedLyricLine[] } {
+  const lineByGroup = new Map(lines.map((l) => [l.index, l.text]));
+  const ordered = groups
+    .map((stepIdxs, g) => ({
+      firstStep: stepIdxs[0] ?? 0,
+      stepIdxs,
+      text: lineByGroup.get(g),
+    }))
+    .filter((x): x is GroupedLyricLine => Boolean(x.text));
+  return { lineByGroup, ordered };
+}
+
+// The song-mode re-timing plan: where to trim the song, the caption cues rebased
+// to that trim, and how long to hold each step's frame.
+export interface SongTiming {
+  // Cues in the TRIMMED-song timebase (0-based), each capped at maxCueSec. Empty
+  // when no vocal region was detected.
+  alignedCues: { start: number; end: number; text: string }[];
+  // Just past the last sung line — where the body ends, dropping the instrumental
+  // outro. Undefined when there's nothing to anchor to.
+  bodyEnd?: number;
+  // Per-step frame hold; one entry per step.
+  holdDurSec: number[];
+  // The user-facing note naming which timing source won.
+  note: string;
+  // Per-step output onset for the onset-anchored hard-cut re-time, or undefined to
+  // fall back to the even holdDurSec split.
+  onsets?: number[];
+  // Seconds to cut off the song's head so the first sung line lands at 0. The
+  // caller only actually trims when this clears ffmpeg's seek threshold.
+  trimStartSec: number;
+}
+
+// Plan song-mode timing from the detected vocal region and the aligned cues.
+//
+// With a region: rebase the cues to the trim by a pure time shift (the song plays
+// at delay 0, so clip time maps to final-video time before the title shift) and
+// cap each at `maxCueSec`. The cap matters most for LRC/segment cues, whose end is
+// the NEXT line's start: when the model leaves a long instrumental gap between sung
+// lines, an uncapped cue would linger ~20s on screen — cap it so the line shows,
+// then clears (the word path is already capped). Steps then split the vocal region
+// evenly, and when cues survive the rebase each group is ANCHORED to the moment
+// its line is actually sung (walking groups against the cues, which are a
+// subsequence of the group lines, in order) so the re-time can hold each step's
+// footage on screen exactly while its line plays.
+//
+// Without a region: keep the raw song (capped by the mix) and hold each GROUP long
+// enough to sing its line (at least the group minimum), split across the group's
+// steps. Steps in a group with no line keep a small default.
+//
+// Pure → unit-tested.
+export function planSongTiming(args: {
+  clipCues: { start: number; end: number; text: string }[];
+  groups: number[][];
+  // The lyric line each group sings, by group ordinal; groups the model left
+  // blank are absent.
+  lineByGroup: Map<number, string>;
+  // How many lines the model wrote, for the note's "n/total lines sung" tally.
+  lineCount: number;
+  maxCueSec: number;
+  region: { start: number; end: number } | null;
+  sourceLabel: string;
+  stepCount: number;
+}): SongTiming {
+  const {
+    clipCues,
+    groups,
+    lineByGroup,
+    lineCount,
+    maxCueSec,
+    region,
+    sourceLabel,
+    stepCount,
+  } = args;
+  if (!region) {
+    const holdDurSec = Array.from({ length: stepCount }, () => 3.5);
+    for (const [g, stepIdxs] of groups.entries()) {
+      const text = lineByGroup.get(g);
+      if (text) {
+        const per =
+          Math.max(GROUP_MIN_SEC, songHoldSec(text)) / stepIdxs.length;
+        for (const i of stepIdxs) {
+          holdDurSec[i] = per;
+        }
+      }
+    }
+    return {
+      alignedCues: [],
+      holdDurSec,
+      trimStartSec: 0,
+      note: "vocal timing not detected (no whisper model) — captions placed at step times; set $DAILIES_WHISPER_MODEL to align them to the singing",
+    };
+  }
+
+  const trimStartSec = region.start;
+  const alignedCues = clipCues
+    .map((c) => {
+      const start = c.start - trimStartSec;
+      const end = Math.min(c.end - trimStartSec, start + maxCueSec);
+      return { start, end, text: c.text };
+    })
+    .filter((c) => c.end > 0)
+    .map((c) => ({ start: Math.max(0, c.start), end: c.end, text: c.text }));
+  const bodyLen = Math.max(6, region.end - region.start);
+  const timing: SongTiming = {
+    alignedCues,
+    holdDurSec: Array.from({ length: stepCount }, () => bodyLen / stepCount),
+    trimStartSec,
+    note: `captions aligned to ${sourceLabel} (${alignedCues.length}/${lineCount} lines sung)`,
+  };
+  if (alignedCues.length === 0) {
+    return timing;
+  }
+  const groupSungStart: (number | null)[] = groups.map(() => null);
+  let ci = 0;
+  for (let g = 0; g < groups.length; g++) {
+    const text = lineByGroup.get(g);
+    if (text && alignedCues[ci]?.text === text) {
+      groupSungStart[g] = alignedCues[ci]?.start ?? null;
+      ci++;
+    }
+  }
+  timing.bodyEnd = Math.max(...alignedCues.map((c) => c.end)) + 2;
+  timing.onsets = songStepOnsets(groups, groupSungStart, timing.bodyEnd);
+  return timing;
+}
+
+// The lyrics + creative direction for one song run, plus where a pinned song is
+// cached. `reusing` means the pinned audio AND its saved lyrics/LRC are being
+// replayed verbatim, so nothing is generated.
+interface SongScript {
+  base: string;
+  direction: ReturnType<typeof resolveDirection>;
+  lrcText?: string;
+  lyrics: Lyrics;
+  // $DAILIES_SONG_FILE, or "" when not pinning.
+  pinnedSong: string;
+  repoDir: string;
+  reusing: boolean;
+  // The pinned song's sidecar holding {direction, lyrics, lrcText}.
+  songCache: string;
+}
+
+// Lyrics + direction for the song pass: reuse a pinned song's saved lyrics when
+// $DAILIES_SONG_FILE points at an existing song (+ its .json), else plan fresh.
+// Pinning lets an A/B reuse the SAME song + lyrics and vary only the re-timing
+// (and avoids regenerating while iterating).
+async function resolveSongScript(
+  ctx: CinematicContext,
+  groups: number[][]
+): Promise<SongScript | Skip> {
+  const { echo, log, narratableSteps, notes, options, progress } = ctx;
+  const pinnedSong = process.env.DAILIES_SONG_FILE?.trim() ?? "";
+  const songCache = pinnedSong ? `${pinnedSong}.json` : "";
+  if (pinnedSong && existsSync(pinnedSong) && existsSync(songCache)) {
+    const saved = JSON.parse(await readFile(songCache, "utf8")) as {
+      direction: ReturnType<typeof resolveDirection>;
+      lyrics: Lyrics;
+      lrcText?: string;
+    };
+    const repoDir = options.repoDir ?? process.cwd();
+    notes.push(`reusing pinned song (${pinnedSong})`);
+    return {
+      base: await resolveBase(repoDir),
+      direction: saved.direction,
+      lrcText: saved.lrcText,
+      lyrics: saved.lyrics,
+      pinnedSong,
+      repoDir,
+      reusing: true,
+      songCache,
+    };
+  }
+  // Size the lyric word-budget to the re-timed body length (one line per GROUP,
+  // ~GROUP_MIN_SEC each), not the (often tiny) condensed input.
+  progress("writing the lyrics…");
+  const planned = await planSong({
+    options,
+    narratableSteps,
+    groups,
+    videoSeconds: Math.max(8, groups.length * GROUP_MIN_SEC),
+    log,
+    echo,
+  });
+  if ("error" in planned) {
+    return { skip: `song lyrics generation failed: ${planned.error}` };
+  }
+  return {
+    base: planned.base,
+    direction: planned.direction,
+    lyrics: planned.lyrics,
+    pinnedSong,
+    repoDir: planned.repoDir,
+    reusing: false,
+    songCache,
+  };
+}
+
+// The song audio to score the video with: the pinned file when reusing, else a
+// fresh generation (persisted alongside its lyrics/LRC when pinning, so the next
+// run can replay it). No audio means song mode produced nothing, so we skip and
+// keep the plain condensed cut rather than ship a silent "song" video.
+async function resolveSongAudio(args: {
+  ctx: CinematicContext;
+  script: SongScript;
+  songMusic: MusicProvider;
+  lyricBlock: string;
+  lineCount: number;
+}): Promise<{ path: string; lrcText?: string } | Skip> {
+  const { ctx, script, songMusic, lyricBlock, lineCount } = args;
+  if (script.reusing && script.pinnedSong) {
+    return { path: script.pinnedSong, lrcText: script.lrcText };
+  }
+  ctx.progress("composing the song…");
+  const generated = await generateRawSong({
+    provider: songMusic,
+    directionText: script.direction.theme,
+    lyrics: lyricBlock,
+    // Size the song to the LYRIC LINES (the sung content), not the step count.
+    targetSec: songTargetSec(lineCount),
+    outPath: `${ctx.videoPath}.rawsong.wav`,
+    temps: ctx.temps,
+    notes: ctx.notes,
+    log: ctx.log,
+  });
+  if (!generated) {
+    return { skip: "song audio could not be generated" };
+  }
+  if (!script.pinnedSong) {
+    return generated;
+  }
+  await copyFile(generated.path, script.pinnedSong);
+  await writeFile(
+    script.songCache,
+    JSON.stringify({
+      direction: script.direction,
+      lyrics: script.lyrics,
+      lrcText: generated.lrcText,
+    })
+  );
+  return { path: script.pinnedSong, lrcText: generated.lrcText };
+}
+
+// The song-mode caption cues on the FINAL timeline: the vocal-aligned cues when we
+// matched some (they're song-relative, and the song is delayed past the title card,
+// so shift them by the same offset), otherwise step-timed — e.g. whisper found no
+// usable lyrics in an instrumental-leaning song. (The step-timed fallback already
+// uses stepTimes, which include the offset.) The body is probed only on that
+// fallback, which is the only branch that needs the timeline's end.
+async function songCaptionCues(args: {
+  alignedCues: { start: number; end: number; text: string }[];
+  ordered: GroupedLyricLine[];
+  stepTimes: number[];
+  titleOffsetSec: number;
+  ffmpeg: string;
+  finalBody: string;
+}): Promise<{ start: number; end: number; text: string }[]> {
+  const { alignedCues, ordered, stepTimes, titleOffsetSec, ffmpeg, finalBody } =
+    args;
+  if (alignedCues.length > 0) {
+    return alignedCues.map((c) => ({
+      start: c.start + titleOffsetSec,
+      end: c.end + titleOffsetSec,
+      text: c.text,
+    }));
+  }
+  return layoutSongCues(
+    ordered.map((x) => ({ start: stepTimes[x.firstStep] ?? 0, text: x.text })),
+    (await audioDurationSec(ffmpeg, finalBody)) ?? 0
+  );
+}
+
+// Song mode: instead of per-step spoken narration, the LLM writes one short themed
+// lyric line per step-GROUP and a singing music model (ACE-Step, with LM planning
+// on for adherence) performs them as the whole soundtrack. We find where each line
+// is actually sung (the model's LRC timestamps floored by whisper word-onsets, else
+// word/segment alignment), burn captions at those times, and onset-anchor the body
+// so each group's footage is on screen while its line plays.
+async function runSongPass(ctx: CinematicContext): Promise<CinematicResult> {
+  const {
+    echo,
+    ffmpeg,
+    input,
+    log,
+    narratableSteps,
+    notes,
+    options,
+    progress,
+    providers,
+    singingMusic,
+    temps,
+    videoPath,
+  } = ctx;
+  if (!singingMusic) {
+    return notApplied(
+      "song mode needs a lyrics-capable music model — start the ACE-Step server (set DAILIES_ACESTEP_URL for a non-default port) or set GEMINI_API_KEY"
+    );
+  }
+
+  // Group short consecutive steps so one sung line spans >= GROUP_MIN_SEC — fewer,
+  // longer verses instead of a frantic line per tiny step. Grouping is
+  // deterministic for a recording, so a pinned-song reuse maps back the same way.
+  const groups = groupStepsForLyrics(
+    stepFootageSec(narratableSteps),
+    GROUP_MIN_SEC
+  );
+
+  const script = await resolveSongScript(ctx, groups);
+  if ("skip" in script) {
+    return notApplied(script.skip);
+  }
+  const { direction, lyrics } = script;
+  const { lineByGroup, ordered } = orderGroupLyrics(groups, lyrics.lines);
+  const orderedTexts = ordered.map((x) => x.text);
+  // The lyric block the model sings is these group lines in order (a [verse] tag
+  // helps the model).
+  const lyricBlock = `[verse]\n${orderedTexts.join("\n")}`;
+
+  const meta: CinematicMeta = {
+    direction: direction.label,
+    voice: "",
+    rate: 0,
+    song: true,
+    music:
+      (await singingMusic.credit?.(direction.theme).catch(() => undefined)) ??
+      singingMusic.id,
+  };
+  log.info(meta, "cinematic: song parameters");
+
+  const audio = await resolveSongAudio({
+    ctx,
+    script,
+    songMusic: singingMusic,
+    lyricBlock,
+    lineCount: orderedTexts.length,
+  });
+  if ("skip" in audio) {
+    return notApplied(audio.skip);
+  }
+
+  // Caption source + vocal region. Transcribe (best-effort), then pick the best
+  // timing source (LRC → word → segment) — see selectSongCaptions.
+  progress("listening for the vocals…");
+  const transcript = await transcribeSong({
+    audioPath: audio.path,
+    ffmpeg,
+    env: process.env,
+    echo,
+  });
+  // $DAILIES_ACESTEP_LRC=0 forces the transcribe path even when LRC is present.
+  const { region, clipCues, sourceLabel } = selectSongCaptions({
+    orderedTexts,
+    lrcText: audio.lrcText,
+    useLrc: process.env.DAILIES_ACESTEP_LRC?.trim() !== "0",
+    segments: transcript?.segments ?? [],
+    words: transcript?.words ?? [],
+    leadSec: TITLE_SEC + 0.5,
+    maxCueSec: MAX_CUE_SEC,
+  });
+
+  const timing = planSongTiming({
+    clipCues,
+    groups,
+    lineByGroup,
+    lineCount: orderedTexts.length,
+    maxCueSec: MAX_CUE_SEC,
+    region,
+    sourceLabel,
+    stepCount: Math.max(1, narratableSteps.length),
+  });
+  notes.push(timing.note);
+  let songClip = audio.path;
+  if (timing.trimStartSec > 0.05) {
+    songClip = `${videoPath}.song.wav`;
+    temps.push(songClip);
+    await trimAudio({
+      ffmpeg,
+      src: audio.path,
+      startSec: timing.trimStartSec,
+      outPath: songClip,
+      echo,
+    });
+  }
+
+  // Build the (silent) video around the song: re-time, title, credits. Same
+  // local-gradient default as the narration path.
+  providers.titleBackground ??= createLocalTitleBackground(
+    ffmpeg,
+    direction.category
+  );
+  const assembled = await assembleSongVideo({
+    ffmpeg,
+    videoPath: input,
+    narratableSteps,
+    holdDurSec: timing.holdDurSec,
+    onsets: timing.onsets,
+    bodyEnd: timing.bodyEnd,
+    title: lyrics.title,
+    category: direction.category,
+    directionText: direction.theme,
+    providers: {
+      music: singingMusic,
+      titleBackground: providers.titleBackground,
+      notes: [],
+    },
+    hasDrawtext: ctx.hasDrawtext,
+    repoDir: script.repoDir,
+    base: script.base,
+    temps,
+    notes,
+    log,
+    progress,
+  });
+  if (!assembled) {
+    return notApplied("could not probe the video to build the song cut");
+  }
+  const { finalBody, geometry, stepTimes, titleOffsetSec } = assembled;
+
+  // Captions. The sibling .srt is ALWAYS written beside the video (a deliverable
+  // for editing / soft-sub players) — this is the documented contract.
+  // --no-captions only skips BURNING the captions into the pixels, not the .srt.
+  // We also BURN them (when this ffmpeg can) so they're visible in any player,
+  // since a sibling .srt isn't loaded by QuickTime or the report viewer.
+  const cues = await songCaptionCues({
+    alignedCues: timing.alignedCues,
+    ordered,
+    stepTimes,
+    titleOffsetSec,
+    ffmpeg,
+    finalBody,
+  });
+  const srtPath = srtPathFor(videoPath);
+  const wroteSrt = cues.length > 0;
+  if (wroteSrt) {
+    await writeCaptionSrt({ videoPath, cues, geometry, temps });
+  } else {
+    // Nothing to caption — drop any stale .srt from a prior run.
+    await rm(srtPath, { force: true });
+  }
+  const burnCaptions =
+    wroteSrt &&
+    resolveBurnCaptions({
+      want: options.captions !== false,
+      hasSubtitles: ctx.hasSubtitles,
+      ffmpeg,
+      notes,
+      log,
+    });
+
+  // The full lyrics sidecar (one line per group, in order).
+  const lyricsPath = lyricsPathFor(videoPath);
+  temps.push(lyricsPath);
+  await writeFile(
+    lyricsPath,
+    `${lyrics.title}\n\n${orderedTexts.join("\n")}\n`
+  );
+
+  // Mix the song under the video and burn the captions. The mix's -t cap trims the
+  // long song down to the video length.
+  progress(
+    burnCaptions ? "mixing the song and burning captions…" : "mixing the song…"
+  );
+  const failed = await finalizeCinematic({
+    ffmpeg,
+    videoPath,
+    finalBody,
+    clips: [],
+    offsetsSec: [],
+    // Start the song after the title card, not under it.
+    music: [{ path: songClip, delaySec: titleOffsetSec, volume: 0.9 }],
+    srtPath,
+    burnCaptions,
+    deliverables: [srtPath, lyricsPath],
+    temps,
+    echo,
+  });
+  if (failed) {
+    return notApplied(failed);
+  }
+  return { applied: true, titleOffsetSec, stepTimes, notes, meta };
+}
+
 // ---------------------------------------------------------------------------
 // Entry point.
 // ---------------------------------------------------------------------------
 
 // Overwrites `videoPath` IN PLACE with the cinematic cut (title card prepended,
-// narration mixed in, captions optionally burned). Always writes a sibling
-// `.srt`. Never throws: any failure leaves the original video untouched and
-// returns { applied:false, titleOffsetSec:0, reason }.
-// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: the cinematic pipeline's entry point — every stage (title card, narration, music, captions) is independently optional and degrades instead of throwing, so the per-stage fallbacks land here. At a cognitive complexity of 85 this is the most complex function in the repo and the clearest refactor target.
+// narration or a sung song mixed in, captions optionally burned, credits rolled).
+// Always writes a sibling `.srt`. Never throws: any failure leaves the original
+// video untouched and returns { applied:false, titleOffsetSec:0, reason }.
+//
+// The pipeline is a sequence of stages, every one of them optional and degrading
+// instead of throwing:
+//
+//   prepareCinematic  preconditions + media providers → context, or a skip reason
+//   runNarrationPass  plan → voice → re-time → title/credits → mix
+//   runSongPass       lyrics → sing → align → onset-anchored re-time → mix
+//
+// The `temps` array and the try/catch/finally live HERE so a partial failure
+// still cleans up every sibling temp: each stage appends to that same array by
+// reference, and every thrown error lands in the one catch as a skip reason.
 export async function cinematicProcess(
   videoPath: string,
   steps: CinematicStep[],
   options: CinematicOptions
 ): Promise<CinematicResult> {
-  const { ffmpegPath, log } = options;
   // Temps are all siblings of videoPath; the finally removes them even on a
   // partial failure (mirrors condense.ts).
   const temps: string[] = [];
-
   try {
-    // 1. Preconditions.
-    const narratableSteps = steps.filter((step) =>
-      Number.isFinite(step.videoTime)
-    );
-    if (narratableSteps.length === 0) {
-      return notApplied("no steps with a known video position");
+    const ctx = await prepareCinematic({ videoPath, steps, options, temps });
+    if ("skip" in ctx) {
+      return notApplied(ctx.skip);
     }
-    await access(videoPath);
-    // Preserve the pre-cinematic (condensed) cut so this pass can be re-run with
-    // a different prompt/theme without re-recording. First run: copy the
-    // condensed videoPath to the sidecar. Re-run: the sidecar already exists, so
-    // read FROM it — never stacking a title card / captions on a prior cinematic
-    // cut. The output still overwrites videoPath; the sidecar stays pristine.
-    const preserved = precinematicVideoPath(videoPath);
-    let input = videoPath;
-    try {
-      await access(preserved);
-      input = preserved;
-    } catch {
-      await copyFile(videoPath, preserved);
-    }
-    if (!(await isOnPath("claude", ["--version"]))) {
-      return notApplied("`claude` CLI not found on PATH");
-    }
-    // Narration mixing is the irreducible core; the title card and burned
-    // captions degrade gracefully when this build lacks their filters.
-    const filters = await availableFilters(ffmpegPath);
-    if (!(filters.has("adelay") && filters.has("amix"))) {
-      return notApplied("ffmpeg lacks the adelay/amix filters for narration");
-    }
-    const hasDrawtext = filters.has("drawtext");
-    const hasSubtitles = filters.has("subtitles");
-    const notes: string[] = [];
-    const progress = options.onProgress ?? (() => undefined);
-    // Echo each generation command (say/ffmpeg/claude, and a redacted curl for
-    // HTTP providers) so a run is easy to reproduce and tweak — the user can copy
-    // a line, change the voice/model, and re-run it by hand. `progress` already
-    // matches the Echo shape, so commands ride the same stderr channel.
-    const echo: Echo = progress;
-
-    // Media providers, preferred local-first: oMLX (on-machine MLX models) wins
-    // per capability, then Gemini (if a key is set), then the local say/drawtext
-    // fallbacks. Each is best-effort — a failure degrades to the next. oMLX is
-    // probed (it lists its loaded models) only when it's configured.
-    const omlx = await resolveOmlxProviders({ env: process.env, log, echo });
-    const acestep = await resolveAceStepMusic({ env: process.env, log, echo });
-    const gemini = resolveMediaProviders({ env: process.env, log });
-    // Title-background sources: a configured local image server ($DAILIES_IMAGE_URL)
-    // wins (explicit user config), then Gemini (Nano Banana), then Wikimedia
-    // Commons real imagery; the always-available local gradient is added later
-    // (once the theme is known) as the final fallback.
-    const localImage = resolveLocalImage({ env: process.env, log, echo });
-    // Stock/free fallbacks: archive.org music and Wikimedia images turn ON
-    // automatically when no corresponding AI MODEL is configured, so a plain
-    // `--cinematic` run still gets a score + real title imagery with no key/GPU.
-    // An explicit $DAILIES_ARCHIVE_MUSIC/$DAILIES_WIKIMEDIA_IMAGES=1 forces them on
-    // (and, for music, takes precedence over the models); =0 forces them off.
-    // Both push per-track attribution into `notes` at fetch time by reference.
-    const archive = resolveArchiveMusic({
-      env: process.env,
-      ffmpeg: ffmpegPath,
-      log,
-      notes,
-      echo,
-      allowFallback: !(acestep.music || gemini.music),
-    });
-    const wikimedia = resolveWikimediaImage({
-      env: process.env,
-      notes,
-      log,
-      echo,
-      allowFallback: !(localImage.titleBackground || gemini.titleBackground),
-    });
-    const providers: MediaProviders = {
-      tts: omlx.tts ?? gemini.tts,
-      // Prefer stock (archive.org) when opted in, then generated (ACE-Step),
-      // then Gemini Lyria.
-      music: archive.music ?? acestep.music ?? gemini.music,
-      titleBackground:
-        localImage.titleBackground ??
-        gemini.titleBackground ??
-        wikimedia.titleBackground,
-      notes: [],
-    };
-    notes.push(...omlx.notes, ...acestep.notes);
-    // Surface Gemini's notes only when Gemini is actually active, or when there's
-    // genuinely no local alternative — otherwise its "no key → using say … and no
-    // music" note contradicts the oMLX/ACE-Step/archive providers above.
-    if (gemini.tts) {
-      notes.push(...gemini.notes);
-    } else if (!(omlx.tts || providers.music)) {
-      notes.push(...gemini.notes);
-    }
-
-    // Song mode: instead of per-step spoken narration, the LLM writes one short
-    // themed lyric line per step-GROUP and a singing music model (ACE-Step, with LM
-    // planning on for adherence) performs them as the whole soundtrack. We find where
-    // each line is actually sung (the model's LRC timestamps floored by whisper
-    // word-onsets, else word/segment alignment), burn captions at those times, and
-    // onset-anchor the body so each group's footage is on screen while its line plays.
-    if (options.song) {
-      // Pick a music provider that actually SINGS supplied lyrics (ACE-Step /
-      // Lyria), ignoring stock music (archive.org) even if it won the normal
-      // chain — it can't sing custom words.
-      const songMusic = [acestep.music, gemini.music].find(
-        (m) => m?.singsLyrics
-      );
-      if (!songMusic) {
-        return notApplied(
-          "song mode needs a lyrics-capable music model — start the ACE-Step server (set DAILIES_ACESTEP_URL for a non-default port) or set GEMINI_API_KEY"
-        );
-      }
-      const songProviders: MediaProviders = {
-        music: songMusic,
-        // Same background chain as the narration path (local image → Gemini →
-        // Wikimedia; local gradient added later as the fallback).
-        titleBackground:
-          localImage.titleBackground ??
-          gemini.titleBackground ??
-          wikimedia.titleBackground,
-        notes: [],
-      };
-
-      // Group short consecutive steps so one sung line spans >= GROUP_MIN_SEC —
-      // fewer, longer verses instead of a frantic line per tiny step. Grouping
-      // is deterministic for a recording, so a pinned-song reuse maps back the
-      // same way.
-      const groups = groupStepsForLyrics(
-        stepFootageSec(narratableSteps),
-        GROUP_MIN_SEC
-      );
-
-      // 0. Lyrics + direction: reuse a pinned song's saved lyrics when
-      // $DAILIES_SONG_FILE points at an existing song (+ its .json), else plan
-      // fresh. Pinning lets an A/B reuse the SAME song + lyrics and vary only the
-      // re-timing (and avoids regenerating while iterating).
-      const pinnedSong = process.env.DAILIES_SONG_FILE?.trim();
-      const songCache = pinnedSong ? `${pinnedSong}.json` : "";
-      let direction: ReturnType<typeof resolveDirection>;
-      let lyrics: Lyrics;
-      let repoDir: string;
-      let base: string;
-      const reusing = Boolean(
-        pinnedSong && existsSync(pinnedSong) && existsSync(songCache)
-      );
-      let lrcText: string | undefined;
-      if (reusing) {
-        const saved = JSON.parse(await readFile(songCache, "utf8")) as {
-          direction: ReturnType<typeof resolveDirection>;
-          lyrics: Lyrics;
-          lrcText?: string;
-        };
-        direction = saved.direction;
-        lyrics = saved.lyrics;
-        lrcText = saved.lrcText;
-        repoDir = options.repoDir ?? process.cwd();
-        base = await resolveBase(repoDir);
-        notes.push(`reusing pinned song (${pinnedSong})`);
-      } else {
-        // Size the lyric word-budget to the re-timed body length (one line per
-        // GROUP, ~GROUP_MIN_SEC each), not the (often tiny) condensed input.
-        const videoSeconds = Math.max(8, groups.length * GROUP_MIN_SEC);
-        progress("writing the lyrics…");
-        const planned = await planSong({
-          options,
-          narratableSteps,
-          groups,
-          videoSeconds,
-          log,
-          echo,
-        });
-        if ("error" in planned) {
-          return notApplied(`song lyrics generation failed: ${planned.error}`);
-        }
-        direction = planned.direction;
-        lyrics = planned.lyrics;
-        repoDir = planned.repoDir;
-        base = planned.base;
-      }
-
-      // One entry per GROUP that got a line (the lyric index is the group
-      // ordinal); `stepIdxs` are the steps it spans and `firstStep` anchors its
-      // caption on the timeline. The lyric block the model sings is these group
-      // lines in order (a [verse] tag helps the model).
-      const byGroup = new Map(lyrics.lines.map((l) => [l.index, l.text]));
-      const ordered = groups
-        .map((stepIdxs, g) => ({
-          firstStep: stepIdxs[0] ?? 0,
-          stepIdxs,
-          text: byGroup.get(g),
-        }))
-        .filter(
-          (x): x is { firstStep: number; stepIdxs: number[]; text: string } =>
-            Boolean(x.text)
-        );
-      const orderedTexts = ordered.map((x) => x.text);
-      const lyricBlock = `[verse]\n${orderedTexts.join("\n")}`;
-
-      const musicLabel =
-        (await songMusic.credit?.(direction.theme).catch(() => undefined)) ??
-        songMusic.id;
-      const meta: CinematicMeta = {
-        direction: direction.label,
-        voice: "",
-        rate: 0,
-        song: true,
-        music: musicLabel,
-      };
-      log.info(meta, "cinematic: song parameters");
-
-      // 1. The raw song. Reuse the pinned file, or generate (duration honored; the
-      // model may also return its own LRC lyric timestamps) and persist when pinning.
-      let rawSong: string;
-      if (reusing && pinnedSong) {
-        rawSong = pinnedSong;
-      } else {
-        progress("composing the song…");
-        const generated = await generateRawSong({
-          provider: songMusic,
-          directionText: direction.theme,
-          lyrics: lyricBlock,
-          // Size the song to the LYRIC LINES (the sung content), not the step count.
-          targetSec: songTargetSec(orderedTexts.length),
-          outPath: `${videoPath}.rawsong.wav`,
-          temps,
-          notes,
-          log,
-        });
-        if (!generated) {
-          // No song audio means song mode produced nothing — skip and keep the
-          // plain condensed cut rather than ship a silent "song" video.
-          return notApplied("song audio could not be generated");
-        }
-        rawSong = generated.path;
-        lrcText = generated.lrcText;
-        if (pinnedSong) {
-          await copyFile(generated.path, pinnedSong);
-          await writeFile(
-            songCache,
-            JSON.stringify({ direction, lyrics, lrcText })
-          );
-          rawSong = pinnedSong;
-        }
-      }
-
-      // 2. Caption source + vocal region. Transcribe (best-effort), then pick the
-      // best timing source (LRC → word → segment) — see selectSongCaptions.
-      progress("listening for the vocals…");
-      const transcript = await transcribeSong({
-        audioPath: rawSong,
-        ffmpeg: ffmpegPath,
-        env: process.env,
-        echo,
-      });
-      // $DAILIES_ACESTEP_LRC=0 forces the transcribe path even when LRC is present.
-      const { region, clipCues, sourceLabel } = selectSongCaptions({
-        orderedTexts,
-        lrcText,
-        useLrc: process.env.DAILIES_ACESTEP_LRC?.trim() !== "0",
-        segments: transcript?.segments ?? [],
-        words: transcript?.words ?? [],
-        leadSec: TITLE_SEC + 0.5,
-        maxCueSec: MAX_CUE_SEC,
-      });
-
-      // 3. Per-step holds + rebased cues.
-      const stepCount = Math.max(1, narratableSteps.length);
-      let songClip = rawSong;
-      let alignedCues: { start: number; end: number; text: string }[] | null =
-        null;
-      let holdDurSec: number[];
-      let songOnsets: number[] | undefined;
-      let songBodyEnd: number | undefined;
-      if (region) {
-        const trimStart = region.start;
-        if (trimStart > 0.05) {
-          songClip = `${videoPath}.song.wav`;
-          temps.push(songClip);
-          await trimAudio({
-            ffmpeg: ffmpegPath,
-            src: rawSong,
-            startSec: trimStart,
-            outPath: songClip,
-            echo,
-          });
-        }
-        // Rebase to the trimmed song by a pure time shift (it plays at delay 0, so
-        // clip time maps to the final-video time before the title shift), and cap
-        // each cue at MAX_CUE_SEC. The cap matters most for LRC/segment cues, whose
-        // end is the NEXT line's start: when the model leaves a long instrumental
-        // gap between sung lines, an uncapped cue would linger ~20s on screen — cap
-        // it so the line shows, then clears (the word path is already capped).
-        alignedCues = clipCues
-          .map((c) => {
-            const start = c.start - trimStart;
-            const end = Math.min(c.end - trimStart, start + MAX_CUE_SEC);
-            return { start, end, text: c.text };
-          })
-          .filter((c) => c.end > 0)
-          .map((c) => ({
-            start: Math.max(0, c.start),
-            end: c.end,
-            text: c.text,
-          }));
-        const bodyLen = Math.max(6, region.end - region.start);
-        holdDurSec = Array.from(
-          { length: stepCount },
-          () => bodyLen / stepCount
-        );
-        // Onset-anchored step-sync: map each group to when its line is actually
-        // sung (walk groups against the aligned cues — a subsequence of the group
-        // lines, in order), so the re-time can hold each step's footage on screen
-        // exactly while its line plays. bodyEnd trims to just past the last sung
-        // line, dropping the instrumental outro.
-        if (alignedCues.length > 0) {
-          const groupSungStart: (number | null)[] = groups.map(() => null);
-          let ci = 0;
-          for (let g = 0; g < groups.length; g++) {
-            const text = byGroup.get(g);
-            if (text && alignedCues[ci]?.text === text) {
-              groupSungStart[g] = alignedCues[ci]?.start ?? null;
-              ci++;
-            }
-          }
-          songBodyEnd = Math.max(...alignedCues.map((c) => c.end)) + 2;
-          songOnsets = songStepOnsets(groups, groupSungStart, songBodyEnd);
-        }
-        notes.push(
-          `captions aligned to ${sourceLabel} (${alignedCues.length}/${orderedTexts.length} lines sung)`
-        );
-      } else {
-        // No transcription: keep the raw song (capped by the mix), and re-time so
-        // each GROUP is held long enough to sing its line (at least the group
-        // minimum), split across the group's steps. Captions land at group
-        // starts. Steps in a group with no line keep a small default.
-        holdDurSec = Array.from({ length: stepCount }, () => 3.5);
-        for (const grp of ordered) {
-          const groupHold = Math.max(GROUP_MIN_SEC, songHoldSec(grp.text));
-          const per = groupHold / grp.stepIdxs.length;
-          for (const i of grp.stepIdxs) {
-            holdDurSec[i] = per;
-          }
-        }
-        notes.push(
-          "vocal timing not detected (no whisper model) — captions placed at step times; set $DAILIES_WHISPER_MODEL to align them to the singing"
-        );
-      }
-
-      // 4. Build the (silent) video around the song: re-time, title, credits.
-      // Same local-gradient default as the narration path (see above).
-      songProviders.titleBackground ??= createLocalTitleBackground(
-        ffmpegPath,
-        direction.category
-      );
-      const assembled = await assembleSongVideo({
-        ffmpeg: ffmpegPath,
-        videoPath: input,
-        narratableSteps,
-        holdDurSec,
-        onsets: songOnsets,
-        bodyEnd: songBodyEnd,
-        title: lyrics.title,
-        category: direction.category,
-        directionText: direction.theme,
-        providers: songProviders,
-        hasDrawtext,
-        repoDir,
-        base,
-        temps,
-        notes,
-        log,
-        progress,
-      });
-      if (!assembled) {
-        return notApplied("could not probe the video to build the song cut");
-      }
-      const { finalBody, stepTimes, titleOffsetSec } = assembled;
-
-      // 5. Captions: the vocal-aligned cues when we have them, else step-timed.
-      // The sibling .srt is ALWAYS written beside the video (a deliverable for
-      // editing / soft-sub players) — this is the documented contract.
-      // --no-captions only skips BURNING the captions into the pixels, not the
-      // .srt. We also BURN them (when this ffmpeg can) so they're visible in any
-      // player, since a sibling .srt isn't loaded by QuickTime or the report
-      // viewer.
-      const wantCaptions = options.captions !== false;
-      const srtPath = srtPathFor(videoPath);
-      let wroteSrt = false;
-      let burnCaptions = false;
-      const srtGeometry = await probeVideo(ffmpegPath, input);
-      // Vocal-aligned cues when we actually matched some; otherwise step-timed
-      // (e.g. whisper found no usable lyrics in an instrumental-leaning song).
-      const cues =
-        alignedCues && alignedCues.length > 0
-          ? // Vocal-aligned cues are song-relative (0-based); the song is delayed
-            // past the title card below, so shift them by the same offset. (The
-            // step-timed fallback already uses stepTimes, which include it.)
-            alignedCues.map((c) => ({
-              start: c.start + titleOffsetSec,
-              end: c.end + titleOffsetSec,
-              text: c.text,
-            }))
-          : layoutSongCues(
-              ordered.map((x) => ({
-                start: stepTimes[x.firstStep] ?? 0,
-                text: x.text,
-              })),
-              (await audioDurationSec(ffmpegPath, finalBody)) ?? 0
-            );
-      if (cues.length > 0) {
-        temps.push(srtPath);
-        await writeFile(
-          srtPath,
-          buildSrt(cues, captionLineMax(srtGeometry?.width))
-        );
-        wroteSrt = true;
-        burnCaptions = wantCaptions && hasSubtitles;
-        if (wantCaptions && !hasSubtitles) {
-          const note =
-            "captions not burned — this ffmpeg has no `subtitles` filter; wrote a soft-sub .srt instead";
-          notes.push(note);
-          log.warn({ ffmpeg: ffmpegPath }, `cinematic: ${note}`);
-        }
-      } else {
-        // Nothing to caption — drop any stale .srt from a prior run.
-        await rm(srtPath, { force: true });
-      }
-
-      // 6. Write the full lyrics sidecar (one line per step, in order).
-      const lyricsPath = lyricsPathFor(videoPath);
-      temps.push(lyricsPath);
-      await writeFile(
-        lyricsPath,
-        `${lyrics.title}\n\n${orderedTexts.join("\n")}\n`
-      );
-
-      // 7. Mix the song under the video and burn the captions. The mix's -t cap
-      // trims the long song down to the video length.
-      progress(
-        burnCaptions
-          ? "mixing the song and burning captions…"
-          : "mixing the song…"
-      );
-      const finalPath = `${videoPath}.cinematic.webm`;
-      temps.push(finalPath);
-      await mixAudioAndCaptions({
-        ffmpeg: ffmpegPath,
-        videoPath: finalBody,
-        clips: [],
-        offsetsSec: [],
-        // Start the song after the title card, not under it.
-        music: [{ path: songClip, delaySec: titleOffsetSec, volume: 0.9 }],
-        srtPath: burnCaptions ? srtPath : "",
-        burnCaptions,
-        outPath: finalPath,
-        echo,
-      });
-      const producedSong = await stat(finalPath);
-      if (producedSong.size === 0) {
-        return notApplied("encoder produced an empty file");
-      }
-      await rename(finalPath, videoPath);
-      // The final video is the original path now; the .srt and lyrics sidecar are
-      // deliverables — drop them from the cleanup list.
-      temps.splice(temps.indexOf(finalPath), 1);
-      if (wroteSrt) {
-        temps.splice(temps.indexOf(srtPath), 1);
-      }
-      temps.splice(temps.indexOf(lyricsPath), 1);
-      return { applied: true, titleOffsetSec, stepTimes, notes, meta };
-    }
-
-    // Voicing: a TTS provider, or macOS `say`. With a provider this runs on any
-    // platform; without one it needs macOS.
-    const speech = await resolveSpeech(providers, notes, echo);
-    if (!speech) {
-      return notApplied(
-        "cinematic narration needs macOS `say` or a TTS provider (set GEMINI_API_KEY)"
-      );
-    }
-
-    // 2 + 3. Resolve the creative direction (+ change scale) and get narration.
-    progress("writing narration…");
-    const planned = await planNarration({
-      options,
-      narratableSteps,
-      log,
-      echo,
-    });
-    if ("error" in planned) {
-      return notApplied(`narration generation failed: ${planned.error}`);
-    }
-    const { direction, narration, repoDir, base } = planned;
-
-    // Default the title-card background to a local themed gradient when no
-    // generated-image provider (Gemini) is configured — network-free and always
-    // available, so a plain install still gets an intentional card. The palette
-    // follows the resolved theme, so this waits until `direction` is known.
-    providers.titleBackground ??= createLocalTitleBackground(
-      ffmpegPath,
-      direction.category
-    );
-
-    // 4. Voice + TTS: one clip per step that got narration text. The provider
-    // voices it when available (else macOS `say`). Surface the chosen
-    // direction/voice/rate so a delightful run can be reproduced (pin via
-    // --prompt and $DAILIES_SAY_VOICE / $DAILIES_SAY_RATE).
-    const meta: CinematicMeta = {
-      direction: direction.label,
-      voice: speech.label,
-      rate: speech.rate,
-    };
-    log.info(meta, "cinematic: narration parameters");
-    progress(`voicing ${narration.steps.length} lines (${meta.voice})…`);
-    const clips = await synthesizeClips({
-      ffmpeg: ffmpegPath,
-      say: speech.say,
-      tts: providers.tts,
-      steps: narratableSteps,
-      byIndex: new Map(narration.steps.map((s) => [s.index, s.narration])),
-      videoPath,
-      temps,
-      notes,
-      log,
-      echo,
-    });
-    if (clips.length === 0) {
-      return notApplied("no narration audio could be synthesized");
-    }
-
-    // 5–6. Re-time the video, prepend the title card (optionally over a generated
-    // background), append the credits, and generate any music bed — producing the
-    // final body, each step's/clip's position, and the music tracks for the mix.
-    const assembled = await assembleVideo({
-      ffmpeg: ffmpegPath,
-      videoPath: input,
-      narratableSteps,
-      clips,
-      title: narration.title,
-      category: direction.category,
-      // Theme only — the narration style ("…as natural prose narration") must
-      // not reach the music/title-art providers (it made the score spoken-word).
-      directionText: direction.theme,
-      providers,
-      voiceLabel: speech.label,
-      hasDrawtext,
-      repoDir,
-      base,
-      temps,
-      notes,
-      log,
-      progress,
-    });
-    if (!assembled) {
-      return notApplied("could not probe the video to re-time it");
-    }
-    const { finalBody, stepTimes, clipOffsetsSec, titleOffsetSec, music } =
-      assembled;
-
-    // 7. Write the SRT (needed on disk before the burn pass reads it). Track it
-    // as a temp so a later failure cleans it up — a stale .srt with cinematic
-    // timings beside an un-processed video would mis-caption every soft-sub
-    // player. It's promoted to a deliverable only after the rename succeeds.
-    const srtPath = srtPathFor(videoPath);
-    temps.push(srtPath);
-    const cues = clips.map((clip, k) => {
-      const start = clipOffsetsSec[k] ?? 0;
-      return { start, end: start + clip.durationSec, text: clip.narration };
-    });
-    // Size each caption line to the actual video width so it holds to two lines
-    // on a narrow custom --viewport, not just the 1280px default.
-    const srtGeometry = await probeVideo(ffmpegPath, input);
-    await writeFile(
-      srtPath,
-      buildSrt(cues, captionLineMax(srtGeometry?.width))
-    );
-
-    // Burn captions only when asked AND supported; otherwise the .srt sidecar is
-    // the caption track (soft subs).
-    const burnCaptions = options.captions && hasSubtitles;
-    if (options.captions && !hasSubtitles) {
-      const note =
-        "captions not burned — this ffmpeg has no `subtitles` filter; wrote a soft-sub .srt instead";
-      notes.push(note);
-      log.warn({ ffmpeg: ffmpegPath }, `cinematic: ${note}`);
-    }
-
-    // 8. Mix narration onto the (re-timed, possibly title-prefixed) video; burn
-    // captions if supported.
-    progress(
-      burnCaptions ? "mixing audio and burning captions…" : "mixing audio…"
-    );
-    const finalPath = `${videoPath}.cinematic.webm`;
-    temps.push(finalPath);
-    await mixAudioAndCaptions({
-      ffmpeg: ffmpegPath,
-      videoPath: finalBody,
-      clips,
-      offsetsSec: clipOffsetsSec,
-      // The music is timed against the body; shift it past the title card so the
-      // score doesn't play over the opening title (clips/captions are already
-      // offset by titleOffsetSec).
-      music: shiftMusic(music, titleOffsetSec),
-      srtPath,
-      burnCaptions,
-      outPath: finalPath,
-      echo,
-    });
-
-    const produced = await stat(finalPath);
-    if (produced.size === 0) {
-      return notApplied("encoder produced an empty file");
-    }
-
-    // 9. Atomic in-place replace (like condense).
-    await rename(finalPath, videoPath);
-    // The final video is now the original path, and the .srt beside it is a
-    // deliverable — drop both from the cleanup list.
-    temps.splice(temps.indexOf(finalPath), 1);
-    temps.splice(temps.indexOf(srtPath), 1);
-    return { applied: true, titleOffsetSec, stepTimes, notes, meta };
+    return options.song ? await runSongPass(ctx) : await runNarrationPass(ctx);
   } catch (err) {
-    log.debug(
+    options.log.debug(
       { err, videoPath },
       "cinematic processing failed; keeping original"
     );

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { parseFilterNames } from "./ffmpeg.js";
+import { mapLimit, parseFilterNames } from "./ffmpeg.js";
 import {
   buildAudioMix,
   buildModelCredits,
@@ -10,12 +10,16 @@ import {
   groupStepsForLyrics,
   layoutSongCues,
   lyricsPathFor,
+  narrationJobs,
+  orderGroupLyrics,
   planRetime,
+  planSongTiming,
   precinematicVideoPath,
   songHoldSec,
   songTargetSec,
   stepFootageSec,
   titleStyle,
+  ttsConcurrency,
   voiceCredit,
   wrapTitle,
 } from "./narrate.js";
@@ -1033,5 +1037,338 @@ describe("planRetime — onset-anchored (song step-sync)", () => {
     expect(plan.footage).toEqual([3]); // 20s of footage clipped to the 3s window
     expect(plan.holds).toEqual([0]);
     expect(plan.starts).toEqual([2]);
+  });
+});
+
+describe("orderGroupLyrics", () => {
+  const groups = [[0, 1], [2], [3, 4, 5]];
+
+  it("maps each lyric line back onto its group's steps", () => {
+    const { lineByGroup, ordered } = orderGroupLyrics(groups, [
+      { index: 0, text: "the login screen waits" },
+      { index: 1, text: "a password typed in haste" },
+      { index: 2, text: "and the dashboard blooms" },
+    ]);
+    expect(ordered).toEqual([
+      { firstStep: 0, stepIdxs: [0, 1], text: "the login screen waits" },
+      { firstStep: 2, stepIdxs: [2], text: "a password typed in haste" },
+      { firstStep: 3, stepIdxs: [3, 4, 5], text: "and the dashboard blooms" },
+    ]);
+    expect(lineByGroup.get(1)).toBe("a password typed in haste");
+  });
+
+  it("drops groups the model left without a line, keeping the rest in group order", () => {
+    const { ordered } = orderGroupLyrics(groups, [
+      { index: 2, text: "only the last verse" },
+      { index: 0, text: "and the first" },
+    ]);
+    // Ordered by GROUP ordinal, not by the model's reply order.
+    expect(ordered.map((o) => o.text)).toEqual([
+      "and the first",
+      "only the last verse",
+    ]);
+    expect(ordered.map((o) => o.firstStep)).toEqual([0, 3]);
+  });
+
+  it("returns nothing for no lines", () => {
+    expect(orderGroupLyrics(groups, []).ordered).toEqual([]);
+  });
+});
+
+describe("planSongTiming — no vocal region (untranscribed)", () => {
+  const groups = [[0, 1], [2]];
+  const lineByGroup = new Map([
+    [0, "a short line"],
+    [1, "another short line"],
+  ]);
+
+  it("holds each group long enough to sing its line, split across its steps", () => {
+    const timing = planSongTiming({
+      clipCues: [],
+      groups,
+      lineByGroup,
+      lineCount: 2,
+      maxCueSec: 8,
+      region: null,
+      sourceLabel: "",
+      stepCount: 3,
+    });
+    expect(timing.alignedCues).toEqual([]);
+    expect(timing.trimStartSec).toBe(0);
+    expect(timing.onsets).toBeUndefined();
+    expect(timing.bodyEnd).toBeUndefined();
+    // songHoldSec("a short line") floors at 3.5, so the group minimum (7) wins
+    // and is split across that group's two steps; the one-step group gets 7.
+    expect(timing.holdDurSec).toEqual([3.5, 3.5, 7]);
+    expect(timing.note).toContain("vocal timing not detected");
+  });
+
+  it("leaves a step whose group got no line at the small default", () => {
+    const timing = planSongTiming({
+      clipCues: [],
+      groups: [[0], [1]],
+      lineByGroup: new Map([[1, "only the second group sings"]]),
+      lineCount: 1,
+      maxCueSec: 8,
+      region: null,
+      sourceLabel: "",
+      stepCount: 2,
+    });
+    expect(timing.holdDurSec[0]).toBe(3.5);
+    expect(timing.holdDurSec[1]).toBe(7);
+  });
+});
+
+describe("planSongTiming — vocal region", () => {
+  const groups = [[0], [1]];
+  const lineByGroup = new Map([
+    [0, "first line"],
+    [1, "second line"],
+  ]);
+
+  it("rebases cues to the trim, splits the body evenly, and onset-anchors", () => {
+    const timing = planSongTiming({
+      clipCues: [
+        { start: 10, end: 14, text: "first line" },
+        { start: 14, end: 18, text: "second line" },
+      ],
+      groups,
+      lineByGroup,
+      lineCount: 2,
+      maxCueSec: 8,
+      region: { start: 8, end: 20 },
+      sourceLabel: "the detected vocals",
+      stepCount: 2,
+    });
+    expect(timing.trimStartSec).toBe(8);
+    expect(timing.alignedCues).toEqual([
+      { start: 2, end: 6, text: "first line" },
+      { start: 6, end: 10, text: "second line" },
+    ]);
+    // bodyLen = 20 - 8 = 12, split across 2 steps.
+    expect(timing.holdDurSec).toEqual([6, 6]);
+    expect(timing.bodyEnd).toBe(12); // last cue end + 2
+    expect(timing.onsets).toEqual([2, 6]); // each step starts when its line is sung
+    expect(timing.note).toBe(
+      "captions aligned to the detected vocals (2/2 lines sung)"
+    );
+  });
+
+  it("caps a cue whose end runs past maxCueSec (a long instrumental gap)", () => {
+    const timing = planSongTiming({
+      clipCues: [{ start: 0, end: 25, text: "first line" }],
+      groups: [[0]],
+      lineByGroup: new Map([[0, "first line"]]),
+      lineCount: 1,
+      maxCueSec: 8,
+      region: { start: 0, end: 30 },
+      sourceLabel: "the model's own lyric timestamps",
+      stepCount: 1,
+    });
+    expect(timing.alignedCues).toEqual([
+      { start: 0, end: 8, text: "first line" },
+    ]);
+  });
+
+  it("floors a cue straddling the trim point and drops one entirely before it", () => {
+    const timing = planSongTiming({
+      clipCues: [
+        { start: 1, end: 3, text: "dropped" },
+        { start: 4, end: 9, text: "clamped" },
+      ],
+      groups: [[0]],
+      lineByGroup: new Map([[0, "clamped"]]),
+      lineCount: 2,
+      maxCueSec: 8,
+      region: { start: 5, end: 20 },
+      sourceLabel: "the detected vocals",
+      stepCount: 1,
+    });
+    // "dropped" ends before the trim (3 - 5 < 0); "clamped" starts at 4 - 5 = -1
+    // and is floored to 0.
+    expect(timing.alignedCues).toEqual([{ start: 0, end: 4, text: "clamped" }]);
+    expect(timing.note).toBe(
+      "captions aligned to the detected vocals (1/2 lines sung)"
+    );
+  });
+
+  it("skips the onset anchor when no cue survives the rebase", () => {
+    const timing = planSongTiming({
+      clipCues: [{ start: 1, end: 2, text: "first line" }],
+      groups,
+      lineByGroup,
+      lineCount: 2,
+      maxCueSec: 8,
+      region: { start: 10, end: 22 },
+      sourceLabel: "the detected vocals",
+      stepCount: 2,
+    });
+    expect(timing.alignedCues).toEqual([]);
+    expect(timing.onsets).toBeUndefined();
+    expect(timing.bodyEnd).toBeUndefined();
+    // The even split still stands, so the body stays long enough for the song.
+    expect(timing.holdDurSec).toEqual([6, 6]);
+  });
+
+  it("floors a tiny region so the body still clears the song intro", () => {
+    const timing = planSongTiming({
+      clipCues: [],
+      groups: [[0]],
+      lineByGroup,
+      lineCount: 1,
+      maxCueSec: 8,
+      region: { start: 0, end: 1 },
+      sourceLabel: "the detected vocals",
+      stepCount: 1,
+    });
+    expect(timing.holdDurSec).toEqual([6]); // Math.max(6, 1 - 0)
+  });
+});
+
+describe("mapLimit", () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 1));
+
+  it("returns results in INPUT order, not completion order", async () => {
+    const out = await mapLimit([30, 20, 10, 0], 4, async (ms, i) => {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return `${i}:${ms}`;
+    });
+    expect(out).toEqual(["0:30", "1:20", "2:10", "3:0"]);
+  });
+
+  it("never exceeds the concurrency limit", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const out = await mapLimit(
+      Array.from({ length: 12 }, (_, i) => i),
+      3,
+      async (n) => {
+        inFlight++;
+        peak = Math.max(peak, inFlight);
+        await tick();
+        inFlight--;
+        return n * 2;
+      }
+    );
+    expect(peak).toBe(3);
+    expect(out).toEqual([0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22]);
+  });
+
+  it("runs everything serially at a limit of 1", async () => {
+    const order: number[] = [];
+    await mapLimit([0, 1, 2], 1, async (n) => {
+      order.push(n);
+      await tick();
+      order.push(n);
+      return n;
+    });
+    // A serial pass never interleaves: each item's start/finish are adjacent.
+    expect(order).toEqual([0, 0, 1, 1, 2, 2]);
+  });
+
+  it("treats a zero or negative limit as one", async () => {
+    await expect(mapLimit([1, 2], 0, async (n) => n)).resolves.toEqual([1, 2]);
+    await expect(mapLimit([1, 2], -5, async (n) => n)).resolves.toEqual([1, 2]);
+  });
+
+  it("handles an empty list without running anything", async () => {
+    let calls = 0;
+    const out = await mapLimit([], 4, async () => {
+      calls++;
+      return 1;
+    });
+    expect(out).toEqual([]);
+    expect(calls).toBe(0);
+  });
+
+  it("rethrows the LOWEST-index failure and starts nothing more", async () => {
+    const started: number[] = [];
+    await expect(
+      mapLimit([0, 1, 2, 3, 4, 5, 6, 7], 2, async (n) => {
+        started.push(n);
+        await tick();
+        if (n === 1 || n === 0) {
+          throw new Error(`boom ${n}`);
+        }
+        return n;
+      })
+    ).rejects.toThrow("boom 0");
+    // Both in-flight items ran; nothing past them was scheduled.
+    expect(started).toEqual([0, 1]);
+  });
+
+  it("lets in-flight work settle before rejecting (no late rejections)", async () => {
+    let settled = 0;
+    await expect(
+      mapLimit([0, 1, 2, 3], 4, async (n) => {
+        await new Promise((resolve) => setTimeout(resolve, n * 4));
+        settled++;
+        if (n === 0) {
+          throw new Error("first failed");
+        }
+        return n;
+      })
+    ).rejects.toThrow("first failed");
+    expect(settled).toBe(4);
+  });
+});
+
+describe("ttsConcurrency", () => {
+  it("defaults to a modest bound, never above the machine's parallelism", () => {
+    const value = ttsConcurrency({});
+    expect(value).toBeGreaterThanOrEqual(1);
+    expect(value).toBeLessThanOrEqual(4);
+    expect(value).toBeLessThanOrEqual(os.availableParallelism());
+  });
+
+  it("honors $DAILIES_TTS_CONCURRENCY, including 1 for the old serial pass", () => {
+    expect(ttsConcurrency({ DAILIES_TTS_CONCURRENCY: "1" })).toBe(1);
+    expect(ttsConcurrency({ DAILIES_TTS_CONCURRENCY: "12" })).toBe(12);
+    expect(ttsConcurrency({ DAILIES_TTS_CONCURRENCY: "2.9" })).toBe(2);
+  });
+
+  it("ignores a junk or out-of-range override", () => {
+    const fallback = ttsConcurrency({});
+    expect(ttsConcurrency({ DAILIES_TTS_CONCURRENCY: "nope" })).toBe(fallback);
+    expect(ttsConcurrency({ DAILIES_TTS_CONCURRENCY: "0" })).toBe(fallback);
+    expect(ttsConcurrency({ DAILIES_TTS_CONCURRENCY: "-3" })).toBe(fallback);
+  });
+});
+
+describe("narrationJobs", () => {
+  const steps = [
+    { name: "a", durationMs: 1000, videoTime: 0 },
+    { name: "b", durationMs: 1000, videoTime: 1 },
+    { name: "c", durationMs: 1000, videoTime: 2 },
+  ];
+
+  it("keeps the enumerated step index as the clip key", () => {
+    const jobs = narrationJobs(
+      steps,
+      new Map([
+        [0, "first line"],
+        [2, "third line"],
+      ])
+    );
+    expect(jobs.map((j) => j.index)).toEqual([0, 2]);
+    expect(jobs.map((j) => j.text)).toEqual(["first line", "third line"]);
+    expect(jobs.map((j) => j.step.name)).toEqual(["a", "c"]);
+  });
+
+  it("skips steps whose narration is missing or blank", () => {
+    const jobs = narrationJobs(
+      steps,
+      new Map([
+        [0, "   "],
+        [1, ""],
+        [2, "  kept  "],
+      ])
+    );
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.text).toBe("kept");
+  });
+
+  it("returns nothing when the model narrated no step", () => {
+    expect(narrationJobs(steps, new Map())).toEqual([]);
   });
 });

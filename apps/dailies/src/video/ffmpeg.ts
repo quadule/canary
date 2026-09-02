@@ -147,6 +147,47 @@ export async function run(
   }
 }
 
+// Run `task` over every item with at most `limit` of them in flight, returning
+// the results in INPUT order (not completion order) so a caller can keep its
+// arrays in lockstep. Used to overlap independent subprocess work — the spawns
+// are the slow part and they don't depend on each other.
+//
+// On a rejection: no further items are started, the in-flight ones are allowed to
+// settle (so nothing rejects after this resolves), and the LOWEST-index failure is
+// rethrown — deterministic regardless of which one landed first, so a caller that
+// lets errors through fails the same way a serial loop would.
+// Pure control flow → unit-tested.
+export async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  task: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  const errors = new Map<number, unknown>();
+  const width = Math.max(1, Math.min(Math.trunc(limit) || 1, items.length));
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length && errors.size === 0) {
+      const index = next;
+      next++;
+      const item = items[index];
+      if (item === undefined) {
+        continue;
+      }
+      try {
+        results[index] = await task(item, index);
+      } catch (err) {
+        errors.set(index, err);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: width }, () => worker()));
+  if (errors.size > 0) {
+    throw errors.get(Math.min(...errors.keys()));
+  }
+  return results;
+}
+
 // Is a binary callable on PATH? Best-effort probe used for preconditions.
 export async function isOnPath(cmd: string, args: string[]): Promise<boolean> {
   try {
